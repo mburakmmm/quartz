@@ -11,6 +11,9 @@ jobs:
   test:
     name: Test (${{ matrix.os }} - ${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
+    env:
+      NOX_VERSION: v2.0.108
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     strategy:
       fail-fast: false
       matrix:
