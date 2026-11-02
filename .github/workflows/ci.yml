@@ -42,7 +42,7 @@ jobs:
       - name: Install NOX (Linux / macOS)
         if: runner.os != 'Windows'
         run: |
-          curl -fsSL https://raw.githubusercontent.com/mburakmmm/nox-lang/main/install.sh | sh
+          curl -fsSL https://raw.githubusercontent.com/mburakmmm/nox-lang/main/install.sh | bash
           echo "$HOME/.nox-lang/bin" >> $GITHUB_PATH
 
       - name: Install NOX (Windows)

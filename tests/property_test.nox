@@ -46,6 +46,8 @@ def test_failure_shrinking_and_replay() -> None:
     assert_true(reproduced, "failing case must be 100% reproducible via replay")
 
     # Save failure artifact to disk and verify JSON content
+    if not nox.fs.exists("fixtures"):
+        nox.fs.create_dir("fixtures")
     artifact_path: str = "fixtures/failure_artifact_test.json"
     save_failure_artifact(artifact_path, res)
     assert_true(nox.fs.exists(artifact_path), "artifact file exists")

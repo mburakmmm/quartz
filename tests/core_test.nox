@@ -157,6 +157,8 @@ def test_reports_and_redaction() -> None:
     assert_contains_str(xml_report, "[REDACTED]", "secrets redacted in xml report")
 
     # 4. Atomic file report writing
+    if not nox.fs.exists("fixtures"):
+        nox.fs.create_dir("fixtures")
     json_path: str = "fixtures/core_summary.json"
     xml_path: str = "fixtures/core_junit.xml"
     write_json_report(json_path, "run-disk-1", "qbe", "2.0.108", summary)
