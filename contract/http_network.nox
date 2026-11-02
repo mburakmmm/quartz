@@ -2,7 +2,7 @@
 import nox.http
 import nox.strings
 import nox.time
-from nox.http import HttpRequest, HttpResponse, HttpError, HttpTimeoutError
+from nox.http import HttpRequest, HttpResponse, HttpError, HttpTimeoutError, stream
 from nox.time import Instant
 from contract.types import ContractCheckResult
 from contract.schema import SchemaDescriptor
@@ -160,14 +160,24 @@ def execute_network_request(req: HttpRequest, base_url: str, policy: NetworkPoli
     empty_res_list: list[HttpResponse] = []
     t0: Instant = nox.time.instant_now()
     try:
-        res: HttpResponse = nox.http.request(req.method, full_url, req.body, req.headers, policy.timeout_ms)
+        accum_body: str = ""
+        res_status: int = 0
+        res_headers: dict[str, str] = {}
+        with stream(req.method, full_url, req.headers, req.body, policy.timeout_ms) as s:
+            res_status = s.status
+            res_headers = s.headers
+            chunk_size: int = 16384
+            while len(accum_body) < policy.max_body_bytes:
+                to_read: int = policy.max_body_bytes - len(accum_body)
+                if to_read > chunk_size:
+                    to_read = chunk_size
+                chunk: str = s.read_chunk(to_read)
+                if len(chunk) == 0:
+                    break
+                accum_body = accum_body + chunk
+
         elapsed_ms: int = t0.elapsed_ms()
-
-        # Enforce response body size cap
-        if len(res.body) > policy.max_body_bytes:
-            truncated_body: str = res.body[0:policy.max_body_bytes]
-            res = HttpResponse(res.status, truncated_body, res.headers)
-
+        res: HttpResponse = HttpResponse(res_status, accum_body, res_headers)
         res_list: list[HttpResponse] = [res]
         return NetworkExecutionResult(res_list, elapsed_ms, res.status, "", False, True)
     except HttpTimeoutError as e:

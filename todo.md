@@ -246,6 +246,35 @@
 
 ---
 
+## Phase 5.3: v0.6.1 — Concurrency, OpenAPI Boundaries & Load Engine Hardening
+*Objective: Resolve external audit findings on OpenAPI single-sided bounds, load engine concurrency/pacing, JSON compliance, and histogram overflow.*
+
+- [x] **5.3.1 OpenAPI Single-Sided Bounds (`contract/schema.nox`, `contract/openapi.nox`)**
+  - [x] Separate `has_min` and `has_max` flags in `schema_integer` and `schema_number`.
+  - [x] Support single-sided bounds (e.g. `{ "type": "integer", "minimum": 5 }` without setting maximum to 0).
+  - [x] Add regression test in `tests/contract_handler_test.nox` verifying single-sided minimum and maximum schemas.
+- [x] **5.3.2 Load Test JSON Compliance & Escaping (`load/executor.nox`)**
+  - [x] Serialize booleans as lowercase `"true"` / `"false"` per JSON standard.
+  - [x] Sanitize strings (`workload_name`, `abort_reason`) using `escape_json`.
+- [x] **5.3.3 Load Metrics Overflow & High-Latency Accuracy (`load/metrics.nox`)**
+  - [x] If latency exceeds 5000ms (bucket 135), calculate percentiles using `max_latency_ms` rather than capping at 5000ms.
+  - [x] Track `overflow_count` and serialize in `LoadMetrics.to_json()`.
+- [x] **5.3.4 Virtual User Interleaving & Rate Pacing (`load/executor.nox`, `load/workload.nox`)**
+  - [x] Interleaved multi-VU execution simulating N concurrent virtual users in closed workload model.
+  - [x] Arrival rate pacing in open workload model (`target_rps` interval scheduling).
+  - [x] Real in-flight concurrency tracking with backpressure rejection.
+  - [x] Enforce per-task `timeout_ms` watchdog marking tasks as `is_timeout=True` on breach.
+- [x] **5.3.5 Streaming Body Protection (`contract/http_network.nox`)**
+  - [x] Chunked streaming via `nox.http.stream()` up to `max_body_bytes` to prevent memory exhaustion before truncation.
+- [x] **5.3.6 Verification & Release**
+  - [x] Update `tests/load_metrics_test.nox`, `tests/load_scheduler_test.nox`, and `tests/contract_handler_test.nox`.
+  - [x] Update `CHANGELOG.md` and `docs/api.md` for v0.6.1.
+  - [x] Tag `v0.6.1`, push, verify CI across Windows x64, Linux x64/arm64, macOS arm64, and run `noxc publish`.
+
+*Phase 5.3 Exit Gate:* PASSED. Zero false rejections on single-sided OpenAPI bounds; valid lowercase boolean JSON; accurate percentiles on high latencies; multi-VU pacing verified; all 10 test suites pass.
+
+---
+
 ## Phase 6: v0.7.0 & v0.8.x — Cross-Module Hardening & Integrations
 *Objective: Property-driven contracts, framework adapters, LLVM/QBE backend matrix, and CI hardening.*
 

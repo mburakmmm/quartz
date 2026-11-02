@@ -3,10 +3,17 @@ import nox.time
 import nox.http
 from nox.time import Instant
 from nox.http import HttpRequest, HttpResponse
+from contract.http_network import NetworkPolicy, execute_network_request, NetworkExecutionResult
 from load.safety import SafetyLimits, CircuitBreaker, default_safety_limits, CircuitBreakerTrippedError
 from load.metrics import LoadMetrics
 from load.workload import WorkloadConfig, MODEL_CLOSED, MODEL_OPEN
 from load.thresholds import Threshold, ThresholdResult, evaluate_all_thresholds, all_thresholds_passed
+from core.report import escape_json
+
+def bool_to_json(b: bool) -> str:
+    if b:
+        return "true"
+    return "false"
 
 class LoadTestSummary:
     workload_name: str
@@ -31,10 +38,10 @@ class LoadTestSummary:
         s = s + "  \"schema_version\": \"1\",\n"
         s = s + "  \"engine\": \"quartz\",\n"
         s = s + "  \"kind\": \"load_test\",\n"
-        s = s + "  \"workload_name\": \"" + self.workload_name + "\",\n"
-        s = s + "  \"all_passed\": " + str(self.all_passed) + ",\n"
-        s = s + "  \"aborted\": " + str(self.aborted) + ",\n"
-        s = s + "  \"abort_reason\": \"" + self.abort_reason + "\",\n"
+        s = s + "  \"workload_name\": \"" + escape_json(self.workload_name) + "\",\n"
+        s = s + "  \"all_passed\": " + bool_to_json(self.all_passed) + ",\n"
+        s = s + "  \"aborted\": " + bool_to_json(self.aborted) + ",\n"
+        s = s + "  \"abort_reason\": \"" + escape_json(self.abort_reason) + "\",\n"
         s = s + "  \"total_duration_ms\": " + str(self.total_duration_ms) + ",\n"
         s = s + "  \"metrics\": " + self.metrics.to_json(self.total_duration_ms) + "\n"
         s = s + "}\n"
@@ -57,11 +64,14 @@ def run_task_workload(workload: WorkloadConfig, task_func: (int) -> bool, thresh
     in_flight: int = 0
 
     if workload.model == MODEL_CLOSED:
-        # Closed model: virtual users iterate sequentially up to max_cases or deadline
+        # Closed model: virtual users interleaved up to max_cases or deadline
         vu_count: int = workload.virtual_users
         if vu_count > limits.virtual_users:
             vu_count = limits.virtual_users
+        if vu_count < 1:
+            vu_count = 1
 
+        vu_idx: int = 0
         while case_idx < max_cases and t0.elapsed_ms() < deadline_ms:
             # Check circuit breaker before scheduling next task
             try:
@@ -80,19 +90,41 @@ def run_task_workload(workload: WorkloadConfig, task_func: (int) -> bool, thresh
                 success = False
 
             task_duration: int = task_t0.elapsed_ms()
+            is_timeout: bool = (task_duration > limits.timeout_ms)
+
             status: int = 200
-            if not success:
+            if is_timeout:
+                status = 504
+                success = False
+                cb.record_failure("task timed out (exceeded " + str(limits.timeout_ms) + "ms)")
+            elif not success:
                 status = 500
                 cb.record_failure("task failed at case " + str(case_idx))
             else:
                 cb.record_success()
 
-            metrics.record_result(status, task_duration, False, success)
+            metrics.record_result(status, task_duration, is_timeout, success)
             case_idx = case_idx + 1
+            vu_idx = (vu_idx + 1) % vu_count
 
     elif workload.model == MODEL_OPEN:
-        # Open model: arrival rate with in-flight backpressure
+        # Open model: target arrival rate pacing with in-flight backpressure
+        target_rps: int = workload.target_rps
+        if target_rps > limits.rate_rps:
+            target_rps = limits.rate_rps
+        if target_rps < 1:
+            target_rps = 1
+
         while case_idx < max_cases and t0.elapsed_ms() < deadline_ms:
+            # Rate pacing: expected arrival time for case_idx
+            expected_ms: int = (case_idx * 1000) // target_rps
+            while t0.elapsed_ms() < expected_ms and t0.elapsed_ms() < deadline_ms:
+                # Cooperative wait for scheduled arrival time
+                pass
+
+            if t0.elapsed_ms() >= deadline_ms:
+                break
+
             metrics.record_scheduled()
 
             # Backpressure guard: reject arrival if in_flight capacity reached
@@ -118,14 +150,20 @@ def run_task_workload(workload: WorkloadConfig, task_func: (int) -> bool, thresh
             in_flight = in_flight - 1
 
             task_duration: int = task_t0.elapsed_ms()
+            is_timeout: bool = (task_duration > limits.timeout_ms)
+
             status: int = 200
-            if not success:
+            if is_timeout:
+                status = 504
+                success = False
+                cb.record_failure("task timed out (exceeded " + str(limits.timeout_ms) + "ms)")
+            elif not success:
                 status = 500
                 cb.record_failure("task failed at case " + str(case_idx))
             else:
                 cb.record_success()
 
-            metrics.record_result(status, task_duration, False, success)
+            metrics.record_result(status, task_duration, is_timeout, success)
             case_idx = case_idx + 1
 
     total_duration_ms: int = t0.elapsed_ms()
@@ -140,3 +178,10 @@ def run_handler_load_test(workload: WorkloadConfig, handler: (HttpRequest) -> Ht
         return (res.status >= 200 and res.status < 400)
 
     return run_task_workload(workload, adapter_task, thresholds, limits)
+
+def run_network_load_test(workload: WorkloadConfig, req: HttpRequest, base_url: str, policy: NetworkPolicy, thresholds: list[Threshold], limits: SafetyLimits) -> LoadTestSummary:
+    def network_task(idx: int) -> bool:
+        res: NetworkExecutionResult = execute_network_request(req, base_url, policy)
+        return res.is_success and res.status_code < 400
+
+    return run_task_workload(workload, network_task, thresholds, limits)

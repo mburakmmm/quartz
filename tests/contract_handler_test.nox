@@ -34,7 +34,7 @@ def mock_user_api(req: HttpRequest) -> HttpResponse:
 
 def get_user_schema(strict: bool) -> SchemaDescriptor:
     props: list[PropertyRule] = [
-        PropertyRule("id", schema_integer(1, 1000, True)),
+        PropertyRule("id", schema_integer(1, 1000, True, True)),
         PropertyRule("username", schema_string(3, 20)),
         PropertyRule("active", schema_boolean()),
         PropertyRule("roles", schema_array(schema_string()))
@@ -236,6 +236,39 @@ def test_openapi_constraints_and_additional_properties() -> None:
         assert_eq_int(tags_rule.schema.min_len, 1, "minItems parsed as 1")
         assert_eq_int(tags_rule.schema.max_len, 5, "maxItems parsed as 5")
 
+def test_openapi_single_sided_bounds() -> None:
+    # 1. Single-sided integer minimum
+    spec_min: str = "{\"openapi\": \"3.0.0\", \"paths\": {\"/min\": {\"get\": {\"responses\": {\"200\": {\"content\": {\"application/json\": {\"schema\": {\"type\": \"integer\", \"minimum\": 5}}}}}}}}}"
+    doc_min: ParsedOpenApiDoc = parse_openapi_json(spec_min)
+    desc_min: SchemaDescriptor | None = doc_min.operations[0].responses[0].schema
+    assert_true(desc_min is not None, "desc_min parsed")
+    if desc_min is not None:
+        assert_true(desc_min.has_min_val, "has_min_val is True")
+        assert_false(desc_min.has_max_val, "has_max_val is False")
+        assert_eq_float(desc_min.min_val, 5.0, 0.001, 0.001, "minimum is 5.0")
+        # Validate 10 passes (would fail if maximum was defaulted to 0!)
+        v_10: JsonValue = nox.json.parse("10")
+        errs_10: list[str] = validate_schema(desc_min, v_10, "root")
+        assert_eq_int(len(errs_10), 0, "10 is valid when minimum=5")
+        # Validate 4 fails
+        v_4: JsonValue = nox.json.parse("4")
+        errs_4: list[str] = validate_schema(desc_min, v_4, "root")
+        assert_true(len(errs_4) > 0, "4 is rejected when minimum=5")
+
+    # 2. Single-sided integer maximum
+    spec_max: str = "{\"openapi\": \"3.0.0\", \"paths\": {\"/max\": {\"get\": {\"responses\": {\"200\": {\"content\": {\"application/json\": {\"schema\": {\"type\": \"integer\", \"maximum\": 50}}}}}}}}}"
+    doc_max: ParsedOpenApiDoc = parse_openapi_json(spec_max)
+    desc_max: SchemaDescriptor | None = doc_max.operations[0].responses[0].schema
+    assert_true(desc_max is not None, "desc_max parsed")
+    if desc_max is not None:
+        assert_false(desc_max.has_min_val, "has_min_val is False")
+        assert_true(desc_max.has_max_val, "has_max_val is True")
+        assert_eq_float(desc_max.max_val, 50.0, 0.001, 0.001, "maximum is 50.0")
+        # Validate -100 passes (would fail if minimum was defaulted to 0!)
+        v_neg: JsonValue = nox.json.parse("-100")
+        errs_neg: list[str] = validate_schema(desc_max, v_neg, "root")
+        assert_eq_int(len(errs_neg), 0, "-100 is valid when maximum=50")
+
 def run_all_contract_tests() -> None:
     test_handler_positive_contract()
     test_handler_negative_status_code()
@@ -245,6 +278,7 @@ def run_all_contract_tests() -> None:
     test_header_case_insensitivity_and_redaction()
     test_openapi_subset_parser()
     test_openapi_constraints_and_additional_properties()
+    test_openapi_single_sided_bounds()
     print("quartz contract handler test: ALL PASS")
 
 run_all_contract_tests()

@@ -58,6 +58,8 @@ def evaluate_threshold(t: Threshold, metrics: LoadMetrics, total_duration_ms: in
         actual = float(metrics.failed)
     elif t.metric_name == "timed_out":
         actual = float(metrics.timed_out)
+    elif t.metric_name == "overflow_count":
+        actual = float(metrics.overflow_count)
     elif t.metric_name == "rejected":
         actual = float(metrics.rejected)
     else:

@@ -1,4 +1,4 @@
-# Quartz API Reference — v0.6.0
+# Quartz API Reference — v0.6.1
 
 ## 1. Core Types (`core/types.nox`)
 
@@ -192,8 +192,8 @@ Bounded deterministic byte and structured mutations:
 - Factory functions:
   - `schema_string(min_len: int = -1, max_len: int = -1) -> SchemaDescriptor`
   - `schema_enum(enum_vals: list[str]) -> SchemaDescriptor`
-  - `schema_integer(min_val: int = 0, max_val: int = 0, has_bounds: bool = False) -> SchemaDescriptor`
-  - `schema_number(min_val: float = 0.0, max_val: float = 0.0, has_bounds: bool = False) -> SchemaDescriptor`
+  - `schema_integer(min_val: int = 0, max_val: int = 0, has_min: bool = False, has_max: bool = False) -> SchemaDescriptor`
+  - `schema_number(min_val: float = 0.0, max_val: float = 0.0, has_min: bool = False, has_max: bool = False) -> SchemaDescriptor`
   - `schema_boolean() -> SchemaDescriptor`
   - `schema_null() -> SchemaDescriptor`
   - `schema_array(item_schema: SchemaDescriptor, min_len: int = -1, max_len: int = -1) -> SchemaDescriptor`
@@ -326,5 +326,6 @@ Bounded deterministic byte and structured mutations:
   - `.to_json() -> str`
 - `run_task_workload(workload: WorkloadConfig, task_func: (int) -> bool, thresholds: list[Threshold], limits: SafetyLimits) -> LoadTestSummary`
 - `run_handler_load_test(workload: WorkloadConfig, handler: (HttpRequest) -> HttpResponse, req: HttpRequest, thresholds: list[Threshold], limits: SafetyLimits) -> LoadTestSummary`
+- `run_network_load_test(workload: WorkloadConfig, req: HttpRequest, base_url: str, policy: NetworkPolicy, thresholds: list[Threshold], limits: SafetyLimits) -> LoadTestSummary`
 
 

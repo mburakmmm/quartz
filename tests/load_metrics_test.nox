@@ -108,10 +108,28 @@ def test_threshold_evaluations() -> None:
     assert_false(res_edge.passed, "zero successful requests cannot pass latency threshold")
     assert_contains_str(res_edge.message, "0 successful requests", "informative edge case failure message")
 
+def test_high_latency_overflow() -> None:
+    m: LoadMetrics = LoadMetrics()
+    # Record 10 requests taking 8000ms each
+    i: int = 0
+    while i < 10:
+        m.record_scheduled()
+        m.record_result(200, 8000, False, True)
+        i = i + 1
+
+    assert_eq_int(m.overflow_count, 10, "10 overflow requests recorded")
+    # p95 must accurately report 8000ms instead of being artificially capped at 5000ms!
+    assert_eq_int(m.p95(), 8000, "p95 accurately reports 8000ms on overflow")
+    assert_eq_int(m.p50(), 8000, "p50 accurately reports 8000ms on overflow")
+
+    json_str: str = m.to_json(1000)
+    assert_contains_str(json_str, "\"overflow_count\": 10", "json includes overflow_count")
+
 def run_all_load_metrics_tests() -> None:
     test_histogram_bucketing()
     test_percentile_calculations_and_monotonicity()
     test_threshold_evaluations()
+    test_high_latency_overflow()
     print("quartz load metrics test: ALL PASS")
 
 run_all_load_metrics_tests()

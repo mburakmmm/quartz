@@ -92,26 +92,28 @@ def parse_schema_node(node: JsonValue, path: str) -> SchemaDescriptor:
     if t_name == "integer":
         min_val: int = 0
         max_val: int = 0
-        has_bounds: bool = False
+        has_min: bool = False
+        has_max: bool = False
         if json_has_key(node, "minimum"):
             min_val = int(nox.json.as_number(json_get_key(node, "minimum")))
-            has_bounds = True
+            has_min = True
         if json_has_key(node, "maximum"):
             max_val = int(nox.json.as_number(json_get_key(node, "maximum")))
-            has_bounds = True
-        return schema_integer(min_val, max_val, has_bounds)
+            has_max = True
+        return schema_integer(min_val, max_val, has_min, has_max)
 
     if t_name == "number":
         min_f: float = 0.0
         max_f: float = 0.0
-        has_f_bounds: bool = False
+        has_min_f: bool = False
+        has_max_f: bool = False
         if json_has_key(node, "minimum"):
             min_f = nox.json.as_number(json_get_key(node, "minimum"))
-            has_f_bounds = True
+            has_min_f = True
         if json_has_key(node, "maximum"):
             max_f = nox.json.as_number(json_get_key(node, "maximum"))
-            has_f_bounds = True
-        return schema_number(min_f, max_f, has_f_bounds)
+            has_max_f = True
+        return schema_number(min_f, max_f, has_min_f, has_max_f)
 
     if t_name == "boolean":
         return schema_boolean()

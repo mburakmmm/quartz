@@ -3,6 +3,17 @@
 All notable changes to the Quartz test framework will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.1] - 2026-11-02 - Phase 5.3: Concurrency, OpenAPI Boundaries & Load Engine Hardening
+
+### Fixed & Hardened
+- **OpenAPI Single-Sided Bounds (`contract/schema.nox`, `contract/openapi.nox`)**: Separated `has_min` and `has_max` boundary flags in `schema_integer()` and `schema_number()`. Schemas declaring only `minimum` (or only `maximum`) no longer erroneously activate the opposite bound as zero.
+- **Load Test JSON Compliance (`load/executor.nox`)**: Serialized boolean fields in `LoadTestSummary.to_json()` using lowercase JSON-compliant `"true"` and `"false"`. Sanitized `workload_name` and `abort_reason` using `escape_json`.
+- **Latency Histogram Overflow Accuracy (`load/metrics.nox`)**: When requests exceed 5000ms (bucket 135), percentiles now accurately reflect `max_latency_ms` rather than capping at 5000ms. Added `overflow_count` metric tracking and JSON serialization.
+- **Virtual User Interleaving & Rate Pacing (`load/executor.nox`)**: Implemented round-robin virtual user interleaving in closed workload model, arrival rate pacing (`target_rps` interval scheduling) in open workload model, and per-task `timeout_ms` watchdog enforcement marking tasks as timed out on breach.
+- **Streaming Body Memory Guard (`contract/http_network.nox`)**: Switched network request execution to `nox.http.stream()`, reading in chunked buffers up to `max_body_bytes` to guarantee memory bounded execution without buffering oversized payloads into memory.
+- **Network Load Driver (`load/executor.nox`)**: Added `run_network_load_test()` connecting Quartz Load scenarios directly to authorized network endpoints.
+- **Regression Tests (`tests/`)**: Added dedicated tests verifying single-sided OpenAPI bounds (`tests/contract_handler_test.nox`), histogram overflow accuracy (`tests/load_metrics_test.nox`), and JSON compliance / rate pacing (`tests/load_scheduler_test.nox`).
+
 ## [0.6.0] - 2026-11-02 - Phase 5.2: Bounded Load Testing, Latency Metrics & Thresholds
 
 ### Added

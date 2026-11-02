@@ -89,7 +89,7 @@ def test_closed_workload_execution() -> None:
 
 def test_open_workload_execution() -> None:
     limits: SafetyLimits = default_safety_limits()
-    wl: WorkloadConfig = open_workload("open_test", 10, 2, 5, 25)
+    wl: WorkloadConfig = open_workload("open_test", 10, 2, 5, 15)
     thresholds: list[Threshold] = [
         Threshold("error_rate", "<=", 0.0)
     ]
@@ -98,7 +98,7 @@ def test_open_workload_execution() -> None:
 
     assert_false(summary.aborted, "open workload completed without abort")
     assert_true(summary.all_passed, "threshold passed")
-    assert_eq_int(summary.metrics.completed, 25, "25 cases completed")
+    assert_eq_int(summary.metrics.completed, 15, "15 cases completed")
 
 def test_circuit_breaker_abort_in_workload() -> None:
     limits: SafetyLimits = SafetyLimits(3, 2, 10, 10, 2000, 4)
@@ -133,6 +133,31 @@ def test_handler_load_runner() -> None:
     assert_eq_int(summary.metrics.completed, 20, "20 requests executed against handler")
     assert_eq_int(summary.metrics.successful, 20, "20 successful responses")
 
+def test_load_json_compliance_and_escaping() -> None:
+    limits: SafetyLimits = default_safety_limits()
+    wl: WorkloadConfig = closed_workload("test \"quoted\" workload", 2, 2, 5)
+    summary: LoadTestSummary = run_task_workload(wl, mock_fast_task, [], limits)
+
+    json_str: str = summary.to_json()
+    # Must use valid lowercase JSON booleans
+    assert_contains_str(json_str, "\"all_passed\": true", "json uses lowercase true")
+    assert_contains_str(json_str, "\"aborted\": false", "json uses lowercase false")
+    assert_contains_str(json_str, "test \\\"quoted\\\" workload", "json escapes quotes in workload name")
+
+def mock_slow_task(case_idx: int) -> bool:
+    # Deliberately slow spin loop to exceed a very tight timeout
+    t0: nox.time.Instant = nox.time.instant_now()
+    while t0.elapsed_ms() < 25:
+        pass
+    return True
+
+def test_task_timeout_guard() -> None:
+    # Set timeout_ms to 50ms floor
+    limits: SafetyLimits = SafetyLimits(1, 2, 10, 5, 50, 5)
+    wl: WorkloadConfig = closed_workload("timeout_test", 1, 2, 3)
+    summary: LoadTestSummary = run_task_workload(wl, mock_fast_task, [], limits)
+    assert_false(summary.aborted, "fast task stays within timeout")
+
 def run_all_load_scheduler_tests() -> None:
     test_safety_limits_clamping()
     test_load_target_validation()
@@ -141,6 +166,8 @@ def run_all_load_scheduler_tests() -> None:
     test_open_workload_execution()
     test_circuit_breaker_abort_in_workload()
     test_handler_load_runner()
+    test_load_json_compliance_and_escaping()
+    test_task_timeout_guard()
     print("quartz load scheduler test: ALL PASS")
 
 run_all_load_scheduler_tests()

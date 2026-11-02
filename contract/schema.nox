@@ -60,22 +60,20 @@ def schema_enum(enum_vals: list[str]) -> SchemaDescriptor:
     s.enum_values = enum_vals
     return s
 
-def schema_integer(min_val: int = 0, max_val: int = 0, has_bounds: bool = False) -> SchemaDescriptor:
+def schema_integer(min_val: int = 0, max_val: int = 0, has_min: bool = False, has_max: bool = False) -> SchemaDescriptor:
     s: SchemaDescriptor = SchemaDescriptor(SCHEMA_INTEGER)
-    if has_bounds:
-        s.has_min_val = True
-        s.has_max_val = True
-        s.min_val = min_val * 1.0
-        s.max_val = max_val * 1.0
+    s.has_min_val = has_min
+    s.has_max_val = has_max
+    s.min_val = min_val * 1.0
+    s.max_val = max_val * 1.0
     return s
 
-def schema_number(min_val: float = 0.0, max_val: float = 0.0, has_bounds: bool = False) -> SchemaDescriptor:
+def schema_number(min_val: float = 0.0, max_val: float = 0.0, has_min: bool = False, has_max: bool = False) -> SchemaDescriptor:
     s: SchemaDescriptor = SchemaDescriptor(SCHEMA_NUMBER)
-    if has_bounds:
-        s.has_min_val = True
-        s.has_max_val = True
-        s.min_val = min_val
-        s.max_val = max_val
+    s.has_min_val = has_min
+    s.has_max_val = has_max
+    s.min_val = min_val
+    s.max_val = max_val
     return s
 
 def schema_boolean() -> SchemaDescriptor:

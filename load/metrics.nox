@@ -34,6 +34,7 @@ class LoadMetrics:
     failed: int
     timed_out: int
     rejected: int
+    overflow_count: int
     min_latency_ms: int
     max_latency_ms: int
     sum_latency_ms: int
@@ -46,6 +47,7 @@ class LoadMetrics:
         self.failed = 0
         self.timed_out = 0
         self.rejected = 0
+        self.overflow_count = 0
         self.min_latency_ms = -1
         self.max_latency_ms = 0
         self.sum_latency_ms = 0
@@ -86,6 +88,8 @@ class LoadMetrics:
         # Record into bounded histogram bucket
         b_idx: int = get_bucket_index(duration_ms)
         self.buckets[b_idx] = self.buckets[b_idx] + 1
+        if b_idx == 135:
+            self.overflow_count = self.overflow_count + 1
 
     def percentile(self: LoadMetrics, p: float) -> int:
         if self.successful <= 0:
@@ -100,6 +104,9 @@ class LoadMetrics:
         while idx < HISTOGRAM_NUM_BUCKETS:
             accum = accum + self.buckets[idx]
             if accum >= target_count:
+                # If target falls into overflow bucket, use actual max_latency_ms
+                if idx == 135 and self.max_latency_ms > 5000:
+                    return self.max_latency_ms
                 return get_bucket_midpoint(idx)
             idx = idx + 1
 
@@ -145,6 +152,7 @@ class LoadMetrics:
         s = s + "  \"failed\": " + str(self.failed) + ",\n"
         s = s + "  \"timed_out\": " + str(self.timed_out) + ",\n"
         s = s + "  \"rejected\": " + str(self.rejected) + ",\n"
+        s = s + "  \"overflow_count\": " + str(self.overflow_count) + ",\n"
         s = s + "  \"min_latency_ms\": " + str(self.min_latency_ms) + ",\n"
         s = s + "  \"max_latency_ms\": " + str(self.max_latency_ms) + ",\n"
         s = s + "  \"mean_latency_ms\": " + str(self.mean_latency_ms()) + ",\n"
