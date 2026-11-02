@@ -1,0 +1,25 @@
+class ManagedFixture:
+    name: str
+    cleaned: bool
+
+    def __init__(self: ManagedFixture, name: str) -> None:
+        self.name = name
+        self.cleaned = False
+
+    def __enter__(self: ManagedFixture) -> ManagedFixture:
+        print("setup: " + self.name)
+        return self
+
+    def __exit__(self: ManagedFixture) -> None:
+        self.cleaned = True
+        print("teardown: " + self.name)
+
+f: ManagedFixture = ManagedFixture("db")
+try:
+    with f as ctx:
+        print("inside with block")
+        raise ValueError("simulated test error")
+except ValueError as e:
+    print("caught error")
+
+print("Teardown guaranteed: " + str(f.cleaned))

@@ -1,0 +1,40 @@
+# Quartz Baseline Test — Phase 0 Verification
+from core.types import STATUS_PASS, STATUS_FAIL, STATUS_ERROR, TestResult, RunSummary
+from nox.test import TestSuite, AssertionError
+
+def run_baseline_suite() -> None:
+    suite: TestSuite = TestSuite("quartz_baseline")
+    
+    # 1. Verify status constants
+    suite.check_true("status_pass_constant", STATUS_PASS == "PASS")
+    suite.check_true("status_fail_constant", STATUS_FAIL == "FAIL")
+    suite.check_true("status_error_constant", STATUS_ERROR == "ERROR")
+    
+    # 2. Verify TestResult creation
+    res_pass: TestResult = TestResult("case_1", "case_1", STATUS_PASS, 5, "", None)
+    suite.check_true("result_is_passed", res_pass.is_passed())
+    suite.check_eq_str("result_status", res_pass.status, "PASS")
+    suite.check_eq_int("result_duration", res_pass.duration_ms, 5)
+    
+    res_fail: TestResult = TestResult("case_2", "case_2", STATUS_FAIL, 8, "expected 1, got 2", None)
+    suite.check_true("result_is_failed", not res_fail.is_passed())
+    
+    # 3. Verify RunSummary recording
+    summary: RunSummary = RunSummary()
+    summary.record(res_pass)
+    summary.record(res_fail)
+    
+    suite.check_eq_int("summary_total", summary.total, 2)
+    suite.check_eq_int("summary_passed", summary.passed, 1)
+    suite.check_eq_int("summary_failed", summary.failed, 1)
+    suite.check_eq_int("summary_duration", summary.duration_ms, 13)
+    suite.check_true("summary_not_successful", not summary.is_successful())
+    
+    # 4. Verify summary evaluation
+    suite.check_true("summary_results_count", len(summary.results) == 2)
+    
+    if not suite.all_passed():
+        raise AssertionError("Baseline test failed: " + str(suite.fail_count) + " checks failed")
+
+run_baseline_suite()
+print("quartz baseline test: ALL PASS")

@@ -1,0 +1,28 @@
+# Compiled binaries & artifacts
+*.exe
+*.o
+*.obj
+*.dll
+*.so
+*.dylib
+*.ll
+*.s
+*.ssa
+
+# NOX run cache & temporary files
+*.nox-tmp
+.nox/
+.nox-lang/
+cache/
+
+# Test artifacts & scratch
+fixtures/*.txt
+fixtures/*.json
+fixtures/*.xml
+artifacts/
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

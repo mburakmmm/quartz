@@ -1,0 +1,15 @@
+import nox.process
+from nox.process import ProcessError
+
+cmd: nox.process.Command = nox.process.Command("powershell.exe")
+cmd.arg("-Command")
+cmd.arg("Start-Sleep -Seconds 2")
+cmd.set_timeout(200)
+
+timed_out: bool = False
+try:
+    cmd.run()
+except ProcessError as e:
+    timed_out = True
+
+print("Timed out caught: " + str(timed_out))

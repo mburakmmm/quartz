@@ -1,0 +1,40 @@
+# Quartz Core — Fixture Lifecycle Management
+
+SCOPE_CASE: str = "case"
+SCOPE_SUITE: str = "suite"
+
+class Fixture:
+    name: str
+    scope: str
+    is_active: bool
+    setup_count: int
+    teardown_count: int
+
+    def __init__(self: Fixture, name: str, scope: str) -> None:
+        self.name = name
+        self.scope = scope
+        self.is_active = False
+        self.setup_count = 0
+        self.teardown_count = 0
+
+    def setup(self: Fixture) -> None:
+        self.is_active = True
+        self.setup_count = self.setup_count + 1
+
+    def teardown(self: Fixture) -> None:
+        self.is_active = False
+        self.teardown_count = self.teardown_count + 1
+
+    def __enter__(self: Fixture) -> Fixture:
+        self.setup()
+        return self
+
+    def __exit__(self: Fixture) -> None:
+        self.teardown()
+
+def run_with_fixture(fixture: Fixture, action: () -> None) -> None:
+    fixture.setup()
+    try:
+        action()
+    finally:
+        fixture.teardown()

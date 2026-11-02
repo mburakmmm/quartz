@@ -1,0 +1,101 @@
+# Quartz Core — Reporting and Exporters
+from core.types import STATUS_PASS, STATUS_FAIL, STATUS_SKIP, STATUS_ERROR, STATUS_TIMEOUT, TestResult, RunSummary
+import nox.fs
+import nox.strings
+
+def escape_xml(s: str) -> str:
+    s1: str = nox.strings.replace(s, "&", "&amp;")
+    s2: str = nox.strings.replace(s1, "<", "&lt;")
+    s3: str = nox.strings.replace(s2, ">", "&gt;")
+    s4: str = nox.strings.replace(s3, "\"", "&quot;")
+    return nox.strings.replace(s4, "'", "&apos;")
+
+def escape_json(s: str) -> str:
+    s1: str = nox.strings.replace(s, "\\", "\\\\")
+    s2: str = nox.strings.replace(s1, "\"", "\\\"")
+    s3: str = nox.strings.replace(s2, "\n", "\\n")
+    s4: str = nox.strings.replace(s3, "\r", "")
+    return nox.strings.replace(s4, "\t", "\\t")
+
+def redact_secrets(text: str) -> str:
+    # Basic redaction for common secret indicators
+    r1: str = text
+    if nox.strings.contains(r1, "Bearer "):
+        parts: list[str] = nox.strings.split(r1, "Bearer ")
+        i: int = 1
+        acc: str = parts[0]
+        while i < len(parts):
+            subparts: list[str] = nox.strings.splitn(parts[i], " ", 2)
+            if len(subparts) > 1:
+                acc = acc + "Bearer [REDACTED] " + subparts[1]
+            else:
+                acc = acc + "Bearer [REDACTED]"
+            i = i + 1
+        r1 = acc
+    return r1
+
+def format_junit_xml(suite_name: str, summary: RunSummary) -> str:
+    header: str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+    time_sec: float = summary.duration_ms / 1000.0
+    suite_tag: str = "<testsuite name=\"" + escape_xml(suite_name) + "\" tests=\"" + str(summary.total) + "\" failures=\"" + str(summary.failed) + "\" errors=\"" + str(summary.errors) + "\" skipped=\"" + str(summary.skipped) + "\" time=\"" + str(time_sec) + "\">\n"
+    
+    body: str = ""
+    i: int = 0
+    while i < len(summary.results):
+        r: TestResult = summary.results[i]
+        case_sec: float = r.duration_ms / 1000.0
+        escaped_name: str = escape_xml(r.name)
+        body = body + "  <testcase name=\"" + escaped_name + "\" classname=\"" + escape_xml(suite_name) + "\" time=\"" + str(case_sec) + "\">\n"
+        
+        if r.status == STATUS_FAIL:
+            body = body + "    <failure message=\"" + escape_xml(redact_secrets(r.message)) + "\" type=\"AssertionError\"/>\n"
+        elif r.status == STATUS_SKIP:
+            body = body + "    <skipped message=\"" + escape_xml(r.message) + "\"/>\n"
+        elif r.status == STATUS_ERROR or r.status == STATUS_TIMEOUT:
+            body = body + "    <error message=\"" + escape_xml(redact_secrets(r.message)) + "\" type=\"Error\"/>\n"
+            
+        body = body + "  </testcase>\n"
+        i = i + 1
+        
+    footer: str = "</testsuite>\n"
+    return header + suite_tag + body + footer
+
+def format_summary_json(run_id: str, backend: str, compiler_version: str, summary: RunSummary) -> str:
+    overall_status: str = STATUS_PASS
+    if not summary.is_successful():
+        overall_status = STATUS_FAIL
+
+    json_str: str = "{\n"
+    json_str = json_str + "  \"schema_version\": \"1\",\n"
+    json_str = json_str + "  \"engine\": \"quartz\",\n"
+    json_str = json_str + "  \"run_id\": \"" + escape_json(run_id) + "\",\n"
+    json_str = json_str + "  \"status\": \"" + overall_status + "\",\n"
+    json_str = json_str + "  \"compiler_version\": \"" + escape_json(compiler_version) + "\",\n"
+    json_str = json_str + "  \"backend\": \"" + escape_json(backend) + "\",\n"
+    json_str = json_str + "  \"total\": " + str(summary.total) + ",\n"
+    json_str = json_str + "  \"passed\": " + str(summary.passed) + ",\n"
+    json_str = json_str + "  \"failed\": " + str(summary.failed) + ",\n"
+    json_str = json_str + "  \"skipped\": " + str(summary.skipped) + ",\n"
+    json_str = json_str + "  \"errors\": " + str(summary.errors) + ",\n"
+    json_str = json_str + "  \"duration_ms\": " + str(summary.duration_ms) + ",\n"
+    json_str = json_str + "  \"results\": [\n"
+
+    i: int = 0
+    while i < len(summary.results):
+        r: TestResult = summary.results[i]
+        comma: str = ","
+        if i == len(summary.results) - 1:
+            comma = ""
+        json_str = json_str + "    {\"id\":\"" + escape_json(r.id) + "\",\"name\":\"" + escape_json(r.name) + "\",\"status\":\"" + r.status + "\",\"duration_ms\":" + str(r.duration_ms) + ",\"message\":\"" + escape_json(redact_secrets(r.message)) + "\"}" + comma + "\n"
+        i = i + 1
+
+    json_str = json_str + "  ]\n}"
+    return json_str
+
+def write_junit_report(path: str, suite_name: str, summary: RunSummary) -> None:
+    content: str = format_junit_xml(suite_name, summary)
+    nox.fs.write_string_atomic(path, content)
+
+def write_json_report(path: str, run_id: str, backend: str, compiler_version: str, summary: RunSummary) -> None:
+    content: str = format_summary_json(run_id, backend, compiler_version, summary)
+    nox.fs.write_string_atomic(path, content)

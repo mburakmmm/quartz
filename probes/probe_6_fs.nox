@@ -1,0 +1,18 @@
+import nox.fs
+
+test_dir: str = "probes/fs_test_dir"
+if not nox.fs.exists(test_dir):
+    nox.fs.create_dir(test_dir)
+
+test_file: str = test_dir + "/sample.txt"
+nox.fs.write_string_atomic(test_file, "hello from fs probe")
+
+content: str = nox.fs.read_to_string(test_file)
+print("Content: " + content)
+print("File exists: " + str(nox.fs.exists(test_file)))
+print("Is file: " + str(nox.fs.is_file(test_file)))
+print("Is dir: " + str(nox.fs.is_dir(test_dir)))
+
+# Clean up
+nox.fs.remove_file(test_file)
+print("File exists after remove: " + str(nox.fs.exists(test_file)))

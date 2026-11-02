@@ -1,0 +1,54 @@
+# Quartz Core — Assertions Library
+import nox.strings
+
+# Note: AssertionError is a built-in exception provided unconditionally by nox/core.nox.
+
+def assert_true(cond: bool, msg: str) -> None:
+    if not cond:
+        raise AssertionError("assert_true failed: " + msg)
+
+def assert_false(cond: bool, msg: str) -> None:
+    if cond:
+        raise AssertionError("assert_false failed (expected False): " + msg)
+
+def assert_eq_int(actual: int, expected: int, msg: str) -> None:
+    if actual != expected:
+        raise AssertionError(msg + ": expected " + str(expected) + ", got " + str(actual))
+
+def assert_not_eq_int(actual: int, unexpected: int, msg: str) -> None:
+    if actual == unexpected:
+        raise AssertionError(msg + ": unexpected " + str(unexpected) + ", got matching value")
+
+def assert_eq_str(actual: str, expected: str, msg: str) -> None:
+    if actual != expected:
+        raise AssertionError(msg + ": expected \"" + expected + "\", got \"" + actual + "\"")
+
+def assert_not_eq_str(actual: str, unexpected: str, msg: str) -> None:
+    if actual == unexpected:
+        raise AssertionError(msg + ": unexpected \"" + unexpected + "\"")
+
+def assert_eq_bool(actual: bool, expected: bool, msg: str) -> None:
+    if actual != expected:
+        raise AssertionError(msg + ": expected " + str(expected) + ", got " + str(actual))
+
+def assert_eq_float(actual: float, expected: float, abs_tol: float, rel_tol: float, msg: str) -> None:
+    diff: float = actual - expected
+    if diff < 0.0:
+        diff = -diff
+    tol: float = abs_tol
+    exp_mag: float = expected
+    if exp_mag < 0.0:
+        exp_mag = -exp_mag
+    rel_margin: float = exp_mag * rel_tol
+    if rel_margin > tol:
+        tol = rel_margin
+    if diff > tol:
+        raise AssertionError(msg + ": expected " + str(expected) + " (tol " + str(tol) + "), got " + str(actual) + " (diff " + str(diff) + ")")
+
+def assert_contains_str(haystack: str, needle: str, msg: str) -> None:
+    if not nox.strings.contains(haystack, needle):
+        raise AssertionError(msg + ": expected \"" + haystack + "\" to contain \"" + needle + "\"")
+
+def assert_not_contains_str(haystack: str, needle: str, msg: str) -> None:
+    if nox.strings.contains(haystack, needle):
+        raise AssertionError(msg + ": expected \"" + haystack + "\" not to contain \"" + needle + "\"")

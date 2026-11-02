@@ -1,0 +1,16 @@
+async def worker(id: int, ch: Channel[int]) -> None:
+    await ch.send(id)
+
+async def run_it() -> None:
+    ch: Channel[int] = Channel[int](2)
+    t1: Task[None] = spawn worker(1, ch)
+    t2: Task[None] = spawn worker(2, ch)
+    r1: int = await ch.recv()
+    r2: int = await ch.recv()
+    print(r1)
+    print(r2)
+    await t1
+    await t2
+
+t: Task[None] = spawn run_it()
+await t

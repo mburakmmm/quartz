@@ -1,0 +1,12 @@
+# Quartz Test Framework — Public Facade
+import core.types
+import core.assert
+import core.suite
+import core.fixture
+import core.report
+
+def version() -> str:
+    return "0.1.0"
+
+def framework_info() -> str:
+    return "Quartz Test Framework v" + version() + " for NOX Ecosystem"

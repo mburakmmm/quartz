@@ -1,0 +1,11 @@
+import nox.process
+
+cmd: nox.process.Command = nox.process.Command("cmd.exe")
+cmd.arg("/c")
+cmd.arg("echo process probe ok")
+cmd.set_timeout(3000)
+
+out: nox.process.Output = cmd.run()
+print("Success: " + str(out.success()))
+print("Status: " + str(out.status))
+print("Stdout: " + out.stdout)

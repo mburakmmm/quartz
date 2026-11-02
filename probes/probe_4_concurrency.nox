@@ -1,0 +1,18 @@
+async def worker(id: int, ch: Channel[str]) -> None:
+    msg: str = "worker-" + str(id) + " done"
+    await ch.send(msg)
+
+async def run_all() -> None:
+    ch: Channel[str] = Channel[str](4)
+    t1: Task[None] = spawn worker(1, ch)
+    t2: Task[None] = spawn worker(2, ch)
+    
+    r1: str = await ch.recv()
+    r2: str = await ch.recv()
+    print(r1)
+    print(r2)
+    await t1
+    await t2
+
+main_t: Task[None] = spawn run_all()
+await main_t

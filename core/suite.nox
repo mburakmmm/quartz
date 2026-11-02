@@ -1,0 +1,116 @@
+# Quartz Core — Test Suite and Runner
+from core.types import STATUS_PASS, STATUS_FAIL, STATUS_SKIP, Failure, TestResult, RunSummary
+import nox.strings
+import nox.time
+
+class TestSuite:
+    name: str
+    summary: RunSummary
+    filter_pattern: str
+
+    def __init__(self: TestSuite, name: str) -> None:
+        self.name = name
+        self.summary = RunSummary()
+        self.filter_pattern = ""
+
+    def set_filter(self: TestSuite, pattern: str) -> None:
+        self.filter_pattern = pattern
+
+    def _should_run(self: TestSuite, case_name: str) -> bool:
+        if len(self.filter_pattern) == 0:
+            return True
+        return nox.strings.contains(case_name, self.filter_pattern)
+
+    def _record(self: TestSuite, case_name: str, passed: bool, expected: str, actual: str, message: str, duration_ms: int) -> None:
+        if not self._should_run(case_name):
+            # Record as skipped
+            skip_res: TestResult = TestResult(case_name, case_name, STATUS_SKIP, 0, "filtered out", None)
+            self.summary.record(skip_res)
+            return
+
+        if passed:
+            pass_res: TestResult = TestResult(case_name, case_name, STATUS_PASS, duration_ms, "", None)
+            self.summary.record(pass_res)
+        else:
+            fail_info: Failure = Failure(message, expected, actual)
+            fail_res: TestResult = TestResult(case_name, case_name, STATUS_FAIL, duration_ms, message, fail_info)
+            self.summary.record(fail_res)
+
+    def check_true(self: TestSuite, case_name: str, cond: bool) -> None:
+        if cond:
+            self._record(case_name, True, "True", "True", "", 0)
+        else:
+            self._record(case_name, False, "True", "False", case_name + ": condition was False", 0)
+
+    def check_false(self: TestSuite, case_name: str, cond: bool) -> None:
+        if not cond:
+            self._record(case_name, True, "False", "False", "", 0)
+        else:
+            self._record(case_name, False, "False", "True", case_name + ": condition was True (expected False)", 0)
+
+    def check_eq_int(self: TestSuite, case_name: str, actual: int, expected: int) -> None:
+        if actual == expected:
+            self._record(case_name, True, str(expected), str(actual), "", 0)
+        else:
+            self._record(case_name, False, str(expected), str(actual), case_name + ": expected " + str(expected) + ", got " + str(actual), 0)
+
+    def check_not_eq_int(self: TestSuite, case_name: str, actual: int, unexpected: int) -> None:
+        if actual != unexpected:
+            self._record(case_name, True, "not " + str(unexpected), str(actual), "", 0)
+        else:
+            self._record(case_name, False, "not " + str(unexpected), str(actual), case_name + ": value matched unexpected " + str(unexpected), 0)
+
+    def check_eq_str(self: TestSuite, case_name: str, actual: str, expected: str) -> None:
+        if actual == expected:
+            self._record(case_name, True, expected, actual, "", 0)
+        else:
+            self._record(case_name, False, expected, actual, case_name + ": expected \"" + expected + "\", got \"" + actual + "\"", 0)
+
+    def check_not_eq_str(self: TestSuite, case_name: str, actual: str, unexpected: str) -> None:
+        if actual != unexpected:
+            self._record(case_name, True, "not \"" + unexpected + "\"", actual, "", 0)
+        else:
+            self._record(case_name, False, "not \"" + unexpected + "\"", actual, case_name + ": value matched unexpected \"" + unexpected + "\"", 0)
+
+    def check_eq_bool(self: TestSuite, case_name: str, actual: bool, expected: bool) -> None:
+        if actual == expected:
+            self._record(case_name, True, str(expected), str(actual), "", 0)
+        else:
+            self._record(case_name, False, str(expected), str(actual), case_name + ": expected " + str(expected) + ", got " + str(actual), 0)
+
+    def check_eq_float(self: TestSuite, case_name: str, actual: float, expected: float, abs_tol: float, rel_tol: float) -> None:
+        diff: float = actual - expected
+        if diff < 0.0:
+            diff = -diff
+        tol: float = abs_tol
+        exp_mag: float = expected
+        if exp_mag < 0.0:
+            exp_mag = -exp_mag
+        rel_margin: float = exp_mag * rel_tol
+        if rel_margin > tol:
+            tol = rel_margin
+        if diff <= tol:
+            self._record(case_name, True, str(expected), str(actual), "", 0)
+        else:
+            self._record(case_name, False, str(expected), str(actual), case_name + ": expected " + str(expected) + " (tol " + str(tol) + "), got " + str(actual), 0)
+
+    def check_contains_str(self: TestSuite, case_name: str, haystack: str, needle: str) -> None:
+        if nox.strings.contains(haystack, needle):
+            self._record(case_name, True, "contains " + needle, haystack, "", 0)
+        else:
+            self._record(case_name, False, "contains " + needle, haystack, case_name + ": \"" + haystack + "\" does not contain \"" + needle + "\"", 0)
+
+    def total_count(self: TestSuite) -> int:
+        return self.summary.total
+
+    def pass_count(self: TestSuite) -> int:
+        return self.summary.passed
+
+    def fail_count(self: TestSuite) -> int:
+        return self.summary.failed
+
+    def skip_count(self: TestSuite) -> int:
+        return self.summary.skipped
+
+    def all_passed(self: TestSuite) -> bool:
+        return self.summary.is_successful()

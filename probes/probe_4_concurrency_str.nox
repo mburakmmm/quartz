@@ -1,0 +1,16 @@
+async def worker_str(name: str, ch: Channel[str]) -> None:
+    await ch.send(name)
+
+async def run_str() -> None:
+    ch: Channel[str] = Channel[str](2)
+    t1: Task[None] = spawn worker_str("first", ch)
+    t2: Task[None] = spawn worker_str("second", ch)
+    r1: str = await ch.recv()
+    r2: str = await ch.recv()
+    print(r1)
+    print(r2)
+    await t1
+    await t2
+
+t: Task[None] = spawn run_str()
+await t

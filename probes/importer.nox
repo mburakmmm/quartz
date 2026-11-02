@@ -1,0 +1,3 @@
+import probes.helper
+
+print(probes.helper.add_two(40))

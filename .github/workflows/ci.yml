@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }} - ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x64
+          - os: linux
+            arch: x64
+            runner: ubuntu-latest
+          # Linux ARM64
+          - os: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          # macOS Apple Silicon ARM64
+          - os: macos
+            arch: arm64
+            runner: macos-latest
+          # Windows x64
+          - os: windows
+            arch: x64
+            runner: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install NOX (Linux / macOS)
+        if: runner.os != 'Windows'
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/mburakmmm/nox-lang/main/install.sh | sh
+          echo "$HOME/.nox-lang/bin" >> $GITHUB_PATH
+
+      - name: Install NOX (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          irm https://raw.githubusercontent.com/mburakmmm/nox-lang/main/install.ps1 | iex
+          "$env:USERPROFILE\.nox-lang\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Verify NOX toolchain
+        run: |
+          noxc version
+
+      - name: Type check Quartz facade
+        run: |
+          noxc check quartz.nox
+
+      - name: Run Quartz test suite
+        run: |
+          noxc test
+
+      - name: Run Quartz CLI entry point
+        run: |
+          noxc run cli/main.nox

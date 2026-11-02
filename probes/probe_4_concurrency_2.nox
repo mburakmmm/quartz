@@ -1,0 +1,19 @@
+async def worker_a(ch: Channel[int]) -> None:
+    await ch.send(100)
+
+async def worker_b(ch: Channel[int]) -> None:
+    await ch.send(200)
+
+async def run_diff() -> None:
+    ch: Channel[int] = Channel[int](2)
+    t1: Task[None] = spawn worker_a(ch)
+    t2: Task[None] = spawn worker_b(ch)
+    r1: int = await ch.recv()
+    r2: int = await ch.recv()
+    print(r1)
+    print(r2)
+    await t1
+    await t2
+
+t: Task[None] = spawn run_diff()
+await t

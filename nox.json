@@ -1,0 +1,8 @@
+{
+  "name": "quartz",
+  "entry": "quartz.nox",
+  "bin": {
+    "name": "quartz",
+    "path": "cli/main.nox"
+  }
+}

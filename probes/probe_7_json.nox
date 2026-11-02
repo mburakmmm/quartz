@@ -1,0 +1,12 @@
+import nox.json
+
+payload: str = "{\"name\": \"quartz\", \"count\": 42, \"large_int\": 9007199254740993, \"active\": true}"
+v: JsonValue = nox.json.parse(payload)
+
+print("is_object: " + str(nox.json.is_object(v)))
+print("name: " + nox.json.as_string(nox.json.object_value(v, 0)))
+print("count: " + str(nox.json.as_number(nox.json.object_value(v, 1))))
+
+large_num: float = nox.json.as_number(nox.json.object_value(v, 2))
+print("large_int parsed as float: " + str(large_num))
+print("dump: " + nox.json.dump(v))

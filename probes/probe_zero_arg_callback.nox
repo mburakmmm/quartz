@@ -1,0 +1,7 @@
+def runner(f: () -> None) -> None:
+    f()
+
+def my_task() -> None:
+    print("callback with 0 args called")
+
+runner(my_task)

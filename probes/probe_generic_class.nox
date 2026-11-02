@@ -1,0 +1,9 @@
+class Box[T]:
+    def __init__(self: Box, val: T) -> None:
+        self.val = val
+
+    def get(self: Box) -> T:
+        return self.val
+
+b: Box[int] = Box(42)
+print(b.get())

@@ -1,0 +1,99 @@
+# Quartz Core — Types and Data Models
+
+STATUS_PASS: str = "PASS"
+STATUS_FAIL: str = "FAIL"
+STATUS_SKIP: str = "SKIP"
+STATUS_ERROR: str = "ERROR"
+STATUS_TIMEOUT: str = "TIMEOUT"
+
+class Failure:
+    message: str
+    expected: str
+    actual: str
+
+    def __init__(self: Failure, message: str, expected: str, actual: str) -> None:
+        self.message = message
+        self.expected = expected
+        self.actual = actual
+
+class TestResult:
+    id: str
+    name: str
+    status: str
+    duration_ms: int
+    message: str
+    failure: Failure | None
+
+    def __init__(self: TestResult, id: str, name: str, status: str, duration_ms: int, message: str, failure: Failure | None) -> None:
+        self.id = id
+        self.name = name
+        self.status = status
+        self.duration_ms = duration_ms
+        self.message = message
+        self.failure = failure
+
+    def is_passed(self: TestResult) -> bool:
+        return self.status == STATUS_PASS
+
+    def is_failed(self: TestResult) -> bool:
+        return self.status == STATUS_FAIL
+
+    def is_skipped(self: TestResult) -> bool:
+        return self.status == STATUS_SKIP
+
+    def is_error(self: TestResult) -> bool:
+        return self.status == STATUS_ERROR or self.status == STATUS_TIMEOUT
+
+class ResourceLimits:
+    timeout_ms: int
+    max_memory_mb: int
+
+    def __init__(self: ResourceLimits, timeout_ms: int, max_memory_mb: int) -> None:
+        self.timeout_ms = timeout_ms
+        self.max_memory_mb = max_memory_mb
+
+class RunnerConfig:
+    filter_pattern: str
+    tag_filter: str
+    stop_on_failure: bool
+    backend: str
+
+    def __init__(self: RunnerConfig, filter_pattern: str, tag_filter: str, stop_on_failure: bool, backend: str) -> None:
+        self.filter_pattern = filter_pattern
+        self.tag_filter = tag_filter
+        self.stop_on_failure = stop_on_failure
+        self.backend = backend
+
+class RunSummary:
+    total: int
+    passed: int
+    failed: int
+    skipped: int
+    errors: int
+    duration_ms: int
+    results: list[TestResult]
+
+    def __init__(self: RunSummary) -> None:
+        self.total = 0
+        self.passed = 0
+        self.failed = 0
+        self.skipped = 0
+        self.errors = 0
+        self.duration_ms = 0
+        self.results = []
+
+    def record(self: RunSummary, result: TestResult) -> None:
+        self.total = self.total + 1
+        self.duration_ms = self.duration_ms + result.duration_ms
+        self.results.append(result)
+        if result.status == STATUS_PASS:
+            self.passed = self.passed + 1
+        elif result.status == STATUS_FAIL:
+            self.failed = self.failed + 1
+        elif result.status == STATUS_SKIP:
+            self.skipped = self.skipped + 1
+        else:
+            self.errors = self.errors + 1
+
+    def is_successful(self: RunSummary) -> bool:
+        return self.failed == 0 and self.errors == 0

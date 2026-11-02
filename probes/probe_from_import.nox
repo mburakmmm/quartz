@@ -1,0 +1,5 @@
+from core.types import STATUS_PASS, STATUS_FAIL, TestResult, RunSummary
+
+res: TestResult = TestResult("c1", STATUS_PASS, 10, "")
+print(res.status)
+print(STATUS_PASS)

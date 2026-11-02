@@ -1,0 +1,7 @@
+import nox.time
+
+t1: nox.time.Instant = nox.time.instant_now()
+nox.time.sleep_ms(15)
+elapsed: int = t1.elapsed_ms()
+print("Elapsed ms >= 10: " + str(elapsed >= 10))
+print("Measured: " + str(elapsed))

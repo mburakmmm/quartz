@@ -1,0 +1,23 @@
+name: Publish to NOX Registry
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  publish:
+    name: Publish Package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install NOX
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/mburakmmm/nox-lang/main/install.sh | sh
+          echo "$HOME/.nox-lang/bin" >> $GITHUB_PATH
+
+      - name: Publish to NOX Registry
+        run: |
+          noxc publish github.com/mburakmmm/quartz --ref ${{ github.ref_name }} --description "Shared test framework for the NOX ecosystem" --tags testing,assertions,property,fuzz,contract,load

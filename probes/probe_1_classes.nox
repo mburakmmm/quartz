@@ -1,0 +1,18 @@
+class BaseItem:
+    def __init__(self: BaseItem, name: str) -> None:
+        self.name = name
+
+    def display(self: BaseItem) -> str:
+        return "Item: " + self.name
+
+class SubItem(BaseItem):
+    def __init__(self: SubItem, name: str, count: int) -> None:
+        self.name = name
+        self.count = count
+
+    def total(self: SubItem) -> int:
+        return self.count * 10
+
+item: SubItem = SubItem("wrench", 5)
+print(item.display())
+print(item.total())

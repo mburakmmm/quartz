@@ -1,0 +1,16 @@
+# Test generic functions and callbacks
+
+def map_int(xs: list[int], f: (int) -> int) -> list[int]:
+    result: list[int] = [0]
+    result.clear()
+    for x in xs:
+        result.append(f(x))
+    return result
+
+def square(n: int) -> int:
+    return n * n
+
+nums: list[int] = [1, 2, 3, 4]
+res: list[int] = map_int(nums, square)
+for r in res:
+    print(r)

@@ -1,0 +1,22 @@
+class CustomError(Exception):
+    def __init__(self: CustomError, msg: str) -> None:
+        self.msg = msg
+
+def test_ex(fail: bool) -> str:
+    cleaned_up: bool = False
+    result: str = "init"
+    try:
+        if fail:
+            raise CustomError("boom")
+        result = "ok"
+    except CustomError as e:
+        result = "caught: " + e.msg
+    finally:
+        cleaned_up = True
+
+    if not cleaned_up:
+        return "cleanup failed"
+    return result
+
+print(test_ex(False))
+print(test_ex(True))

@@ -1,0 +1,186 @@
+# Quartz Core Test Suite — Phase 1 MVP Verification
+from core.types import STATUS_PASS, STATUS_FAIL, STATUS_SKIP, Failure, TestResult, RunSummary
+from core.assert import assert_true, assert_false, assert_eq_int, assert_not_eq_int, assert_eq_str, assert_not_eq_str, assert_eq_bool, assert_eq_float, assert_contains_str, assert_not_contains_str
+from core.suite import TestSuite
+from core.fixture import Fixture, SCOPE_CASE, run_with_fixture
+from core.report import escape_xml, escape_json, redact_secrets, format_junit_xml, format_summary_json, write_junit_report, write_json_report
+import nox.fs
+
+def test_assertions() -> None:
+    # 1. Boolean assertions
+    assert_true(10 > 5, "10 should be greater than 5")
+    assert_false(5 > 10, "5 should not be greater than 10")
+    assert_eq_bool(True, True, "bool eq")
+
+    # 2. Integer assertions
+    assert_eq_int(42, 42, "int equality")
+    assert_not_eq_int(42, 43, "int inequality")
+    assert_eq_int(-100, -100, "negative int equality")
+
+    # 3. String assertions
+    assert_eq_str("quartz", "quartz", "string equality")
+    assert_not_eq_str("quartz", "nox", "string inequality")
+    assert_contains_str("hello quartz framework", "quartz", "string contains")
+    assert_not_contains_str("hello world", "quartz", "string not contains")
+
+    # 4. Float tolerance assertions (AGENTS.md Section 5 rule)
+    assert_eq_float(3.14159, 3.14150, 0.001, 0.001, "float within abs tolerance")
+    assert_eq_float(1000.0, 1000.5, 0.01, 0.001, "float within rel tolerance")
+
+    # 5. Negative assertions (catching expected AssertionError)
+    caught_eq_fail: bool = False
+    try:
+        assert_eq_int(1, 2, "deliberate fail")
+    except AssertionError as e:
+        caught_eq_fail = True
+    assert_true(caught_eq_fail, "assert_eq_int should have raised AssertionError on mismatch")
+
+    caught_float_fail: bool = False
+    try:
+        assert_eq_float(1.0, 2.0, 0.01, 0.01, "deliberate float mismatch")
+    except AssertionError as e:
+        caught_float_fail = True
+    assert_true(caught_float_fail, "assert_eq_float should have raised AssertionError on large diff")
+
+def test_suite_runner() -> None:
+    suite: TestSuite = TestSuite("unit_math")
+    
+    # Non-raising checks accumulate results
+    suite.check_true("t_true", True)
+    suite.check_false("t_false", False)
+    suite.check_eq_int("t_eq_int", 10 + 20, 30)
+    suite.check_not_eq_int("t_not_eq_int", 10, 20)
+    suite.check_eq_str("t_eq_str", "nox", "nox")
+    suite.check_not_eq_str("t_not_eq_str", "nox", "zig")
+    suite.check_eq_bool("t_eq_bool", True, True)
+    suite.check_eq_float("t_float_tol", 2.0001, 2.0, 0.001, 0.001)
+    suite.check_contains_str("t_contains", "quartz-runner", "runner")
+
+    assert_eq_int(suite.total_count(), 9, "all 9 checks recorded")
+    assert_eq_int(suite.pass_count(), 9, "all 9 checks passed")
+    assert_eq_int(suite.fail_count(), 0, "0 failures")
+    assert_true(suite.all_passed(), "suite all_passed")
+
+    # Accumulate a deliberate failure without stopping execution
+    suite.check_eq_int("t_failing_check", 5, 999)
+    assert_eq_int(suite.total_count(), 10, "10 total checks")
+    assert_eq_int(suite.fail_count(), 1, "1 failure recorded")
+    assert_false(suite.all_passed(), "suite should not be all_passed after failure")
+
+def test_suite_filtering() -> None:
+    suite: TestSuite = TestSuite("filter_test")
+    suite.set_filter("target")
+
+    suite.check_true("run_target_1", True)
+    suite.check_true("ignore_other_1", True)
+    suite.check_true("run_target_2", True)
+
+    assert_eq_int(suite.total_count(), 3, "3 total results recorded")
+    assert_eq_int(suite.pass_count(), 2, "2 target checks passed")
+    assert_eq_int(suite.skip_count(), 1, "1 non-target check skipped")
+
+class TempFileFixture(Fixture):
+    path: str
+
+    def __init__(self: TempFileFixture, path: str) -> None:
+        self.name = "TempFileFixture"
+        self.scope = SCOPE_CASE
+        self.is_active = False
+        self.setup_count = 0
+        self.teardown_count = 0
+        self.path = path
+
+    def setup(self: TempFileFixture) -> None:
+        self.is_active = True
+        self.setup_count = self.setup_count + 1
+        nox.fs.write_string(self.path, "fixture-data")
+
+    def teardown(self: TempFileFixture) -> None:
+        self.is_active = False
+        self.teardown_count = self.teardown_count + 1
+        if nox.fs.exists(self.path):
+            nox.fs.remove_file(self.path)
+
+def test_fixture_lifecycle() -> None:
+    fix_path: str = "fixtures/temp_fixture_test.txt"
+    fix: TempFileFixture = TempFileFixture(fix_path)
+
+    # 1. Normal execution with context manager
+    with fix as f:
+        assert_true(fix.is_active, "fixture should be active inside with")
+        assert_true(nox.fs.exists(fix_path), "fixture file should exist in setup")
+
+    assert_false(fix.is_active, "fixture should be inactive outside with")
+    assert_false(nox.fs.exists(fix_path), "fixture file should be cleaned up")
+    assert_eq_int(fix.setup_count, 1, "setup called once")
+    assert_eq_int(fix.teardown_count, 1, "teardown called once")
+
+    # 2. Cleanup guarantee under deliberate error
+    caught_err: bool = False
+    try:
+        with fix as f2:
+            assert_true(fix.is_active, "fixture active")
+            raise ValueError("simulated test error inside fixture")
+    except ValueError as e:
+        caught_err = True
+
+    assert_true(caught_err, "error was caught")
+    assert_false(fix.is_active, "fixture must be inactive after exception")
+    assert_false(nox.fs.exists(fix_path), "fixture file must be deleted on exception")
+    assert_eq_int(fix.teardown_count, 2, "teardown called again on error")
+
+def test_reports_and_redaction() -> None:
+    # 1. Secret redaction test (AGENTS.md Section 0 Rule 8)
+    sensitive: str = "Request header Authorization: Bearer secret_token_xyz for user"
+    redacted: str = redact_secrets(sensitive)
+    assert_false(nox.strings.contains(redacted, "secret_token_xyz"), "secret token must be redacted")
+    assert_contains_str(redacted, "Bearer [REDACTED]", "token must be replaced with [REDACTED]")
+
+    # 2. Summary JSON report formatting
+    summary: RunSummary = RunSummary()
+    res1: TestResult = TestResult("c1", "test_addition", STATUS_PASS, 12, "", None)
+    res2: TestResult = TestResult("c2", "test_auth", STATUS_FAIL, 25, "Bearer secret_abc rejected", None)
+    summary.record(res1)
+    summary.record(res2)
+
+    json_report: str = format_summary_json("run-core-1", "qbe", "2.0.108", summary)
+    assert_contains_str(json_report, "\"schema_version\": \"1\"", "json has schema version")
+    assert_contains_str(json_report, "\"engine\": \"quartz\"", "json engine quartz")
+    assert_contains_str(json_report, "\"status\": \"FAIL\"", "json overall status fail")
+    assert_contains_str(json_report, "[REDACTED]", "secrets redacted in json report")
+
+    # 3. JUnit XML report formatting
+    xml_report: str = format_junit_xml("CoreSuite", summary)
+    assert_contains_str(xml_report, "<testsuite name=\"CoreSuite\"", "xml testsuite tag")
+    assert_contains_str(xml_report, "<testcase name=\"test_addition\"", "xml testcase tag")
+    assert_contains_str(xml_report, "<failure", "xml failure tag")
+    assert_contains_str(xml_report, "[REDACTED]", "secrets redacted in xml report")
+
+    # 4. Atomic file report writing
+    json_path: str = "fixtures/core_summary.json"
+    xml_path: str = "fixtures/core_junit.xml"
+    write_json_report(json_path, "run-disk-1", "qbe", "2.0.108", summary)
+    write_junit_report(xml_path, "CoreDiskSuite", summary)
+
+    assert_true(nox.fs.exists(json_path), "json report written to disk")
+    assert_true(nox.fs.exists(xml_path), "junit report written to disk")
+
+    read_back_json: str = nox.fs.read_to_string(json_path)
+    assert_contains_str(read_back_json, "run-disk-1", "verified written json content")
+
+    read_back_xml: str = nox.fs.read_to_string(xml_path)
+    assert_contains_str(read_back_xml, "CoreDiskSuite", "verified written xml content")
+
+    # Clean up fixture files
+    nox.fs.remove_file(json_path)
+    nox.fs.remove_file(xml_path)
+
+def run_all_core_tests() -> None:
+    test_assertions()
+    test_suite_runner()
+    test_suite_filtering()
+    test_fixture_lifecycle()
+    test_reports_and_redaction()
+    print("quartz core MVP tests: ALL 25+ CHECKS PASSED")
+
+run_all_core_tests()
