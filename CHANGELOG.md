@@ -3,6 +3,23 @@
 All notable changes to the Quartz test framework will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.1] - 2026-11-02 - Phase 7.2: Reliability, Generator Invariants, CLI & Error Accounting Bugfix Release
+
+### Fixed & Hardened
+- **Accurate Error Rate Accounting (`load/metrics.nox`)**: Removed double-counting of timeouts in `LoadMetrics.error_rate()`. Since `self.failed` already includes timeouts, the formula now evaluates `float(self.failed) / float(self.completed)`. Added `unfulfilled_rate()` metric to track failed plus rejected requests over total attempts.
+- **CLI Exit Code & Replay Failure Propagation (`cli/main.nox`)**:
+  - `quartz test [path]`: Subprocess failures now exit with the exact status code (`nox.os.exit(out.status)`), ensuring automated CI workflows fail immediately if test suites fail.
+  - `quartz replay <file.json>`: Evaluates reproduction against the exact counterexample. If the generated candidate does not reproduce the recorded failure, CLI prints `[REPLAY FAILED]` and terminates with exit code 1.
+  - Standardized exit codes across all commands: 0 for success/help, 1 for test or replay failure, 2 for argument/usage syntax error.
+- **Mandatory Generator Runner Self-Validation (`contract/property_contract.nox`)**:
+  - `run_property_contract_test()` and `run_negative_property_contract_test()` now execute `verify_generator_invariant()` on every generated payload before dispatching to HTTP handlers.
+  - Failures in payload generation are classified distinctly as `GENERATOR_ERROR` rather than application contract violations.
+  - Fixed `schema_string(0, 0)`: generator produces `""` (empty string) instead of fallback length when `max_len == 0`. Negative generator produces non-empty string to strictly violate zero-length bounds.
+- **Documentation Code & Specification Parity (`docs/`)**:
+  - `docs/recipes.md`: Corrected constructor signatures and types (`Fixture(name, SCOPE_CASE)`, 4-arg `PropertyConfig`, `PropertyRule`, `ContractTestCase.run_on_handler`, `run_fuzz`, and `Router.get` with `create_nyx_adapter`).
+  - `docs/security.md`: Aligned hard safety limits table with `load/safety.nox` (`HARD_CAP_VIRTUAL_USERS = 20`, `HARD_CAP_RATE_RPS = 100`, `HARD_CAP_IN_FLIGHT = 50`).
+  - `docs/compatibility.md`: Clarified that Windows uses QBE by default while Linux/macOS run dual QBE and LLVM backend validation.
+
 ## [0.8.0] - 2026-11-02 - Phase 7: Production Hardening, Concurrency & Pre-Release Stabilization
 
 ### Added

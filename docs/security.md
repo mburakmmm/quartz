@@ -27,11 +27,11 @@ To ensure stability on shared CI runners and local developer machines, Quartz en
 
 | Parameter | Default Safety Limit | Hard Cap Limit | Behavior on Exceeded |
 |---|---|---|---|
-| **Virtual Users (VU)** | `5` | `10` | Clamped to `HARD_CAP_VIRTUAL_USERS` |
-| **Duration** | `10s` | `60s` | Clamped to `HARD_CAP_DURATION_SECONDS` |
-| **Rate (RPS)** | `10 req/s` | `50 req/s` | Clamped to `HARD_CAP_RATE_RPS` |
-| **In-Flight Requests** | `10` | `20` | Excess arrivals rejected with backpressure |
-| **Task Timeout** | `2000ms` | Bounded per config | Request marked timed out (504 status) |
+| **Virtual Users (VU)** | `5` | `20` | Clamped to `HARD_CAP_VIRTUAL_USERS` |
+| **Duration** | `5s` | `60s` | Clamped to `HARD_CAP_DURATION_SECONDS` |
+| **Rate (RPS)** | `10 req/s` | `100 req/s` | Clamped to `HARD_CAP_RATE_RPS` |
+| **In-Flight Requests** | `10` | `50` | Excess arrivals rejected with backpressure |
+| **Task Timeout** | `2000ms` | `10000ms` | Clamped to `HARD_CAP_TIMEOUT_MS` (504 status) |
 
 ### Circuit Breaker Protection
 

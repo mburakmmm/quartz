@@ -21,31 +21,24 @@ def test_calculator() -> None:
     assert_eq_int(2 + 2, 4, "addition works")
     assert_eq_str("hello " + "world", "hello world", "string concatenation")
     assert_true(len("nox") == 3, "string length")
-    assert_eq_float(3.14159, 3.14150, 0.001, "float within tolerance")
+    assert_eq_float(3.14159, 3.14150, 0.001, 0.001, "float within tolerance")
 ```
 
 ### Setup and Teardown Fixtures
 
-Use `Fixture` to ensure database connections, temp files, or mock servers are reliably torn down, even when assertions fail.
+Use `Fixture` to ensure database connections, temporary files, or mock servers are reliably torn down, even when assertions fail.
 
 ```nox
-from core.fixture import Fixture
+from core.fixture import Fixture, SCOPE_CASE
 from core.assert import assert_true
 
-def setup_db() -> str:
-    # Initialize in-memory resource
-    return "db_active_connection"
-
-def teardown_db() -> None:
-    # Always executed even on test failure
-    print("Database cleaned up")
-
-fixture: Fixture = Fixture(setup_db, teardown_db)
-fixture.enter()
+fixture: Fixture = Fixture("db_connection", SCOPE_CASE)
+fixture.setup()
 try:
-    assert_true(True, "database query verified")
+    # Test logic with active fixture
+    assert_true(fixture.is_active, "database query verified")
 finally:
-    fixture.exit()
+    fixture.teardown()
 ```
 
 ---
@@ -58,22 +51,22 @@ Property-based testing exercises invariant properties across hundreds of boundar
 
 ```nox
 from property.generator import IntGen
-from property.property import PropertyConfig, run_int_property
-from property.shrink import shrink_int
+from property.property import PropertyConfig, PropertyResult, run_int_property
+from property.shrink import shrink_int, ShrinkResultInt
 
 def test_multiplication_commutative() -> None:
     # Generate integers between -1000 and 1000, boundary-biased around 0, 1, -1
-    gen: IntGen = IntGen(-1000, 1000)
-    config: PropertyConfig = PropertyConfig(100, 42, 50)
+    gen: IntGen = IntGen(-1000, 1000, True)
+    config: PropertyConfig = PropertyConfig(100, 5, 42, 5000)
 
     def prop_commutative(x: int) -> bool:
         return (x * 2) == (2 * x)
 
-    res = run_int_property("int_commutative", gen, prop_commutative, config)
-    if not res.passed:
+    res: PropertyResult = run_int_property("int_commutative", config, gen, prop_commutative)
+    if res.status != "PASS":
         # Automatically shrinks to minimal counterexample
-        minimal: int = shrink_int(res.failing_input, prop_commutative, 50)
-        print("Failure shrunk to: " + str(minimal))
+        shrunk: ShrinkResultInt = shrink_int(res.seed, prop_commutative, 50)
+        print("Failure shrunk to: " + str(shrunk.value))
 ```
 
 ### Deterministic Seed Replay
@@ -94,18 +87,25 @@ Fuzz untrusted input parsers (JSON, CSV, protocols) with byte mutations, boundar
 ### Fuzzing a CSV Parser
 
 ```nox
-from fuzz.fuzzer import Fuzzer, FuzzOutcome, OUTCOME_NORMAL, OUTCOME_CRASH
-from fuzz.harness import run_in_process
+from fuzz.fuzzer import run_fuzz, FuzzSummary
+from fuzz.corpus import CorpusManager, default_corpus_config
 
 def parse_csv(data: str) -> None:
     if "TRIGGER_BUG" in data:
         raise Exception("Deliberate parser crash")
 
-fuzzer: Fuzzer = Fuzzer("csv_target")
-fuzzer.add_seed("name,age\nalice,30\n")
+corpus: CorpusManager = CorpusManager(default_corpus_config("csv_target"))
+summary: FuzzSummary = run_fuzz(
+    "csv_target",
+    parse_csv,
+    ["name,age\nalice,30\n"],
+    500,
+    42,
+    corpus,
+    1024
+)
 
-# Run 500 bounded iterations
-fuzzer.run_bounded(parse_csv, 500)
+print("Crashes found: " + str(summary.crashes_found))
 ```
 
 Crashes are deduplicated by error signature and written to `corpus/<target>/crashes/<hash>.json`.
@@ -119,30 +119,37 @@ Contract testing verifies that HTTP responses conform to declared OpenAPI schema
 ### In-Process Handler Contract
 
 ```nox
-from contract.http import build_request, empty_headers, HttpResponse
-from contract.schema import schema_object, schema_string, schema_integer, SchemaField
-from contract.compare import compare_response, ContractCheckResult
+from nox.http import HttpRequest, HttpResponse
+from contract.http import build_request, empty_headers
+from contract.schema import schema_object, schema_string, schema_integer, PropertyRule, SchemaDescriptor
+from contract.runner import ContractTestCase
+from contract.types import ContractCheckResult
 
-def my_api_handler(req) -> HttpResponse:
-    headers: dict[str, str] = {}
-    headers["Content-Type"] = "application/json"
+def my_api_handler(req: HttpRequest) -> HttpResponse:
+    headers: dict[str, str] = {"Content-Type": "application/json"}
     return HttpResponse(200, "{\"id\": 101, \"username\": \"admin\"}", headers)
 
 def test_api_contract() -> None:
     # Declare expected response schema
-    fields: list[SchemaField] = [
-        SchemaField("id", schema_integer(1, 999999), True),
-        SchemaField("username", schema_string(3, 50), True)
+    fields: list[PropertyRule] = [
+        PropertyRule("id", schema_integer(1, 999999, True, True)),
+        PropertyRule("username", schema_string(3, 50))
     ]
-    expected_schema = schema_object(fields, True)
+    expected_schema: SchemaDescriptor = schema_object(fields, ["id", "username"], True)
 
-    req = build_request("GET", "/users/101", "", empty_headers())
-    res = my_api_handler(req)
+    req: HttpRequest = build_request("GET", "/users/101", "", empty_headers())
+    tc: ContractTestCase = ContractTestCase(
+        "users_api_check",
+        req,
+        [200],
+        ["Content-Type"],
+        "application/json",
+        expected_schema
+    )
 
-    result: ContractCheckResult = compare_response(res, [200], expected_schema)
+    result: ContractCheckResult = tc.run_on_handler(my_api_handler)
     if not result.is_valid:
-        for err in result.errors:
-            print("Contract violation: " + err)
+        print("Contract violation: " + result.error_summary())
 ```
 
 ---
@@ -154,16 +161,22 @@ Quartz Load evaluates local HTTP endpoints under closed (virtual users) or open 
 ### Running a Closed Workload
 
 ```nox
-from load.workload import closed_workload
+from nox.http import HttpRequest, HttpResponse
+from contract.http import build_request, empty_headers
+from load.workload import closed_workload, WorkloadConfig
 from load.thresholds import Threshold
-from load.safety import default_safety_limits
+from load.safety import default_safety_limits, SafetyLimits
 from load.executor import run_handler_load_test, LoadTestSummary
 
-workload = closed_workload("api_benchmark", 5, 2, 100) # 5 VUs, 2s duration, max 100 reqs
-thresholds = [
-    Threshold("p95_latency_ms", "<=", 25.0), # 95th percentile under 25ms
-    Threshold("error_rate", "<=", 0.0)       # 0% errors allowed
+workload: WorkloadConfig = closed_workload("api_benchmark", 5, 2, 100) # 5 VUs, 2s duration, max 100 reqs
+thresholds: list[Threshold] = [
+    Threshold("p95", "<=", 25.0),       # 95th percentile under 25ms
+    Threshold("error_rate", "<=", 0.0)  # 0% errors allowed
 ]
+
+def my_api_handler(req: HttpRequest) -> HttpResponse:
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    return HttpResponse(200, "{\"status\": \"ok\"}", headers)
 
 summary: LoadTestSummary = run_handler_load_test(
     workload,
@@ -174,7 +187,7 @@ summary: LoadTestSummary = run_handler_load_test(
 )
 
 print("Passed: " + str(summary.all_passed))
-print("P95 Latency: " + str(summary.metrics.percentile(95.0)) + "ms")
+print("P95 Latency: " + str(summary.metrics.p95()) + "ms")
 ```
 
 ---
@@ -186,34 +199,42 @@ Quartz seamlessly tests web applications built on NOX ecosystem frameworks like 
 ### Nyx Router Contract Testing
 
 ```nox
+from nox.router import Router, Context
+from nox.http import HttpRequest, HttpResponse
 from adapters.nyx import create_nyx_adapter, NyxAdapter
-from contract.http import build_request, empty_headers, HttpResponse
+from contract.http import build_request, empty_headers
 
-adapter: NyxAdapter = create_nyx_adapter()
-adapter.register_route("GET", "/health", lambda req: HttpResponse(200, "{\"status\":\"ok\"}", {}))
+router: Router = Router()
+def health_handler(ctx: Context) -> HttpResponse:
+    return HttpResponse(200, "{\"status\":\"ok\"}", {})
+router.get("/health", health_handler)
 
-res: HttpResponse = adapter.handle(build_request("GET", "/health", "", empty_headers()))
+adapter: NyxAdapter = create_nyx_adapter(router)
+res: HttpResponse = adapter.dispatch(build_request("GET", "/health", "", empty_headers()))
 assert res.status == 200
 ```
 
 ### Aether Middleware Pipeline Testing
 
 ```nox
+from nox.router import Router, Context
+from nox.http import HttpRequest, HttpResponse
 from adapters.aether import create_aether_adapter, AetherAdapter
-from contract.http import build_request, empty_headers, HttpResponse
+from contract.http import build_request, empty_headers
 
-adapter: AetherAdapter = create_aether_adapter()
+router: Router = Router()
+def secure_handler(ctx: Context) -> HttpResponse:
+    return HttpResponse(200, "{\"secret\":42}", {})
+router.get("/secure", secure_handler)
 
-def auth_middleware(req):
-    # Short-circuit unauthorized requests
+adapter: AetherAdapter = create_aether_adapter(router)
+
+def auth_middleware(req: HttpRequest) -> HttpResponse | None:
     if "Authorization" not in req.headers:
         return HttpResponse(401, "{\"error\":\"unauthorized\"}", {})
     return None
 
 adapter.use_before(auth_middleware)
-adapter.register_route("GET", "/secure", lambda req: HttpResponse(200, "{\"secret\":42}", {}))
-
-# Verify unauthorized response
-res = adapter.handle(build_request("GET", "/secure", "", empty_headers()))
+res: HttpResponse = adapter.dispatch(build_request("GET", "/secure", "", empty_headers()))
 assert res.status == 401
 ```

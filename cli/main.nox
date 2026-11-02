@@ -151,11 +151,13 @@ def cmd_replay() -> None:
     if nox.os.arg_count() < 3:
         print("Error: replay command requires a target failure artifact file path.")
         print("Usage: quartz replay <path/to/artifact.json>")
+        nox.os.exit(2)
         return
     path: str = nox.os.arg(2)
     print("Loading failure artifact from: " + path)
     if not nox.fs.exists(path):
         print("Error: artifact file not found: " + path)
+        nox.os.exit(2)
         return
     content: str = nox.fs.read_to_string(path)
     try:
@@ -172,20 +174,36 @@ def cmd_replay() -> None:
         print("  Test ID: " + test_id)
         print("  Seed: " + str(seed_val) + " | Case Index: " + str(case_idx))
 
+        orig_str: str = ""
+        if json_has_key(artifact, "original_counterexample"):
+            orig_node: JsonValue = json_get_key(artifact, "original_counterexample")
+            orig_str = orig_node.s
+            print("  Original counterexample: " + orig_str)
+
         if json_has_key(artifact, "shrunk_counterexample"):
             sc_node: JsonValue = json_get_key(artifact, "shrunk_counterexample")
-            print("  Stored counterexample: " + sc_node.s)
-
-        def check_reproduced(val: int) -> bool:
-            return True
+            print("  Shrunk counterexample: " + sc_node.s)
 
         rep_gen: IntGen = IntGen(-100, 100, True)
+
+        # Predicate reproduces failure if the generated candidate matches the failing counterexample
+        def check_reproduced(val: int) -> bool:
+            if len(orig_str) > 0:
+                # If val matches the recorded failure counterexample, predicate returns False to trigger reproduction
+                return (str(val) != orig_str)
+            return False
+
         replayed_ok: bool = replay_int_case(test_id, seed_val, case_idx, rep_gen, check_reproduced)
-        print("  Replay executed: " + ("PASS" if replayed_ok else "FAIL"))
-        print("[REPLAY SUCCESS] Deterministic counterexample reproduction verified.")
+        if replayed_ok:
+            print("  Replay executed: PASS")
+            print("[REPLAY SUCCESS] Deterministic counterexample reproduction verified.")
+        else:
+            print("  Replay executed: FAIL")
+            print("[REPLAY FAILED] Counterexample could not be reproduced from seed and case index.")
+            nox.os.exit(1)
     except Exception as e:
-        print("Raw Artifact Content:")
-        print(content)
+        print("Error parsing failure artifact: " + str(e))
+        nox.os.exit(1)
 
 def cmd_contract() -> None:
     if nox.os.arg_count() >= 3:
@@ -193,6 +211,7 @@ def cmd_contract() -> None:
         print("Loading contract specification: " + spec_path)
         if not nox.fs.exists(spec_path):
             print("Error: specification file not found: " + spec_path)
+            nox.os.exit(2)
             return
         content: str = nox.fs.read_to_string(spec_path)
         try:
@@ -206,6 +225,7 @@ def cmd_contract() -> None:
                 i = i + 1
         except Exception as e:
             print("Failed to parse OpenAPI contract: " + str(e))
+            nox.os.exit(1)
     else:
         print("Running in-process API contract check against mock endpoint...")
         sample_schema: SchemaDescriptor = schema_object([
@@ -215,7 +235,7 @@ def cmd_contract() -> None:
 
         def demo_handler(req: HttpRequest) -> HttpResponse:
             h: dict[str, str] = {"Content-Type": "application/json"}
-            return HttpResponse(200, "{\"healthy\": true, \"version\": \"0.7.1\"}", h)
+            return HttpResponse(200, "{\"healthy\": true, \"version\": \"0.8.1\"}", h)
 
         req: HttpRequest = build_request("GET", "/health", "", empty_headers())
         tc: ContractTestCase = ContractTestCase("demo_health_check", req, [200], ["Content-Type"], "application/json", sample_schema)
@@ -226,6 +246,7 @@ def cmd_contract() -> None:
             print("Contract verified successfully.")
         else:
             print("Contract check failed: " + check.error_summary())
+            nox.os.exit(1)
 
 def cmd_test() -> None:
     print("Executing Quartz test suite...")
@@ -253,9 +274,11 @@ def cmd_test() -> None:
         if out.success():
             print("All test suites executed successfully.")
         else:
-            print("Note: Run 'noxc test' directly in project directory to execute all test suites.")
+            print("Test execution failed with status " + str(out.status) + ".")
+            nox.os.exit(out.status if out.status != 0 else 1)
     except Exception as e:
-        print("Note: Process spawn unavailable on current path/host. Run 'noxc test' directly.")
+        print("Note: Process execution failed: " + str(e))
+        nox.os.exit(1)
 
 def cmd_report() -> None:
     report_dir: str = "artifacts"
@@ -290,7 +313,7 @@ def main_cli() -> None:
     count: int = nox.os.arg_count()
     if count <= 1:
         print_usage()
-        return
+        nox.os.exit(0)
 
     subcmd: str = nox.os.arg(1)
     if subcmd == "version" or subcmd == "--version" or subcmd == "-v":
@@ -313,5 +336,6 @@ def main_cli() -> None:
         cmd_report()
     else:
         print("Unknown command: '" + subcmd + "'. Run 'quartz help' for available commands.")
+        nox.os.exit(2)
 
 main_cli()

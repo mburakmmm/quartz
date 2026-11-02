@@ -50,6 +50,8 @@ class PropertyContractResult:
         return s
 
 def _gen_valid_string(rng: Prng, min_l: int, max_l: int) -> str:
+    if max_l <= 0:
+        return ""
     target_len: int = min_l
     if max_l > min_l:
         target_len = rng.next_int_range(min_l, max_l)
@@ -80,8 +82,10 @@ def generate_valid_json_payload(rng: Prng, schema: SchemaDescriptor) -> str:
         if len(schema.enum_values) > 0:
             idx: int = rng.choose_index(len(schema.enum_values))
             return "\"" + schema.enum_values[idx] + "\""
-        min_l: int = schema.min_len if schema.min_len > 0 else 1
-        max_l: int = schema.max_len if schema.max_len > 0 else 16
+        min_l: int = schema.min_len if schema.min_len >= 0 else 0
+        max_l: int = schema.max_len if schema.max_len >= 0 else (min_l + 16)
+        if max_l < min_l:
+            max_l = min_l
         s_val: str = _gen_valid_string(rng, min_l, max_l)
         return "\"" + s_val + "\""
     elif t == SCHEMA_BOOLEAN:
@@ -132,7 +136,9 @@ def generate_invalid_json_payload(rng: Prng, schema: SchemaDescriptor) -> str:
     elif t == SCHEMA_NUMBER:
         return "\"not_a_number\""
     elif t == SCHEMA_STRING:
-        if schema.max_len > 0:
+        if schema.max_len == 0:
+            return "\"violates_zero_max_len\""
+        elif schema.max_len > 0:
             return "\"" + _gen_valid_string(rng, schema.max_len + 5, schema.max_len + 20) + "\""
         elif len(schema.enum_values) > 0:
             return "\"unknown_enum_choice_999\""
@@ -206,6 +212,12 @@ def run_property_contract_test(
         if request_schema != None:
             body = generate_valid_json_payload(rng, request_schema)
             req_headers["Content-Type"] = "application/json"
+            # Mandatory generator self-validation: ensure generated payload strictly conforms to request_schema
+            if not verify_generator_invariant(request_schema, body, True):
+                failed = failed + 1
+                counterexample_in = body
+                counterexample_err = "GENERATOR_ERROR: valid generator produced payload violating request schema"
+                return PropertyContractResult(c + 1, passed, failed, counterexample_in, counterexample_err, seed)
 
         req: HttpRequest = build_request(method, path, body, req_headers)
         exec_res: HandlerExecutionResult = execute_handler(handler, req)
@@ -270,6 +282,13 @@ def run_negative_property_contract_test(
         rng: Prng = Prng(case_seed)
 
         invalid_body: str = generate_invalid_json_payload(rng, request_schema)
+        # Mandatory generator self-validation: ensure negative generator strictly violates request_schema
+        if not verify_generator_invariant(request_schema, invalid_body, False):
+            failed = failed + 1
+            counterexample_in = invalid_body
+            counterexample_err = "GENERATOR_ERROR: negative generator produced payload that unexpectedly satisfied schema"
+            return PropertyContractResult(c + 1, passed, failed, counterexample_in, counterexample_err, seed)
+
         req_headers: dict[str, str] = {"Content-Type": "application/json"}
         req: HttpRequest = build_request(method, path, invalid_body, req_headers)
         exec_res: HandlerExecutionResult = execute_handler(handler, req)

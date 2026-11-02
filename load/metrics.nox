@@ -154,7 +154,13 @@ class LoadMetrics:
     def error_rate(self: LoadMetrics) -> float:
         if self.completed <= 0:
             return 0.0
-        return float(self.failed + self.timed_out) / float(self.completed)
+        return float(self.failed) / float(self.completed)
+
+    def unfulfilled_rate(self: LoadMetrics) -> float:
+        total: int = self.completed + self.rejected
+        if total <= 0:
+            return 0.0
+        return float(self.failed + self.rejected) / float(total)
 
     def to_json(self: LoadMetrics, total_duration_ms: int) -> str:
         s: str = "{"
@@ -173,6 +179,7 @@ class LoadMetrics:
         s = s + "\"p95_latency_ms\": " + str(self.p95()) + ", "
         s = s + "\"p99_latency_ms\": " + str(self.p99()) + ", "
         s = s + "\"throughput_rps\": " + str(self.throughput_rps(total_duration_ms)) + ", "
-        s = s + "\"error_rate\": " + str(self.error_rate())
+        s = s + "\"error_rate\": " + str(self.error_rate()) + ", "
+        s = s + "\"unfulfilled_rate\": " + str(self.unfulfilled_rate())
         s = s + "}"
         return s

@@ -369,6 +369,37 @@
 
 ---
 
+## Phase 7.2: v0.8.1 — Reliability, Generator Invariants, CLI & Error Accounting Bugfix Release
+*Objective: Resolve external audit findings on timeout double-counting, CLI exit codes and failure verification, generator runner self-validation, schema_string(0, 0), and documentation code discrepancies before advancing phases.*
+
+- [x] **7.2.1 Accurate Latency & Error Rate Accounting (`load/metrics.nox`)**
+  - [x] Fix `error_rate()` calculation: remove redundant addition of `self.timed_out` since `self.failed` already includes timeouts.
+  - [x] Add `unfulfilled_rate()` to track failed + rejected requests over total attempts.
+  - [x] Add regression test in `tests/load_metrics_test.nox` verifying exact 100% error rate on timeout (1 completed, 1 timeout -> 1.0, not 2.0).
+- [x] **7.2.2 CLI Test & Replay Accuracy and Exit Codes (`cli/main.nox`)**
+  - [x] `quartz test`: Propagate subprocess exit code on test failure (`nox.os.exit(out.status)`), guaranteeing CI fails if any test fails.
+  - [x] `quartz replay <file.json>`: Verify candidate against original counterexample; fail with `[REPLAY FAILED]` and exit code 1 if reproduction fails.
+  - [x] Standardize CLI exit codes: 0 for success/help, 1 for test or replay failure, 2 for argument/usage syntax errors.
+  - [x] Add CI steps in `.github/workflows/ci.yml` verifying CLI commands directly (`quartz version`, `quartz help`, `quartz test`).
+- [x] **7.2.3 Mandatory Generator Runner Self-Validation & Boundary Compliance (`contract/property_contract.nox`)**
+  - [x] Hook `verify_generator_invariant()` into `run_property_contract_test()` and `run_negative_property_contract_test()`.
+  - [x] Classify generator generation errors distinctly as `GENERATOR_ERROR` rather than application contract failures.
+  - [x] Fix `schema_string(0, 0)`: properly generate `""` (empty string) instead of fallback 1-16 characters when `max_len == 0`.
+  - [x] In `generate_invalid_json_payload`, generate non-empty string when `max_len == 0` to properly violate the zero-length bound.
+- [x] **7.2.4 Documentation Code & Specification Parity (`docs/`)**
+  - [x] `docs/recipes.md`: Align code snippets with actual Quartz APIs (`Fixture(name, SCOPE_CASE)`, 4-arg `PropertyConfig`, `PropertyRule`, `validate_response`, `run_fuzz`, `Router.get` + `create_nyx_adapter`).
+  - [x] `docs/security.md`: Align hard safety limits table with `load/safety.nox` (`HARD_CAP_VIRTUAL_USERS = 20`, `HARD_CAP_RATE_RPS = 100`, etc.).
+  - [x] `docs/compatibility.md`: Clarify that Windows CI tests use QBE by default unless Clang is on PATH, while Linux and macOS run both QBE and LLVM.
+- [x] **7.2.5 Verification & Bugfix Release Packaging (v0.8.1)**
+  - [x] Update facade `quartz.nox` to `0.8.1`.
+  - [x] Run full test suite: 12/12 test suites passing cleanly via `noxc test`.
+  - [x] Update `CHANGELOG.md` with detailed v0.8.1 release notes.
+  - [x] Tag `v0.8.1`, push to GitHub, verify CI green, and run `noxc publish`.
+
+*Phase 7.2 Exit Gate:* PASSED. Zero double-counted timeouts; generator self-validation active in all runs; CLI returns valid exit codes on failure; documentation 100% compliant with source API; 12/12 tests passing.
+
+---
+
 ## Execution Log & Audit Trail
 
 | Date | Phase | Task | Action / Command | Result / Evidence | Status |
@@ -420,3 +451,5 @@
 | 2026-11-02 | Phase 7 | Documentation Suite | `docs/` | `recipes.md`, `security.md`, `compatibility.md`, ADR-006 to ADR-011 | [x] DONE |
 | 2026-11-02 | Phase 7 | Stress Verification | `tests/stress_test.nox` | 1000-case algebraic property, shrink convergence, deep schema, 12/12 pass | [x] DONE |
 | 2026-11-02 | Phase 7 | Release Packaging | `quartz.nox`, `CHANGELOG.md` | Version bumped to `0.8.0`, adapters exported, ready for publish | [x] DONE |
+| 2026-11-02 | Phase 7.2 | Bugfixes & Hardening | `load/`, `cli/`, `contract/`, `docs/` | Timeout double-count fix, CLI exit codes, generator self-validation, docs parity | [x] DONE |
+| 2026-11-02 | Phase 7.2 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 12/12 tests pass, zero-length string test, CLI checks in CI, published v0.8.1 | [x] DONE |

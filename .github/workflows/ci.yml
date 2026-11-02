@@ -73,6 +73,8 @@ jobs:
         run: |
           noxc run tests/backend_matrix_test.nox --backend llvm
 
-      - name: Run Quartz CLI entry point
+      - name: Verify Quartz CLI commands
         run: |
-          noxc run cli/main.nox
+          noxc run cli/main.nox -- version
+          noxc run cli/main.nox -- help
+          noxc run cli/main.nox -- test tests/baseline_test.nox

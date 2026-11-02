@@ -146,11 +146,31 @@ def test_high_latency_overflow() -> None:
     json_str: str = m_ext.to_json(1000)
     assert_contains_str(json_str, "\"overflow_count\": 5", "json includes overflow_count")
 
+def test_exact_error_rate_calculation() -> None:
+    m: LoadMetrics = LoadMetrics()
+    # 1 timeout request: must yield exactly 1.0 (100%) error rate, NEVER 2.0 (200%)
+    m.record_scheduled()
+    m.record_result(504, 2500, True, False)
+
+    assert_eq_int(m.completed, 1, "1 completed")
+    assert_eq_int(m.timed_out, 1, "1 timed out")
+    assert_eq_int(m.failed, 1, "1 failed")
+    assert_eq_float(m.error_rate(), 1.0, 0.0001, 0.0001, "error rate must be exactly 100%, not 200%")
+
+    # Now add 1 successful request: 2 completed, 1 failed -> exactly 0.5 (50%)
+    m.record_scheduled()
+    m.record_result(200, 50, False, True)
+
+    assert_eq_int(m.completed, 2, "2 completed")
+    assert_eq_int(m.successful, 1, "1 successful")
+    assert_eq_float(m.error_rate(), 0.5, 0.0001, 0.0001, "error rate must be exactly 50%")
+
 def run_all_load_metrics_tests() -> None:
     test_histogram_bucketing()
     test_percentile_calculations_and_monotonicity()
     test_threshold_evaluations()
     test_high_latency_overflow()
+    test_exact_error_rate_calculation()
     print("quartz load metrics test: ALL PASS")
 
 run_all_load_metrics_tests()

@@ -13,7 +13,7 @@ Quartz is tested and verified across modern operating systems, hardware architec
 
 | Platform | Architecture | CI Status | Compiler Backend | Notes |
 |---|---|---|---|---|
-| **Windows** | `x86_64` | `VERIFIED / GREEN` | `QBE` & `LLVM` | Primary Windows testbed. Automatic fallback to QBE when Clang is not present on PATH. |
+| **Windows** | `x86_64` | `VERIFIED / GREEN` | `QBE` (Primary, CI) / `LLVM` (Optional) | Primary Windows development testbed. Uses QBE by default (no Clang required). CI runs QBE for Windows; Linux and macOS run both QBE and LLVM. |
 | **macOS** | `Apple Silicon (ARM64)` | `VERIFIED / GREEN` | `LLVM` & `QBE` | Developed by NOX author on M4 Mac. M:N work-stealing threading fully active. |
 | **Linux** | `x86_64 (Ubuntu)` | `VERIFIED / GREEN` | `QBE` & `LLVM` | Standard cloud CI runner environment. |
 | **Linux** | `ARM64 (Ubuntu)` | `VERIFIED / GREEN` | `QBE` & `LLVM` | Verified via GitHub Actions multi-arch runners. |

@@ -147,6 +147,22 @@ def test_generator_array_bounds_and_invariants() -> None:
     inv_errs: list[str] = validate_schema(arr_schema, parsed_inv, "$")
     assert_true(len(inv_errs) > 0, "invalid array payload must produce schema errors")
 
+def test_zero_length_string_generator() -> None:
+    s_schema: SchemaDescriptor = schema_string(0, 0)
+    rng: Prng = Prng(888)
+    # Valid generation for schema_string(0, 0) must produce ""
+    val_payload: str = generate_valid_json_payload(rng, s_schema)
+    assert_eq_str(val_payload, "\"\"", "schema_string(0, 0) valid payload must be empty string \"\"")
+    parsed_val: JsonValue = nox.json.parse(val_payload)
+    errs_val: list[str] = validate_schema(s_schema, parsed_val, "$")
+    assert_eq_int(len(errs_val), 0, "empty string valid against schema_string(0, 0)")
+
+    # Invalid generation for schema_string(0, 0) must produce non-empty string
+    inv_payload: str = generate_invalid_json_payload(rng, s_schema)
+    parsed_inv: JsonValue = nox.json.parse(inv_payload)
+    errs_inv: list[str] = validate_schema(s_schema, parsed_inv, "$")
+    assert_true(len(errs_inv) > 0, "invalid string payload must violate schema_string(0, 0)")
+
 def test_nyx_and_aether_adapters() -> None:
     router: Router = Router()
 
@@ -195,6 +211,7 @@ test_prng_golden_determinism()
 test_monotonic_clock_progress()
 test_json_and_schema_validation()
 test_generator_array_bounds_and_invariants()
+test_zero_length_string_generator()
 test_property_driven_contract_execution()
 test_nyx_and_aether_adapters()
 print("quartz backend matrix test: ALL PASS")
