@@ -1,0 +1,67 @@
+import nox.time
+from core.prng import Prng
+from fuzz.harness import run_in_process, FuzzOutcome
+from fuzz.mutation import mutate
+from fuzz.corpus import CorpusManager
+from fuzz.minimize import minimize_crash, MinimizationResult
+
+class FuzzSummary:
+    target_name: str
+    total_cases: int
+    crashes_found: int
+    unique_crashes: int
+    duration_ms: int
+
+    def __init__(self: FuzzSummary, target: str, cases: int, crashes: int, unique: int, duration_ms: int) -> None:
+        self.target_name = target
+        self.total_cases = cases
+        self.crashes_found = crashes
+        self.unique_crashes = unique
+        self.duration_ms = duration_ms
+
+def run_fuzz(target_name: str, target_func: (str) -> None, initial_seeds: list[str], iterations: int, seed: int, corpus: CorpusManager, max_len: int) -> FuzzSummary:
+    t0_ms: int = nox.time.now_ms()
+    prng: Prng = Prng(seed)
+
+    # Initialize corpus with initial seeds
+    i: int = 0
+    while i < len(initial_seeds):
+        corpus.add_seed(initial_seeds[i])
+        i = i + 1
+
+    current_seeds: list[str] = corpus.load_seeds()
+    if len(current_seeds) == 0:
+        current_seeds.append("INITIAL_SEED")
+
+    crashes_total: int = 0
+    unique_crashes: int = 0
+    case_idx: int = 0
+
+    while case_idx < iterations:
+        # Pick a base input from seeds
+        base_input: str = current_seeds[prng.choose_index(len(current_seeds))]
+        # Mutate
+        candidate: str = mutate(base_input, prng, max_len)
+
+        # Execute
+        outcome: FuzzOutcome = run_in_process(target_func, candidate)
+
+        if outcome.is_failure():
+            crashes_total = crashes_total + 1
+            if corpus.is_new_signature(outcome.signature):
+                unique_crashes = unique_crashes + 1
+                # Minimize candidate
+                min_res: MinimizationResult = minimize_crash(target_func, candidate, outcome.signature, 100)
+                # Save minimized crash artifact
+                corpus.save_crash_artifact(min_res.minimized_input, outcome, seed, case_idx)
+        else:
+            # If normal and within limits, occasionally add interesting candidate to seeds
+            if len(candidate) > 0 and len(current_seeds) < corpus.config.max_files and (case_idx % 10 == 0):
+                corpus.add_seed(candidate)
+                current_seeds.append(candidate)
+
+        case_idx = case_idx + 1
+
+    t1_ms: int = nox.time.now_ms()
+    elapsed: int = t1_ms - t0_ms
+    return FuzzSummary(target_name, case_idx, crashes_total, unique_crashes, elapsed)

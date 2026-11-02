@@ -1,0 +1,87 @@
+from fuzz.harness import run_in_process, FuzzOutcome
+
+class MinimizationResult:
+    original_input: str
+    minimized_input: str
+    original_len: int
+    minimized_len: int
+    steps: int
+    signature: str
+    reproduced: bool
+
+    def __init__(self: MinimizationResult, orig: str, min_inp: str, orig_len: int, min_len: int, steps: int, sig: str, repro: bool) -> None:
+        self.original_input = orig
+        self.minimized_input = min_inp
+        self.original_len = orig_len
+        self.minimized_len = min_len
+        self.steps = steps
+        self.signature = sig
+        self.reproduced = repro
+
+def delete_chunk(s: str, start: int, end: int) -> str:
+    if start < 0:
+        start = 0
+    if end > len(s):
+        end = len(s)
+    if start >= end:
+        return s
+    left: str = s[0:start]
+    right: str = s[end:len(s)]
+    return left + right
+
+def minimize_crash(target_func: (str) -> None, failing_input: str, expected_signature: str, max_steps: int) -> MinimizationResult:
+    orig_len: int = len(failing_input)
+    current: str = failing_input
+    steps: int = 0
+
+    # 1. Verify baseline reproduction
+    initial_outcome: FuzzOutcome = run_in_process(target_func, current)
+    if not initial_outcome.is_failure() or initial_outcome.signature != expected_signature:
+        return MinimizationResult(failing_input, current, orig_len, len(current), 0, initial_outcome.signature, False)
+
+    # 2. Chunk-based reduction (delta-debugging)
+    k: int = 2
+    while steps < max_steps and len(current) > 1 and k <= len(current):
+        chunk_size: int = len(current) // k
+        if chunk_size < 1:
+            chunk_size = 1
+        
+        improved: bool = False
+        i: int = 0
+        while i < k and steps < max_steps:
+            start: int = i * chunk_size
+            end: int = start + chunk_size
+            if end > len(current):
+                end = len(current)
+
+            candidate: str = delete_chunk(current, start, end)
+            steps = steps + 1
+
+            cand_outcome: FuzzOutcome = run_in_process(target_func, candidate)
+            if cand_outcome.is_failure() and cand_outcome.signature == expected_signature:
+                current = candidate
+                improved = True
+                k = 2
+                break
+            i = i + 1
+
+        if not improved:
+            if k == len(current):
+                break
+            k = k * 2
+            if k > len(current):
+                k = len(current)
+
+    # 3. Fine-grained single character removal pass
+    idx: int = 0
+    while idx < len(current) and steps < max_steps:
+        candidate_single: str = delete_chunk(current, idx, idx + 1)
+        steps = steps + 1
+        cand_outcome_single: FuzzOutcome = run_in_process(target_func, candidate_single)
+        if cand_outcome_single.is_failure() and cand_outcome_single.signature == expected_signature:
+            current = candidate_single
+            # do not advance idx since current is now shorter
+        else:
+            idx = idx + 1
+
+    return MinimizationResult(failing_input, current, orig_len, len(current), steps, expected_signature, True)

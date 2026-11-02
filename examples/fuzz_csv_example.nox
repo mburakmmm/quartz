@@ -1,0 +1,30 @@
+# Quartz Fuzzing Example: Fuzzing a CSV Parser
+import nox.strings
+from fuzz.corpus import CorpusManager, default_corpus_config
+from fuzz.fuzzer import run_fuzz, FuzzSummary
+
+def vulnerable_csv_parser(data: str) -> None:
+    lines: list[str] = nox.strings.split(data, "\n")
+    i: int = 0
+    while i < len(lines):
+        line: str = lines[i]
+        cols: list[str] = nox.strings.split(line, ",")
+        if len(cols) > 0 and cols[0] == "CRASH":
+            assert False, "unhandled crash token in CSV row"
+        i = i + 1
+
+def run_example() -> None:
+    print("Starting Quartz CSV Parser Fuzzing Example...")
+    cm: CorpusManager = CorpusManager("csv_parser", "fixtures/corpus", default_corpus_config())
+    initial_seeds: list[str] = [
+        "name,age,city\nAlice,30,Istanbul\nBob,25,Ankara",
+        "header1,header2\nval1,val2"
+    ]
+
+    summary: FuzzSummary = run_fuzz("csv_parser", vulnerable_csv_parser, initial_seeds, 100, 4242, cm, 256)
+    print("Fuzzing finished!")
+    print("Total cases: " + str(summary.total_cases))
+    print("Crashes found: " + str(summary.crashes_found))
+    print("Duration (ms): " + str(summary.duration_ms))
+
+run_example()

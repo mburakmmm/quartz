@@ -3,6 +3,18 @@
 All notable changes to the Quartz test framework will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-11-02 - Phase 3: Fuzz Engine & Corpus Management
+
+### Added
+- **Fuzz Target Harness (`fuzz/harness.nox`)**: `FuzzOutcome` descriptor, execution status classification (`NORMAL`, `HANDLED_REJECTION`, `ASSERTION_VIOLATION`, `TIMEOUT`, `CRASH`), in-process target harness (`run_in_process`) with monotonic nanosecond timing, and out-of-process harness (`run_out_of_process`) with bounded process timeouts.
+- **Mutation Engine (`fuzz/mutation.nox`)**: Bounded bit flips, byte flips, insertions, deletions, duplications, byte swaps, splicing, boundary integer/float injections (`INT64_MIN`, `INT64_MAX`, `2^53`, `NaN`, `Infinity`), delimiter injections, and structure-aware mutations for JSON and CSV.
+- **Corpus Management (`fuzz/corpus.nox`)**: Deterministic directory hierarchy (`corpus/<target>/{seeds, crashes, timeouts, regressions}`), content-derived FNV-1a hexadecimal stable IDs, atomic seed/crash writing, and hard resource bounds (`CorpusConfig`).
+- **Crash Minimization (`fuzz/minimize.nox`)**: Bounded delta-debugging crash minimizer preserving the original failure signature (`minimize_crash`).
+- **Fuzzer Driver (`fuzz/fuzzer.nox`)**: Iterative bounded fuzz loop (`run_fuzz`), automatic crash capture, deduplication by signature, crash minimization, and summary statistics (`FuzzSummary`).
+- **Example (`examples/fuzz_csv_example.nox`)**: Runnable example demonstrating CSV parser fuzzing with custom seeds.
+- **Test Suite (`tests/fuzz_test.nox`)**: Comprehensive test suite verifying target classification, mutation determinism and length bounds, corpus lifecycle, delta-debugging crash minimization down to exact crash tokens, and parser fuzzing sessions.
+
+
 ## [0.2.0] - 2026-11-02 - Phase 2: Property Engine & Deterministic Replay
 
 ### Added

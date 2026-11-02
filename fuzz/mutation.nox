@@ -1,0 +1,220 @@
+import nox.strings
+from core.prng import Prng
+
+def clamp_len(s: str, max_len: int) -> str:
+    if len(s) > max_len:
+        return s[0:max_len]
+    return s
+
+def replace_at(s: str, idx: int, replacement: str) -> str:
+    if idx < 0 or idx >= len(s):
+        return s
+    left: str = s[0:idx]
+    right: str = s[idx + 1:len(s)]
+    return left + replacement + right
+
+def insert_at(s: str, idx: int, insertion: str) -> str:
+    if idx < 0:
+        idx = 0
+    if idx > len(s):
+        idx = len(s)
+    left: str = s[0:idx]
+    right: str = s[idx:len(s)]
+    return left + insertion + right
+
+def delete_slice(s: str, start: int, end: int) -> str:
+    if start < 0:
+        start = 0
+    if end > len(s):
+        end = len(s)
+    if start >= end:
+        return s
+    left: str = s[0:start]
+    right: str = s[end:len(s)]
+    return left + right
+
+def get_boundary_numbers() -> list[str]:
+    nums: list[str] = [
+        "0",
+        "-1",
+        "1",
+        "2147483647",
+        "-2147483648",
+        "9223372036854775807",
+        "-9223372036854775808",
+        "9007199254740992",
+        "1e308",
+        "-1e308",
+        "NaN",
+        "Infinity",
+        "-Infinity"
+    ]
+    return nums
+
+def get_boundary_delimiters() -> list[str]:
+    delims: list[str] = [
+        "\"",
+        "'",
+        ",",
+        ";",
+        ":",
+        "\n",
+        "\r",
+        "\t",
+        "\\",
+        "{",
+        "}",
+        "[",
+        "]",
+        "(",
+        ")",
+        "<",
+        ">",
+        "\x00"
+    ]
+    return delims
+
+def mutate_byte_flip(data: str, prng: Prng) -> str:
+    if len(data) == 0:
+        return "A"
+    idx: int = prng.choose_index(len(data))
+    old_b: int = nox.strings.byte_at(data, idx)
+    bit: int = prng.choose_index(8)
+    mask: int = 1 << bit
+    new_b: int = old_b ^ mask
+    new_char: str = nox.strings.char_from_byte(new_b)
+    return replace_at(data, idx, new_char)
+
+def mutate_byte_insert(data: str, prng: Prng, max_len: int) -> str:
+    if len(data) >= max_len:
+        return data
+    idx: int = prng.choose_index(len(data) + 1)
+    b: int = prng.choose_index(256)
+    ch: str = nox.strings.char_from_byte(b)
+    res: str = insert_at(data, idx, ch)
+    return clamp_len(res, max_len)
+
+def mutate_byte_delete(data: str, prng: Prng) -> str:
+    if len(data) <= 1:
+        return ""
+    idx: int = prng.choose_index(len(data))
+    count: int = prng.next_int_range(1, 4)
+    end_idx: int = idx + count
+    if end_idx > len(data):
+        end_idx = len(data)
+    return delete_slice(data, idx, end_idx)
+
+def mutate_byte_duplicate(data: str, prng: Prng, max_len: int) -> str:
+    if len(data) == 0:
+        return "AA"
+    if len(data) >= max_len:
+        return data
+    idx: int = prng.choose_index(len(data))
+    chunk_len: int = prng.next_int_range(1, 8)
+    end_idx: int = idx + chunk_len
+    if end_idx > len(data):
+        end_idx = len(data)
+    chunk: str = data[idx:end_idx]
+    dest: int = prng.choose_index(len(data) + 1)
+    res: str = insert_at(data, dest, chunk)
+    return clamp_len(res, max_len)
+
+def mutate_byte_swap(data: str, prng: Prng) -> str:
+    if len(data) <= 1:
+        return data
+    i: int = prng.choose_index(len(data))
+    j: int = prng.choose_index(len(data))
+    if i == j:
+        return data
+    ch_i: str = data[i:i + 1]
+    ch_j: str = data[j:j + 1]
+    tmp: str = replace_at(data, i, ch_j)
+    return replace_at(tmp, j, ch_i)
+
+def mutate_splice(data1: str, data2: str, prng: Prng, max_len: int) -> str:
+    if len(data1) == 0:
+        return clamp_len(data2, max_len)
+    if len(data2) == 0:
+        return clamp_len(data1, max_len)
+    cut1: int = prng.choose_index(len(data1))
+    cut2: int = prng.choose_index(len(data2))
+    part1: str = data1[0:cut1]
+    part2: str = data2[cut2:len(data2)]
+    res: str = part1 + part2
+    return clamp_len(res, max_len)
+
+def mutate_boundary_number(data: str, prng: Prng, max_len: int) -> str:
+    nums: list[str] = get_boundary_numbers()
+    num: str = nums[prng.choose_index(len(nums))]
+    if len(data) == 0:
+        return clamp_len(num, max_len)
+    idx: int = prng.choose_index(len(data) + 1)
+    res: str = insert_at(data, idx, num)
+    return clamp_len(res, max_len)
+
+def mutate_delimiters(data: str, prng: Prng, max_len: int) -> str:
+    delims: list[str] = get_boundary_delimiters()
+    delim: str = delims[prng.choose_index(len(delims))]
+    if len(data) == 0:
+        return delim
+    idx: int = prng.choose_index(len(data) + 1)
+    res: str = insert_at(data, idx, delim)
+    return clamp_len(res, max_len)
+
+def mutate_json(data: str, prng: Prng, max_len: int) -> str:
+    mode: int = prng.choose_index(5)
+    if mode == 0:
+        # Inject unclosed quote
+        return clamp_len(insert_at(data, prng.choose_index(len(data) + 1), "\""), max_len)
+    if mode == 1:
+        # Truncate closing brackets
+        if len(data) > 0 and (data[len(data) - 1:len(data)] == "}" or data[len(data) - 1:len(data)] == "]"):
+            return data[0:len(data) - 1]
+        return clamp_len(data + ",", max_len)
+    if mode == 2:
+        # Inject boundary number
+        return mutate_boundary_number(data, prng, max_len)
+    if mode == 3:
+        # Wrap in extra array brackets
+        return clamp_len("[" + data + "]", max_len)
+    # Inject null byte or delimiter
+    return mutate_delimiters(data, prng, max_len)
+
+def mutate_csv(data: str, prng: Prng, max_len: int) -> str:
+    mode: int = prng.choose_index(4)
+    if mode == 0:
+        # Inject unmatched quote
+        return clamp_len(insert_at(data, prng.choose_index(len(data) + 1), "\""), max_len)
+    if mode == 1:
+        # Inject stray delimiter
+        return clamp_len(insert_at(data, prng.choose_index(len(data) + 1), ","), max_len)
+    if mode == 2:
+        # Inject newline in middle
+        return clamp_len(insert_at(data, prng.choose_index(len(data) + 1), "\n"), max_len)
+    # Truncate end
+    if len(data) > 2:
+        return data[0:len(data) - 2]
+    return data
+
+def mutate(data: str, prng: Prng, max_len: int) -> str:
+    # Deterministic strategy selection
+    strat: int = prng.choose_index(8)
+    if strat == 0:
+        return mutate_byte_flip(data, prng)
+    if strat == 1:
+        return mutate_byte_insert(data, prng, max_len)
+    if strat == 2:
+        return mutate_byte_delete(data, prng)
+    if strat == 3:
+        return mutate_byte_duplicate(data, prng, max_len)
+    if strat == 4:
+        return mutate_byte_swap(data, prng)
+    if strat == 5:
+        return mutate_boundary_number(data, prng, max_len)
+    if strat == 6:
+        return mutate_delimiters(data, prng, max_len)
+    
+    # Check if looks like JSON
+    if nox.strings.starts_with(nox.strings.trim(data), "{") or nox.strings.starts_with(nox.strings.trim(data), "["):
+        return mutate_json(data, prng, max_len)
+    return mutate_byte_flip(data, prng)

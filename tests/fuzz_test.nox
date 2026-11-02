@@ -1,0 +1,157 @@
+# Quartz Fuzz Test Suite
+import nox.fs
+import nox.strings
+from core.assert import assert_true, assert_false, assert_eq_int, assert_eq_str, assert_contains_str
+from core.prng import Prng
+from fuzz.harness import run_in_process, FuzzOutcome, OUTCOME_NORMAL, OUTCOME_HANDLED_REJECTION, OUTCOME_ASSERTION_VIOLATION, OUTCOME_CRASH
+from fuzz.mutation import mutate, mutate_byte_flip, mutate_json, mutate_csv, mutate_boundary_number
+from fuzz.corpus import CorpusManager, CorpusConfig, default_corpus_config
+from fuzz.minimize import minimize_crash, MinimizationResult
+from fuzz.fuzzer import run_fuzz, FuzzSummary
+
+# Dummy targets for harness tests
+def target_normal(s: str) -> None:
+    pass
+
+def target_rejection(s: str) -> None:
+    raise Exception("invalid syntax in token: " + s)
+
+def target_assertion(s: str) -> None:
+    assert False, "in-process assertion failed"
+
+def target_crash(s: str) -> None:
+    raise Exception("fatal native memory corruption simulation")
+
+def test_harness_classification() -> None:
+    out_norm: FuzzOutcome = run_in_process(target_normal, "hello")
+    assert_eq_str(out_norm.status, OUTCOME_NORMAL, "normal outcome classified")
+    assert_false(out_norm.is_failure(), "normal is not failure")
+
+    out_rej: FuzzOutcome = run_in_process(target_rejection, "bad token")
+    assert_eq_str(out_rej.status, OUTCOME_HANDLED_REJECTION, "handled rejection classified")
+    assert_false(out_rej.is_failure(), "handled rejection is not failure")
+
+    out_assert: FuzzOutcome = run_in_process(target_assertion, "trigger")
+    assert_eq_str(out_assert.status, OUTCOME_ASSERTION_VIOLATION, "assertion violation classified")
+    assert_true(out_assert.is_failure(), "assertion is failure")
+
+    out_crash: FuzzOutcome = run_in_process(target_crash, "boom")
+    assert_eq_str(out_crash.status, OUTCOME_CRASH, "crash classified")
+    assert_true(out_crash.is_failure(), "crash is failure")
+
+def test_mutation_bounds_and_determinism() -> None:
+    max_len: int = 25
+    prng1: Prng = Prng(998877)
+    prng2: Prng = Prng(998877)
+
+    base: str = "{\"name\":\"test\",\"val\":100}"
+    i: int = 0
+    while i < 100:
+        m1: str = mutate(base, prng1, max_len)
+        m2: str = mutate(base, prng2, max_len)
+        assert_eq_str(m1, m2, "mutation must be 100% deterministic given identical seed")
+        assert_true(len(m1) <= max_len, "mutated string must respect max_len cap")
+        i = i + 1
+
+    # Verify structured JSON mutation produces mutations
+    json_base: str = "{\"k\":1}"
+    prng_json: Prng = Prng(12345)
+    mutated_json: str = mutate_json(json_base, prng_json, 50)
+    assert_true(len(mutated_json) > 0, "json mutation produced non-empty output")
+
+def test_corpus_management() -> None:
+    cfg: CorpusConfig = default_corpus_config()
+    cm: CorpusManager = CorpusManager("test_target", "fixtures/corpus", cfg)
+    cm.ensure_directories()
+
+    assert_true(nox.fs.exists("fixtures/corpus/test_target/seeds"), "seeds dir created")
+    assert_true(nox.fs.exists("fixtures/corpus/test_target/crashes"), "crashes dir created")
+
+    # Add seeds
+    added1: bool = cm.add_seed("seed_alpha_123")
+    assert_true(added1, "first seed added")
+    added_dup: bool = cm.add_seed("seed_alpha_123")
+    assert_false(added_dup, "duplicate seed rejected")
+
+    seeds: list[str] = cm.load_seeds()
+    assert_true(len(seeds) >= 1, "loaded back seeds from disk")
+
+    # Save crash artifact
+    dummy_outcome: FuzzOutcome = FuzzOutcome(OUTCOME_CRASH, "simulated crash", "CRASH:test", 5)
+    json_path: str = cm.save_crash_artifact("CRASH_PAYLOAD_ABC", dummy_outcome, 42, 7)
+    assert_true(nox.fs.exists(json_path), "crash artifact written to disk")
+
+    read_back: str = nox.fs.read_to_string(json_path)
+    assert_contains_str(read_back, "\"kind\": \"fuzz_crash\"", "schema kind fuzz_crash")
+    assert_contains_str(read_back, "\"status\": \"CRASH\"", "status CRASH in artifact")
+
+    # Signature deduplication
+    assert_true(cm.is_new_signature("SIG_1"), "sig 1 is new")
+    assert_false(cm.is_new_signature("SIG_1"), "sig 1 is not new second time")
+    assert_true(cm.is_new_signature("SIG_2"), "sig 2 is new")
+
+def target_parser_with_flaw(s: str) -> None:
+    if nox.strings.contains(s, "MAGIC_CRASH"):
+        assert False, "parser internal fault: unhandled MAGIC_CRASH token"
+
+def test_crash_minimizer() -> None:
+    failing_input: str = "PREFIX_123456789_MAGIC_CRASH_SUFFIX_987654321"
+    res: MinimizationResult = minimize_crash(target_parser_with_flaw, failing_input, "ASSERT:parser internal fault: unhandled MAGIC_CRASH token", 200)
+
+    assert_true(res.reproduced, "failing signature reproduced during minimization")
+    assert_eq_str(res.minimized_input, "MAGIC_CRASH", "shrunk down to minimal exact crash token")
+    assert_true(res.steps > 0, "minimization took steps")
+    assert_true(res.minimized_len < res.original_len, "minimized input is significantly shorter")
+
+def target_fuzz_parser(s: str) -> None:
+    # Simulated parser with an edge-case crash
+    if nox.strings.starts_with(s, "KEY:"):
+        # Normal key-value format
+        pass
+    elif nox.strings.contains(s, "BUG_XYZ"):
+        raise Exception("simulated internal parser error")
+    else:
+        # Handled rejection
+        raise Exception("invalid format: expected KEY: prefix")
+
+def test_fuzzer_session() -> None:
+    cfg: CorpusConfig = CorpusConfig(50, 1048576, 256)
+    cm: CorpusManager = CorpusManager("fuzz_session_test", "fixtures/corpus", cfg)
+    
+    seeds: list[str] = ["KEY:username", "KEY:password", "KEY:BUG_XYZ"]
+    summary: FuzzSummary = run_fuzz("fuzz_session_test", target_fuzz_parser, seeds, 50, 1337, cm, 64)
+
+    assert_eq_int(summary.total_cases, 50, "50 total fuzz cases executed")
+    assert_true(summary.crashes_found > 0, "fuzzer discovered parser bug")
+    assert_true(summary.unique_crashes >= 1, "at least one unique crash signature recorded")
+
+def cleanup_dir(path: str) -> None:
+    if nox.fs.exists(path):
+        entries: list[str] = nox.fs.read_dir(path)
+        i: int = 0
+        while i < len(entries):
+            sub: str = path + "/" + entries[i]
+            if nox.fs.is_file(sub):
+                nox.fs.remove_file(sub)
+            elif nox.fs.is_dir(sub):
+                cleanup_dir(sub)
+            i = i + 1
+
+def run_all_fuzz_tests() -> None:
+    if not nox.fs.exists("fixtures"):
+        nox.fs.create_dir("fixtures")
+    if not nox.fs.exists("fixtures/corpus"):
+        nox.fs.create_dir("fixtures/corpus")
+
+    cleanup_dir("fixtures/corpus")
+
+    test_harness_classification()
+    test_mutation_bounds_and_determinism()
+    test_corpus_management()
+    test_crash_minimizer()
+    test_fuzzer_session()
+
+    cleanup_dir("fixtures/corpus")
+    print("quartz fuzz test: ALL PASS")
+
+run_all_fuzz_tests()

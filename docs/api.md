@@ -1,4 +1,4 @@
-# Quartz API Reference — v0.2.0
+# Quartz API Reference — v0.3.0
 
 ## 1. Core Types (`core/types.nox`)
 
@@ -122,3 +122,53 @@ Minimal counterexample extraction preserving invariant violation.
 - `replay_int_case(test_id: str, seed: int, case_index: int, gen: IntGen, predicate: (int) -> bool) -> bool`
 - `replay_str_case(test_id: str, seed: int, case_index: int, gen: StringGen, predicate: (str) -> bool) -> bool`
 - `save_failure_artifact(path: str, result: PropertyResult) -> None`
+
+---
+
+## 9. Fuzz Target Harness (`fuzz/harness.nox`)
+
+- `OUTCOME_NORMAL: str = "NORMAL"`
+- `OUTCOME_HANDLED_REJECTION: str = "HANDLED_REJECTION"`
+- `OUTCOME_ASSERTION_VIOLATION: str = "ASSERTION_VIOLATION"`
+- `OUTCOME_TIMEOUT: str = "TIMEOUT"`
+- `OUTCOME_CRASH: str = "CRASH"`
+
+### Classes & Functions
+- `FuzzOutcome(status: str, message: str, signature: str, duration_ms: int)`
+  - `.is_failure() -> bool`
+  - `.is_bug() -> bool`
+- `run_in_process(target_func: (str) -> None, input_data: str) -> FuzzOutcome`
+- `run_out_of_process(program: str, args: list[str], timeout_ms: int) -> FuzzOutcome`
+
+---
+
+## 10. Mutation Engine (`fuzz/mutation.nox`)
+
+Bounded deterministic byte and structured mutations:
+- `mutate(data: str, prng: Prng, max_len: int) -> str`
+- `mutate_byte_flip(data: str, prng: Prng) -> str`
+- `mutate_byte_insert(data: str, prng: Prng, max_len: int) -> str`
+- `mutate_byte_delete(data: str, prng: Prng) -> str`
+- `mutate_byte_duplicate(data: str, prng: Prng, max_len: int) -> str`
+- `mutate_byte_swap(data: str, prng: Prng) -> str`
+- `mutate_splice(data1: str, data2: str, prng: Prng, max_len: int) -> str`
+- `mutate_boundary_number(data: str, prng: Prng, max_len: int) -> str`
+- `mutate_delimiters(data: str, prng: Prng, max_len: int) -> str`
+- `mutate_json(data: str, prng: Prng, max_len: int) -> str`
+- `mutate_csv(data: str, prng: Prng, max_len: int) -> str`
+
+---
+
+## 11. Corpus Management & Crash Minimization (`fuzz/corpus.nox`, `fuzz/minimize.nox`, `fuzz/fuzzer.nox`)
+
+- `CorpusConfig(max_files: int, max_total_bytes: int, max_input_len: int)`
+- `default_corpus_config() -> CorpusConfig`
+- `CorpusManager(target_name: str, root_dir: str, config: CorpusConfig)`
+  - `.ensure_directories() -> None`
+  - `.add_seed(content: str) -> bool`
+  - `.load_seeds() -> list[str]`
+  - `.is_new_signature(signature: str) -> bool`
+  - `.save_crash_artifact(input_data: str, outcome: FuzzOutcome, seed: int, case_index: int) -> str`
+- `minimize_crash(target_func: (str) -> None, failing_input: str, expected_signature: str, max_steps: int) -> MinimizationResult`
+- `run_fuzz(target_name: str, target_func: (str) -> None, initial_seeds: list[str], iterations: int, seed: int, corpus: CorpusManager, max_len: int) -> FuzzSummary`
+

@@ -1,0 +1,141 @@
+import nox.fs
+import nox.strings
+from core.prng import hash_str_fnv
+from fuzz.harness import FuzzOutcome
+
+def int_to_hex_8(n: int) -> str:
+    digits: str = "0123456789abcdef"
+    res: str = ""
+    i: int = 0
+    u: int = n & 4294967295
+    while i < 8:
+        shift: int = (7 - i) * 4
+        nibble: int = (u >> shift) & 15
+        res = res + digits[nibble:nibble + 1]
+        i = i + 1
+    return res
+
+def ensure_dir(path: str) -> None:
+    if not nox.fs.exists(path):
+        nox.fs.create_dir(path)
+
+def ensure_path_recursive(full_path: str) -> None:
+    parts: list[str] = nox.strings.split(full_path, "/")
+    current: str = ""
+    i: int = 0
+    while i < len(parts):
+        part: str = parts[i]
+        if len(part) > 0:
+            if len(current) == 0:
+                current = part
+            else:
+                current = current + "/" + part
+            ensure_dir(current)
+        i = i + 1
+
+class CorpusConfig:
+    max_files: int
+    max_total_bytes: int
+    max_input_len: int
+
+    def __init__(self: CorpusConfig, max_files: int, max_bytes: int, max_input_len: int) -> None:
+        self.max_files = max_files
+        self.max_total_bytes = max_bytes
+        self.max_input_len = max_input_len
+
+def default_corpus_config() -> CorpusConfig:
+    return CorpusConfig(500, 5242880, 65536)
+
+class CorpusManager:
+    target_name: str
+    base_dir: str
+    seeds_dir: str
+    crashes_dir: str
+    timeouts_dir: str
+    regressions_dir: str
+    config: CorpusConfig
+    seen_signatures: list[str]
+
+    def __init__(self: CorpusManager, target_name: str, root_dir: str, config: CorpusConfig) -> None:
+        self.target_name = target_name
+        self.base_dir = root_dir + "/" + target_name
+        self.seeds_dir = self.base_dir + "/seeds"
+        self.crashes_dir = self.base_dir + "/crashes"
+        self.timeouts_dir = self.base_dir + "/timeouts"
+        self.regressions_dir = self.base_dir + "/regressions"
+        self.config = config
+        self.seen_signatures = []
+
+    def ensure_directories(self: CorpusManager) -> None:
+        ensure_path_recursive(self.seeds_dir)
+        ensure_path_recursive(self.crashes_dir)
+        ensure_path_recursive(self.timeouts_dir)
+        ensure_path_recursive(self.regressions_dir)
+
+    def is_new_signature(self: CorpusManager, signature: str) -> bool:
+        i: int = 0
+        while i < len(self.seen_signatures):
+            if self.seen_signatures[i] == signature:
+                return False
+            i = i + 1
+        sigs: list[str] = self.seen_signatures
+        sigs.append(signature)
+        self.seen_signatures = sigs
+        return True
+
+    def add_seed(self: CorpusManager, content: str) -> bool:
+        if len(content) > self.config.max_input_len:
+            return False
+        self.ensure_directories()
+        
+        file_id: str = int_to_hex_8(hash_str_fnv(content))
+        path: str = self.seeds_dir + "/seed_" + file_id + ".bin"
+        if nox.fs.exists(path):
+            return False
+        
+        nox.fs.write_string_atomic(path, content)
+        return True
+
+    def load_seeds(self: CorpusManager) -> list[str]:
+        self.ensure_directories()
+        res: list[str] = []
+        entries: list[str] = nox.fs.read_dir(self.seeds_dir)
+        i: int = 0
+        while i < len(entries):
+            fname: str = entries[i]
+            if nox.strings.ends_with(fname, ".bin"):
+                fpath: str = self.seeds_dir + "/" + fname
+                try:
+                    c: str = nox.fs.read_to_string(fpath)
+                    res.append(c)
+                except Exception as e:
+                    pass
+            i = i + 1
+        return res
+
+    def save_crash_artifact(self: CorpusManager, input_data: str, outcome: FuzzOutcome, seed: int, case_index: int) -> str:
+        self.ensure_directories()
+        file_id: str = int_to_hex_8(hash_str_fnv(input_data))
+        raw_path: str = self.crashes_dir + "/crash_" + file_id + ".bin"
+        json_path: str = self.crashes_dir + "/crash_" + file_id + ".json"
+
+        # Write raw binary/text payload
+        nox.fs.write_string_atomic(raw_path, input_data)
+
+        # Write JSON artifact descriptor
+        json_content: str = "{\n"
+        json_content = json_content + "  \"schema_version\": \"1\",\n"
+        json_content = json_content + "  \"engine\": \"quartz\",\n"
+        json_content = json_content + "  \"kind\": \"fuzz_crash\",\n"
+        json_content = json_content + "  \"target\": \"" + self.target_name + "\",\n"
+        json_content = json_content + "  \"status\": \"" + outcome.status + "\",\n"
+        json_content = json_content + "  \"signature\": \"" + outcome.signature + "\",\n"
+        json_content = json_content + "  \"seed\": " + str(seed) + ",\n"
+        json_content = json_content + "  \"case_index\": " + str(case_index) + ",\n"
+        json_content = json_content + "  \"duration_ms\": " + str(outcome.duration_ms) + ",\n"
+        json_content = json_content + "  \"input_bytes_file\": \"" + raw_path + "\",\n"
+        json_content = json_content + "  \"error_message\": \"" + outcome.message + "\"\n"
+        json_content = json_content + "}\n"
+
+        nox.fs.write_string_atomic(json_path, json_content)
+        return json_path

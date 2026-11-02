@@ -9,9 +9,14 @@ import property.generator
 import property.shrink
 import property.property
 import property.replay
+import fuzz.harness
+import fuzz.mutation
+import fuzz.corpus
+import fuzz.minimize
+import fuzz.fuzzer
 
 def version() -> str:
-    return "0.2.0"
+    return "0.3.0"
 
 def framework_info() -> str:
     return "Quartz Test Framework v" + version() + " for NOX Ecosystem"

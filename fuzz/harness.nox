@@ -1,0 +1,100 @@
+import nox.time
+import nox.strings
+import nox.process
+from nox.process import Command, ProcessError, Output
+
+from nox.time import Instant
+
+OUTCOME_NORMAL: str = "NORMAL"
+OUTCOME_HANDLED_REJECTION: str = "HANDLED_REJECTION"
+OUTCOME_ASSERTION_VIOLATION: str = "ASSERTION_VIOLATION"
+OUTCOME_TIMEOUT: str = "TIMEOUT"
+OUTCOME_CRASH: str = "CRASH"
+
+class FuzzOutcome:
+    status: str
+    message: str
+    signature: str
+    duration_ms: int
+
+    def __init__(self: FuzzOutcome, status: str, message: str, signature: str, duration_ms: int) -> None:
+        self.status = status
+        self.message = message
+        self.signature = signature
+        self.duration_ms = duration_ms
+
+    def is_failure(self: FuzzOutcome) -> bool:
+        if self.status == OUTCOME_ASSERTION_VIOLATION:
+            return True
+        if self.status == OUTCOME_TIMEOUT:
+            return True
+        if self.status == OUTCOME_CRASH:
+            return True
+        return False
+
+    def is_bug(self: FuzzOutcome) -> bool:
+        return self.is_failure()
+
+def is_expected_rejection(msg: str) -> bool:
+    lower: str = nox.strings.lower(msg)
+    if nox.strings.contains(lower, "invalid"):
+        return True
+    if nox.strings.contains(lower, "reject"):
+        return True
+    if nox.strings.contains(lower, "parse error"):
+        return True
+    if nox.strings.contains(lower, "bad format"):
+        return True
+    if nox.strings.contains(lower, "expected"):
+        return True
+    if nox.strings.contains(lower, "syntax"):
+        return True
+    if nox.strings.contains(lower, "malformed"):
+        return True
+    return False
+
+def run_in_process(target_func: (str) -> None, input_data: str) -> FuzzOutcome:
+    t0: Instant = nox.time.instant_now()
+    try:
+        target_func(input_data)
+        elapsed_ms: int = t0.elapsed_ms()
+        return FuzzOutcome(OUTCOME_NORMAL, "success", "OK", elapsed_ms)
+    except AssertionError as e:
+        elapsed_ms: int = t0.elapsed_ms()
+        msg: str = str(e)
+        return FuzzOutcome(OUTCOME_ASSERTION_VIOLATION, msg, "ASSERT:" + msg, elapsed_ms)
+    except Exception as e:
+        elapsed_ms: int = t0.elapsed_ms()
+        msg: str = str(e)
+        if is_expected_rejection(msg):
+            return FuzzOutcome(OUTCOME_HANDLED_REJECTION, msg, "REJECT:" + msg, elapsed_ms)
+        return FuzzOutcome(OUTCOME_CRASH, msg, "CRASH:" + msg, elapsed_ms)
+
+def run_out_of_process(program: str, args: list[str], timeout_ms: int) -> FuzzOutcome:
+    t0: Instant = nox.time.instant_now()
+    cmd: Command = Command(program).arg_list(args)
+    if timeout_ms > 0:
+        cmd.set_timeout(timeout_ms)
+
+    try:
+        out: Output = cmd.run()
+        elapsed_ms: int = t0.elapsed_ms()
+        if out.success():
+            return FuzzOutcome(OUTCOME_NORMAL, out.stdout, "OK", elapsed_ms)
+
+        combined_err: str = out.stderr
+        if len(combined_err) == 0:
+            combined_err = out.stdout
+
+        if out.status == 1 or out.status == 2:
+            if is_expected_rejection(combined_err):
+                return FuzzOutcome(OUTCOME_HANDLED_REJECTION, combined_err, "REJECT:" + str(out.status), elapsed_ms)
+            return FuzzOutcome(OUTCOME_ASSERTION_VIOLATION, combined_err, "ASSERT:" + str(out.status), elapsed_ms)
+
+        return FuzzOutcome(OUTCOME_CRASH, "exit status " + str(out.status) + ": " + combined_err, "CRASH:" + str(out.status), elapsed_ms)
+    except ProcessError as e:
+        elapsed_ms: int = t0.elapsed_ms()
+        msg: str = str(e)
+        if nox.strings.contains(nox.strings.lower(msg), "timed out") or nox.strings.contains(nox.strings.lower(msg), "timeout"):
+            return FuzzOutcome(OUTCOME_TIMEOUT, msg, "TIMEOUT", elapsed_ms)
+        return FuzzOutcome(OUTCOME_CRASH, msg, "PROC_ERR:" + msg, elapsed_ms)

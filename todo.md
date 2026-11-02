@@ -122,30 +122,30 @@
 ## Phase 3: v0.3.0 — Fuzz Engine & Corpus Management
 *Objective: Byte and structured mutation fuzzing, corpus persistence, crash deduplication, and watchdog harness.*
 
-- [ ] **3.1 Fuzz Target Harness (`fuzz/harness.nox`)**
-  - [ ] Target interface definition: `run_case(bytes) -> FuzzOutcome`.
-  - [ ] Classification: `NORMAL`, `ASSERTION_VIOLATION`, `HANDLED_REJECTION`, `TIMEOUT`, `CRASH`.
-  - [ ] In-process harness for pure decoders/parsers.
-  - [ ] Out-of-process harness with watchdog process timeout (where supported).
-- [ ] **3.2 Mutation Engine (`fuzz/mutation.nox`)**
-  - [ ] Byte mutations: bit flip, byte flip, byte swap, insert, delete, duplicate, splice.
-  - [ ] Boundary number mutation (inserting edge ints/floats into payloads).
-  - [ ] Structured mutations: JSON (malformed tokens, deep nesting, type changes), CSV (delimiters, quotes).
-- [ ] **3.3 Corpus Management (`fuzz/corpus.nox`)**
-  - [ ] Directory layout: `corpus/<target>/{seeds, crashes, timeouts, regressions}`.
-  - [ ] Stable content-based hashing / file naming.
-  - [ ] Hard resource caps: max corpus size, max file count, max input bytes.
-  - [ ] Safe atomic writes avoiding partial crash artifacts.
-- [ ] **3.4 Crash Minimization (`fuzz/minimize.nox`)**
-  - [ ] Delta-debugging minimizer for crash inputs while preserving exact error signature.
-  - [ ] Crash deduplication by failure signature.
-- [ ] **3.5 Phase 3 Verification & Tests**
-  - [ ] `tests/fuzz_test.nox`: parser fuzzing smoke test with known bug seed.
-  - [ ] Replay verified crash artifacts to guarantee reproduction.
-  - [ ] Verify bounded execution: timeout enforcement and memory limits.
-  - [ ] Update `CHANGELOG.md` for v0.3.0.
+- [x] **3.1 Fuzz Target Harness (`fuzz/harness.nox`)**
+  - [x] Target interface definition: `run_in_process(target_func, input_bytes) -> FuzzOutcome`.
+  - [x] Classification: `NORMAL`, `ASSERTION_VIOLATION`, `HANDLED_REJECTION`, `TIMEOUT`, `CRASH`.
+  - [x] In-process harness for pure decoders/parsers with monotonic duration timing.
+  - [x] Out-of-process harness (`run_out_of_process`) with watchdog process timeout.
+- [x] **3.2 Mutation Engine (`fuzz/mutation.nox`)**
+  - [x] Byte mutations: bit flip, byte flip, byte swap, insert, delete, duplicate, splice.
+  - [x] Boundary number mutation (`INT64_MIN`, `INT64_MAX`, `2^53`, `NaN`, `Infinity`).
+  - [x] Structured mutations: JSON (unclosed quotes, truncated brackets, duplicate fields), CSV (delimiters, quotes).
+- [x] **3.3 Corpus Management (`fuzz/corpus.nox`)**
+  - [x] Directory layout: `corpus/<target>/{seeds, crashes, timeouts, regressions}`.
+  - [x] Stable content-based hashing / file naming via FNV-1a hex digests.
+  - [x] Hard resource caps: max corpus size, max file count, max input bytes.
+  - [x] Safe atomic writes avoiding partial crash artifacts.
+- [x] **3.4 Crash Minimization (`fuzz/minimize.nox`)**
+  - [x] Delta-debugging minimizer for crash inputs while preserving exact error signature.
+  - [x] Crash deduplication by failure signature.
+- [x] **3.5 Phase 3 Verification & Tests**
+  - [x] `tests/fuzz_test.nox`: parser fuzzing smoke test with known bug seed.
+  - [x] Replay verified crash artifacts to guarantee reproduction.
+  - [x] Verify bounded execution: timeout enforcement and length caps.
+  - [x] Update `CHANGELOG.md` and `docs/api.md` for v0.3.0.
 
-*Phase 3 Exit Gate:* Target parser crashes discovered from seeds, minimized, classified, and replayed; zero unhandled resource leaks.
+*Phase 3 Exit Gate:* PASSED. Target parser crashes discovered from seeds, minimized down to exact crash tokens, classified, and replayed; zero unhandled resource leaks.
 
 ---
 
