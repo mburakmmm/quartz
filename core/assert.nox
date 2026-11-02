@@ -31,10 +31,20 @@ def assert_eq_bool(actual: bool, expected: bool, msg: str) -> None:
     if actual != expected:
         raise AssertionError(msg + ": expected " + str(expected) + ", got " + str(actual))
 
+def is_nan(val: float) -> bool:
+    if val != val:
+        return True
+    s: str = str(val)
+    if s == "nan" or s == "NaN" or s == "-nan" or s == "+nan":
+        return True
+    return False
+
 def assert_eq_float(actual: float, expected: float, abs_tol: float, rel_tol: float, msg: str) -> None:
-    if actual != actual or expected != expected:
+    if is_nan(actual) or is_nan(expected):
         raise AssertionError(msg + ": NaN encountered in float comparison (actual=" + str(actual) + ", expected=" + str(expected) + ")")
     diff: float = actual - expected
+    if is_nan(diff):
+        raise AssertionError(msg + ": NaN encountered in float difference")
     if diff < 0.0:
         diff = -diff
     tol: float = abs_tol
@@ -44,7 +54,7 @@ def assert_eq_float(actual: float, expected: float, abs_tol: float, rel_tol: flo
     rel_margin: float = exp_mag * rel_tol
     if rel_margin > tol:
         tol = rel_margin
-    if diff > tol:
+    if diff > tol or not (diff <= tol):
         raise AssertionError(msg + ": expected " + str(expected) + " (tol " + str(tol) + "), got " + str(actual) + " (diff " + str(diff) + ")")
 
 def assert_contains_str(haystack: str, needle: str, msg: str) -> None:

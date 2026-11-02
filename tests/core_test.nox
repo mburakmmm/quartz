@@ -43,7 +43,7 @@ def test_assertions() -> None:
     assert_true(caught_float_fail, "assert_eq_float should have raised AssertionError on large diff")
 
     # 6. Float NaN guard
-    nan_val: float = 0.0 / 0.0
+    nan_val: float = float("nan")
     caught_nan_fail: bool = False
     try:
         assert_eq_float(nan_val, 1.0, 0.1, 0.1, "nan comparison")
