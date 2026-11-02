@@ -1,0 +1,60 @@
+# Quartz Core — Deterministic Explicit-State PRNG
+# Algorithm: 64-bit LCG (Knuth MMIX constants) with FNV-1a seed derivation.
+# Version: 1
+import nox.strings
+
+PRNG_VERSION: int = 1
+PRNG_MASK63: int = 9223372036854775807
+
+class Prng:
+    state: int
+
+    def __init__(self: Prng, seed: int) -> None:
+        init_state: int = seed
+        if init_state == 0:
+            init_state = 1
+        self.state = init_state
+
+    def next_int(self: Prng) -> int:
+        self.state = self.state * 6364136223846793005 + 1442695040888963407
+        raw: int = (self.state >> 1) & PRNG_MASK63
+        return raw
+
+    def next_int_range(self: Prng, min_val: int, max_val: int) -> int:
+        if min_val >= max_val:
+            return min_val
+        span: int = max_val - min_val + 1
+        raw: int = self.next_int()
+        return min_val + (raw % span)
+
+    def next_float(self: Prng) -> float:
+        # Generate float in [0.0, 1.0) using 32-bit resolution
+        raw32: int = self.next_int() & 2147483647
+        return (raw32 * 1.0) / 2147483648.0
+
+    def next_bool(self: Prng) -> bool:
+        return (self.next_int() & 1) == 1
+
+    def choose_index(self: Prng, count: int) -> int:
+        if count <= 1:
+            return 0
+        return self.next_int() % count
+
+def hash_str_fnv(s: str) -> int:
+    h: int = 2166136261
+    i: int = 0
+    while i < len(s):
+        b: int = nox.strings.byte_at(s, i)
+        h = (h ^ b) * 16777619
+        i = i + 1
+    res: int = h & 2147483647
+    return res
+
+def derive_case_seed(root_seed: int, test_id: str, case_index: int, rng_version: int) -> int:
+    th: int = hash_str_fnv(test_id)
+    combined: int = root_seed ^ (th * 6364136223846793005) ^ (case_index * 1442695040888963407) ^ (rng_version * 1103515245)
+    if combined < 0:
+        combined = -combined
+    if combined == 0:
+        combined = 42
+    return combined

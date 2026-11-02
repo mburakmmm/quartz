@@ -1,4 +1,4 @@
-# Quartz API Reference — v0.1.0 Core MVP
+# Quartz API Reference — v0.2.0
 
 ## 1. Core Types (`core/types.nox`)
 
@@ -12,15 +12,9 @@
 ### Classes
 - `Failure(message: str, expected: str, actual: str)`
 - `TestResult(id: str, name: str, status: str, duration_ms: int, message: str, failure: Failure | None)`
-  - `.is_passed() -> bool`
-  - `.is_failed() -> bool`
-  - `.is_skipped() -> bool`
-  - `.is_error() -> bool`
 - `ResourceLimits(timeout_ms: int, max_memory_mb: int)`
 - `RunnerConfig(filter_pattern: str, tag_filter: str, stop_on_failure: bool, backend: str)`
 - `RunSummary()`
-  - `.record(result: TestResult) -> None`
-  - `.is_successful() -> bool`
 
 ---
 
@@ -36,7 +30,6 @@ All assertion functions raise the built-in `AssertionError` on failure.
 - `assert_not_eq_str(actual: str, unexpected: str, msg: str) -> None`
 - `assert_eq_bool(actual: bool, expected: bool, msg: str) -> None`
 - `assert_eq_float(actual: float, expected: float, abs_tol: float, rel_tol: float, msg: str) -> None`
-  - Validates `|actual - expected| <= max(abs_tol, |expected| * rel_tol)`.
 - `assert_contains_str(haystack: str, needle: str, msg: str) -> None`
 - `assert_not_contains_str(haystack: str, needle: str, msg: str) -> None`
 
@@ -44,7 +37,7 @@ All assertion functions raise the built-in `AssertionError` on failure.
 
 ## 3. Test Suite & Runner (`core/suite.nox`)
 
-`TestSuite(name: str)` provides non-raising assertion checks that accumulate results into `RunSummary` without prematurely halting test execution.
+`TestSuite(name: str)` provides non-raising assertion checks accumulating into `RunSummary`.
 
 ### Methods
 - `.set_filter(pattern: str) -> None`
@@ -72,21 +65,60 @@ Provides deterministic lifecycle management with `try / finally` guarantees.
 - `SCOPE_CASE: str = "case"`
 - `SCOPE_SUITE: str = "suite"`
 - `Fixture(name: str, scope: str)`
-  - `.setup() -> None`
-  - `.teardown() -> None`
-  - `__enter__() -> Fixture`
-  - `__exit__() -> None`
 - `run_with_fixture(fixture: Fixture, action: () -> None) -> None`
 
 ---
 
-## 5. Reporting & Redaction (`core/report.nox`)
+## 5. Explicit-State PRNG (`core/prng.nox`)
 
-- `escape_xml(s: str) -> str`
-- `escape_json(s: str) -> str`
-- `redact_secrets(text: str) -> str`
-  - Replaces sensitive tokens (`Bearer ...`) with `[REDACTED]`.
-- `format_junit_xml(suite_name: str, summary: RunSummary) -> str`
-- `format_summary_json(run_id: str, backend: str, compiler_version: str, summary: RunSummary) -> str`
-- `write_junit_report(path: str, suite_name: str, summary: RunSummary) -> None`
-- `write_json_report(path: str, run_id: str, backend: str, compiler_version: str, summary: RunSummary) -> None`
+Deterministic PRNG independent of global random state.
+
+- `Prng(seed: int)`
+  - `.next_int() -> int` (positive 63-bit integer)
+  - `.next_int_range(min_val: int, max_val: int) -> int` (inclusive range)
+  - `.next_float() -> float` (in `[0.0, 1.0)`)
+  - `.next_bool() -> bool`
+  - `.choose_index(count: int) -> int`
+- `derive_case_seed(root_seed: int, test_id: str, case_index: int, rng_version: int) -> int`
+
+---
+
+## 6. Property Generators (`property/generator.nox`)
+
+- `IntGen(min_val: int, max_val: int, with_boundaries: bool)`
+  - Boundary bias includes `min_val`, `max_val`, `0`, `1`, `-1`.
+- `FloatGen(min_val: float, max_val: float)`
+- `BoolGen()`
+- `StringGen(min_len: int, max_len: int, charset: str)`
+  - Character sets: `CHARSET_ALPHA`, `CHARSET_ALPHANUMERIC`, `CHARSET_ASCII_PRINTABLE`, `CHARSET_TURKISH_UNICODE`.
+- `ByteGen(min_len: int, max_len: int)`
+- `ListIntGen(min_len: int, max_len: int, item_gen: IntGen)`
+
+---
+
+## 7. Shrinking Engine (`property/shrink.nox`)
+
+Minimal counterexample extraction preserving invariant violation.
+
+- `shrink_int(initial: int, predicate: (int) -> bool, max_attempts: int) -> ShrinkResultInt`
+  - Tries zero, sign flip, halving (`// 2`), and boundary steps.
+- `shrink_str(initial: str, predicate: (str) -> bool, max_attempts: int) -> ShrinkResultStr`
+  - Tries empty string, delta-debugging chunk elimination, and tail reduction.
+- `shrink_list_int(initial: list[int], predicate: (list[int]) -> bool, max_attempts: int) -> ShrinkResultListInt`
+  - Tries empty list, chunk halving, and element dropping.
+
+---
+
+## 8. Property Runner & Replay (`property/property.nox`, `property/replay.nox`)
+
+- `PropertyConfig(cases: int, max_discard_ratio: int, seed: int, timeout_ms: int)`
+- `default_property_config(seed: int) -> PropertyConfig`
+- `PropertyResult`
+  - `.is_passed() -> bool`
+  - `.to_json() -> str`
+- `run_int_property(test_id: str, config: PropertyConfig, gen: IntGen, predicate: (int) -> bool) -> PropertyResult`
+- `run_str_property(test_id: str, config: PropertyConfig, gen: StringGen, predicate: (str) -> bool) -> PropertyResult`
+- `run_list_int_property(test_id: str, config: PropertyConfig, gen: ListIntGen, predicate: (list[int]) -> bool) -> PropertyResult`
+- `replay_int_case(test_id: str, seed: int, case_index: int, gen: IntGen, predicate: (int) -> bool) -> bool`
+- `replay_str_case(test_id: str, seed: int, case_index: int, gen: StringGen, predicate: (str) -> bool) -> bool`
+- `save_failure_artifact(path: str, result: PropertyResult) -> None`

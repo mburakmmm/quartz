@@ -1,0 +1,134 @@
+# Quartz Property — Property Runner
+from core.types import STATUS_PASS, STATUS_FAIL
+from core.prng import Prng, PRNG_VERSION, derive_case_seed
+from property.generator import IntGen, StringGen, ListIntGen
+from property.shrink import shrink_int, shrink_str, shrink_list_int, ShrinkResultInt, ShrinkResultStr, ShrinkResultListInt
+import nox.strings
+
+STATUS_DISCARD_EXHAUSTED: str = "DISCARD_EXHAUSTED"
+
+class PropertyConfig:
+    cases: int
+    max_discard_ratio: int
+    seed: int
+    timeout_ms: int
+
+    def __init__(self: PropertyConfig, cases: int, max_discard_ratio: int, seed: int, timeout_ms: int) -> None:
+        self.cases = cases
+        self.max_discard_ratio = max_discard_ratio
+        self.seed = seed
+        self.timeout_ms = timeout_ms
+
+def default_property_config(seed: int) -> PropertyConfig:
+    return PropertyConfig(100, 5, seed, 5000)
+
+class PropertyResult:
+    test_id: str
+    status: str
+    cases_executed: int
+    discards: int
+    seed: int
+    failing_case_index: int
+    original_counterexample: str
+    shrunk_counterexample: str
+    shrink_attempts: int
+    failure_message: str
+
+    def __init__(self: PropertyResult, test_id: str, status: str, cases_executed: int, discards: int, seed: int, failing_case_index: int, original: str, shrunk: str, shrink_attempts: int, failure_message: str) -> None:
+        self.test_id = test_id
+        self.status = status
+        self.cases_executed = cases_executed
+        self.discards = discards
+        self.seed = seed
+        self.failing_case_index = failing_case_index
+        self.original_counterexample = original
+        self.shrunk_counterexample = shrunk
+        self.shrink_attempts = shrink_attempts
+        self.failure_message = failure_message
+
+    def is_passed(self: PropertyResult) -> bool:
+        return self.status == STATUS_PASS
+
+    def to_json(self: PropertyResult) -> str:
+        escaped_id: str = self.test_id
+        escaped_orig: str = self.original_counterexample
+        escaped_shrunk: str = self.shrunk_counterexample
+        escaped_msg: str = self.failure_message
+        
+        return "{\"schema_version\":\"1\",\"engine\":\"quartz\",\"kind\":\"property\",\"test_id\":\"" + escaped_id + "\",\"status\":\"" + self.status + "\",\"seed\":" + str(self.seed) + ",\"cases_executed\":" + str(self.cases_executed) + ",\"discards\":" + str(self.discards) + ",\"failing_case\":" + str(self.failing_case_index) + ",\"original\":\"" + escaped_orig + "\",\"shrunk\":\"" + escaped_shrunk + "\",\"shrink_attempts\":" + str(self.shrink_attempts) + ",\"message\":\"" + escaped_msg + "\"}"
+
+def run_int_property(test_id: str, config: PropertyConfig, gen: IntGen, predicate: (int) -> bool) -> PropertyResult:
+    case_idx: int = 0
+    discards: int = 0
+    max_allowed_discards: int = config.cases * config.max_discard_ratio
+
+    while case_idx < config.cases:
+        case_seed: int = derive_case_seed(config.seed, test_id, case_idx, PRNG_VERSION)
+        case_prng: Prng = Prng(case_seed)
+        candidate: int = gen.generate(case_prng)
+
+        passed: bool = False
+        try:
+            passed = predicate(candidate)
+        except Exception as e:
+            passed = False
+
+        if not passed:
+            orig_str: str = str(candidate)
+            shrink_res: ShrinkResultInt = shrink_int(candidate, predicate, 500)
+            shrunk_str: str = str(shrink_res.value)
+            return PropertyResult(test_id, STATUS_FAIL, case_idx + 1, discards, config.seed, case_idx, orig_str, shrunk_str, shrink_res.attempts, "invariant violated")
+
+        case_idx = case_idx + 1
+
+    return PropertyResult(test_id, STATUS_PASS, case_idx, discards, config.seed, -1, "", "", 0, "")
+
+def run_str_property(test_id: str, config: PropertyConfig, gen: StringGen, predicate: (str) -> bool) -> PropertyResult:
+    case_idx: int = 0
+    discards: int = 0
+
+    while case_idx < config.cases:
+        case_seed: int = derive_case_seed(config.seed, test_id, case_idx, PRNG_VERSION)
+        case_prng: Prng = Prng(case_seed)
+        candidate: str = gen.generate(case_prng)
+
+        passed: bool = False
+        try:
+            passed = predicate(candidate)
+        except Exception as e:
+            passed = False
+
+        if not passed:
+            orig_str: str = candidate
+            shrink_res: ShrinkResultStr = shrink_str(candidate, predicate, 500)
+            shrunk_str: str = shrink_res.value
+            return PropertyResult(test_id, STATUS_FAIL, case_idx + 1, discards, config.seed, case_idx, orig_str, shrunk_str, shrink_res.attempts, "invariant violated")
+
+        case_idx = case_idx + 1
+
+    return PropertyResult(test_id, STATUS_PASS, case_idx, discards, config.seed, -1, "", "", 0, "")
+
+def run_list_int_property(test_id: str, config: PropertyConfig, gen: ListIntGen, predicate: (list[int]) -> bool) -> PropertyResult:
+    case_idx: int = 0
+    discards: int = 0
+
+    while case_idx < config.cases:
+        case_seed: int = derive_case_seed(config.seed, test_id, case_idx, PRNG_VERSION)
+        case_prng: Prng = Prng(case_seed)
+        candidate: list[int] = gen.generate(case_prng)
+
+        passed: bool = False
+        try:
+            passed = predicate(candidate)
+        except Exception as e:
+            passed = False
+
+        if not passed:
+            orig_str: str = "len=" + str(len(candidate))
+            shrink_res: ShrinkResultListInt = shrink_list_int(candidate, predicate, 500)
+            shrunk_str: str = "len=" + str(len(shrink_res.value))
+            return PropertyResult(test_id, STATUS_FAIL, case_idx + 1, discards, config.seed, case_idx, orig_str, shrunk_str, shrink_res.attempts, "invariant violated")
+
+        case_idx = case_idx + 1
+
+    return PropertyResult(test_id, STATUS_PASS, case_idx, discards, config.seed, -1, "", "", 0, "")

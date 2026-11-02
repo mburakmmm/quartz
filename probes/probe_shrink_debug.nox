@@ -1,0 +1,8 @@
+from property.shrink import shrink_int, ShrinkResultInt
+
+def invariant_less_than_50(x: int) -> bool:
+    return x < 50
+
+res: ShrinkResultInt = shrink_int(240, invariant_less_than_50, 200)
+print("Shrunk value: " + str(res.value))
+print("Attempts: " + str(res.attempts))

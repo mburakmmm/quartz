@@ -1,0 +1,36 @@
+# Quartz Property — Replay Engine
+from core.prng import Prng, PRNG_VERSION, derive_case_seed
+from property.generator import IntGen, StringGen
+from property.property import PropertyResult
+import nox.fs
+
+def save_failure_artifact(path: str, result: PropertyResult) -> None:
+    json_data: str = result.to_json()
+    nox.fs.write_string_atomic(path, json_data)
+
+def replay_int_case(test_id: str, seed: int, case_index: int, gen: IntGen, predicate: (int) -> bool) -> bool:
+    case_seed: int = derive_case_seed(seed, test_id, case_index, PRNG_VERSION)
+    case_prng: Prng = Prng(case_seed)
+    candidate: int = gen.generate(case_prng)
+    
+    passed: bool = False
+    try:
+        passed = predicate(candidate)
+    except Exception as e:
+        passed = False
+        
+    # Return True if failure reproduces (i.e. predicate returned False)
+    return not passed
+
+def replay_str_case(test_id: str, seed: int, case_index: int, gen: StringGen, predicate: (str) -> bool) -> bool:
+    case_seed: int = derive_case_seed(seed, test_id, case_index, PRNG_VERSION)
+    case_prng: Prng = Prng(case_seed)
+    candidate: str = gen.generate(case_prng)
+
+    passed: bool = False
+    try:
+        passed = predicate(candidate)
+    except Exception as e:
+        passed = False
+
+    return not passed

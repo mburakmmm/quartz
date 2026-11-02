@@ -1,0 +1,123 @@
+# Quartz Property — Typed Input Generators
+from core.prng import Prng
+import nox.strings
+
+CHARSET_ALPHA: str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+CHARSET_ALPHANUMERIC: str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+CHARSET_ASCII_PRINTABLE: str = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+CHARSET_TURKISH_UNICODE: str = "çğıöşüÇĞİÖŞÜabcçdefgğhıijklmnoöprsştuüvyzABCÇDEFGĞHIİJKLMNOÖPRSŞTUÜVYZ0123456789"
+
+class IntGen:
+    min_val: int
+    max_val: int
+    with_boundaries: bool
+
+    def __init__(self: IntGen, min_val: int, max_val: int, with_boundaries: bool) -> None:
+        self.min_val = min_val
+        self.max_val = max_val
+        self.with_boundaries = with_boundaries
+
+    def generate(self: IntGen, prng: Prng) -> int:
+        if self.with_boundaries and prng.next_int_range(0, 10) == 0:
+            # 10% probability of boundary value
+            pick: int = prng.choose_index(5)
+            if pick == 0:
+                return self.min_val
+            elif pick == 1:
+                return self.max_val
+            elif pick == 2:
+                if self.min_val <= 0 and self.max_val >= 0:
+                    return 0
+                return self.min_val
+            elif pick == 3:
+                if self.min_val <= 1 and self.max_val >= 1:
+                    return 1
+                return self.max_val
+            else:
+                if self.min_val <= -1 and self.max_val >= -1:
+                    return -1
+                return self.min_val
+
+        return prng.next_int_range(self.min_val, self.max_val)
+
+class FloatGen:
+    min_val: float
+    max_val: float
+
+    def __init__(self: FloatGen, min_val: float, max_val: float) -> None:
+        self.min_val = min_val
+        self.max_val = max_val
+
+    def generate(self: FloatGen, prng: Prng) -> float:
+        fraction: float = prng.next_float()
+        span: float = self.max_val - self.min_val
+        return self.min_val + (fraction * span)
+
+class BoolGen:
+    def __init__(self: BoolGen) -> None:
+        pass
+
+    def generate(self: BoolGen, prng: Prng) -> bool:
+        return prng.next_bool()
+
+class StringGen:
+    min_len: int
+    max_len: int
+    charset: str
+
+    def __init__(self: StringGen, min_len: int, max_len: int, charset: str) -> None:
+        self.min_len = min_len
+        self.max_len = max_len
+        self.charset = charset
+
+    def generate(self: StringGen, prng: Prng) -> str:
+        target_len: int = prng.next_int_range(self.min_len, self.max_len)
+        if target_len == 0:
+            return ""
+
+        chars_count: int = len(self.charset)
+        result: str = ""
+        i: int = 0
+        while i < target_len:
+            idx: int = prng.choose_index(chars_count)
+            ch: str = self.charset[idx]
+            result = result + ch
+            i = i + 1
+        return result
+
+class ByteGen:
+    min_len: int
+    max_len: int
+
+    def __init__(self: ByteGen, min_len: int, max_len: int) -> None:
+        self.min_len = min_len
+        self.max_len = max_len
+
+    def generate(self: ByteGen, prng: Prng) -> list[int]:
+        target_len: int = prng.next_int_range(self.min_len, self.max_len)
+        bytes_list: list[int] = []
+        i: int = 0
+        while i < target_len:
+            byte_val: int = prng.next_int_range(0, 255)
+            bytes_list.append(byte_val)
+            i = i + 1
+        return bytes_list
+
+class ListIntGen:
+    min_len: int
+    max_len: int
+    item_gen: IntGen
+
+    def __init__(self: ListIntGen, min_len: int, max_len: int, item_gen: IntGen) -> None:
+        self.min_len = min_len
+        self.max_len = max_len
+        self.item_gen = item_gen
+
+    def generate(self: ListIntGen, prng: Prng) -> list[int]:
+        target_len: int = prng.next_int_range(self.min_len, self.max_len)
+        items: list[int] = []
+        i: int = 0
+        while i < target_len:
+            items.append(self.item_gen.generate(prng))
+            i = i + 1
+        return items

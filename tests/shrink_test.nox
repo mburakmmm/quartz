@@ -1,0 +1,46 @@
+# Quartz Shrink Test — Minimal Counterexample Verification
+from property.shrink import shrink_int, shrink_str, shrink_list_int, ShrinkResultInt, ShrinkResultStr, ShrinkResultListInt
+from core.assert import assert_eq_int, assert_eq_str, assert_true
+import nox.strings
+
+def invariant_less_than_50(x: int) -> bool:
+    return x < 50
+
+def invariant_positive(x: int) -> bool:
+    # Fails for 0 and negative numbers
+    return x > 0
+
+def invariant_no_x_char(s: str) -> bool:
+    return not nox.strings.contains(s, "x")
+
+def invariant_len_less_than_3(xs: list[int]) -> bool:
+    return len(xs) < 3
+
+def test_shrink_int_boundary() -> None:
+    res: ShrinkResultInt = shrink_int(240, invariant_less_than_50, 200)
+    assert_true(res.value >= 50, "shrunk value must still violate invariant")
+    assert_true(res.value < 240, "shrunk value must be strictly smaller than initial")
+    assert_eq_int(res.value, 50, "minimal failing counterexample is 50")
+
+def test_shrink_int_zero() -> None:
+    # -80 violates x > 0. Shrinker should immediately try and shrink to 0.
+    res: ShrinkResultInt = shrink_int(-80, invariant_positive, 200)
+    assert_eq_int(res.value, 0, "minimal failing counterexample is 0")
+
+def test_shrink_string_delta_debugging() -> None:
+    # "abcdefgx123456" violates invariant (contains 'x'). Shrinker should drop chunks until 'x' remains.
+    res: ShrinkResultStr = shrink_str("abcdefgx123456", invariant_no_x_char, 200)
+    assert_true(nox.strings.contains(res.value, "x"), "shrunk string must still contain 'x'")
+    assert_eq_str(res.value, "x", "minimal failing counterexample is 'x'")
+
+def test_shrink_list_chunk_deletion() -> None:
+    initial_list: list[int] = [10, 20, 30, 40, 50, 60, 70, 80]
+    res: ShrinkResultListInt = shrink_list_int(initial_list, invariant_len_less_than_3, 200)
+    assert_true(len(res.value) >= 3, "shrunk list must still violate len < 3")
+    assert_eq_int(len(res.value), 3, "minimal failing counterexample has exactly length 3")
+
+test_shrink_int_boundary()
+test_shrink_int_zero()
+test_shrink_string_delta_debugging()
+test_shrink_list_chunk_deletion()
+print("quartz shrink test: ALL PASS")

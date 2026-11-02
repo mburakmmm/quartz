@@ -1,0 +1,65 @@
+# Quartz Property Test — Deterministic Runs, Failure Shrinking and Replay
+from property.generator import IntGen, StringGen, CHARSET_TURKISH_UNICODE
+from property.property import PropertyConfig, PropertyResult, run_int_property, run_str_property, default_property_config
+from property.replay import replay_int_case, save_failure_artifact
+from core.assert import assert_eq_int, assert_eq_str, assert_true, assert_false
+import nox.fs
+
+def prop_addition_commutative(x: int) -> bool:
+    return (x + 10) == (10 + x)
+
+def prop_bounded_int(x: int) -> bool:
+    # Fails if x >= 150
+    return x < 150
+
+def prop_string_doubling_len(s: str) -> bool:
+    doubled: str = s + s
+    return len(doubled) == (2 * len(s))
+
+def test_1000_case_deterministic_run() -> None:
+    cfg1: PropertyConfig = PropertyConfig(1000, 5, 7777, 5000)
+    gen: IntGen = IntGen(-100000, 100000, True)
+
+    # Run 1
+    res1: PropertyResult = run_int_property("int_commutative", cfg1, gen, prop_addition_commutative)
+    assert_true(res1.is_passed(), "all 1000 cases must pass")
+    assert_eq_int(res1.cases_executed, 1000, "executed exactly 1000 cases")
+
+    # Run 2 with identical seed
+    cfg2: PropertyConfig = PropertyConfig(1000, 5, 7777, 5000)
+    res2: PropertyResult = run_int_property("int_commutative", cfg2, gen, prop_addition_commutative)
+    assert_true(res2.is_passed(), "run 2 must pass identically")
+    assert_eq_int(res2.cases_executed, 1000, "run 2 executed exactly 1000 cases")
+
+def test_failure_shrinking_and_replay() -> None:
+    cfg: PropertyConfig = PropertyConfig(100, 5, 9999, 5000)
+    gen: IntGen = IntGen(0, 500, False)
+
+    # Invariant x < 150 will fail because generator produces up to 500
+    res: PropertyResult = run_int_property("bounded_int_fail", cfg, gen, prop_bounded_int)
+    assert_false(res.is_passed(), "property must fail")
+    assert_true(res.failing_case_index >= 0, "failing case index recorded")
+    assert_eq_str(res.shrunk_counterexample, "150", "shrunk counterexample must be exactly 150")
+
+    # Replay using the saved seed and case index
+    reproduced: bool = replay_int_case("bounded_int_fail", res.seed, res.failing_case_index, gen, prop_bounded_int)
+    assert_true(reproduced, "failing case must be 100% reproducible via replay")
+
+    # Save failure artifact to disk and verify JSON content
+    artifact_path: str = "fixtures/failure_artifact_test.json"
+    save_failure_artifact(artifact_path, res)
+    assert_true(nox.fs.exists(artifact_path), "artifact file exists")
+    nox.fs.remove_file(artifact_path)
+
+def test_unicode_string_property() -> None:
+    cfg: PropertyConfig = PropertyConfig(100, 5, 4242, 5000)
+    str_gen: StringGen = StringGen(0, 30, CHARSET_TURKISH_UNICODE)
+
+    res: PropertyResult = run_str_property("str_double_len", cfg, str_gen, prop_string_doubling_len)
+    assert_true(res.is_passed(), "string doubling property holds for all unicode inputs")
+    assert_eq_int(res.cases_executed, 100, "100 string cases executed")
+
+test_1000_case_deterministic_run()
+test_failure_shrinking_and_replay()
+test_unicode_string_property()
+print("quartz property test: ALL PASS")

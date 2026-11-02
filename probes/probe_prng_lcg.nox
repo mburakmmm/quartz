@@ -1,0 +1,17 @@
+class Prng:
+    state: int
+
+    def __init__(self: Prng, seed: int) -> None:
+        self.state = seed
+
+    def next_int(self: Prng) -> int:
+        # Knuth MMIX 64-bit LCG
+        self.state = self.state * 6364136223846793005 + 1442695040888963407
+        raw: int = (self.state >> 1) & 9223372036854775807
+        return raw
+
+p: Prng = Prng(42)
+i: int = 0
+while i < 5:
+    print(p.next_int())
+    i = i + 1

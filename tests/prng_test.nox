@@ -1,0 +1,51 @@
+# Quartz PRNG Test — Determinism and Golden Vector Verification
+from core.prng import Prng, PRNG_VERSION, derive_case_seed
+from core.assert import assert_eq_int, assert_true, assert_false
+
+def test_prng_golden_vector() -> None:
+    # Golden vector for seed 42 with PRNG_VERSION = 1
+    p: Prng = Prng(42)
+    v1: int = p.next_int()
+    v2: int = p.next_int()
+    v3: int = p.next_int()
+    v4: int = p.next_int()
+    v5: int = p.next_int()
+
+    assert_eq_int(v1, 5240999705260273496, "golden vector v1")
+    assert_eq_int(v2, 2079533085890083510, "golden vector v2")
+    assert_eq_int(v3, 3807761405634256037, "golden vector v3")
+    assert_eq_int(v4, 5814395744978330687, "golden vector v4")
+    assert_eq_int(v5, 6273256266245021882, "golden vector v5")
+
+def test_prng_ranges() -> None:
+    p: Prng = Prng(1337)
+    i: int = 0
+    while i < 100:
+        val: int = p.next_int_range(-50, 50)
+        assert_true(val >= -50, "range min bound")
+        assert_true(val <= 50, "range max bound")
+
+        fval: float = p.next_float()
+        assert_true(fval >= 0.0, "float lower bound")
+        assert_true(fval < 1.0, "float upper bound")
+
+        idx: int = p.choose_index(10)
+        assert_true(idx >= 0, "choose_index lower bound")
+        assert_true(idx < 10, "choose_index upper bound")
+        i = i + 1
+
+def test_seed_derivation() -> None:
+    s1: int = derive_case_seed(100, "test_reverse", 0, PRNG_VERSION)
+    s2: int = derive_case_seed(100, "test_reverse", 0, PRNG_VERSION)
+    assert_eq_int(s1, s2, "seed derivation must be deterministic")
+
+    s3: int = derive_case_seed(100, "test_reverse", 1, PRNG_VERSION)
+    assert_true(s1 != s3, "different case index must yield distinct seed")
+
+    s4: int = derive_case_seed(100, "test_sort", 0, PRNG_VERSION)
+    assert_true(s1 != s4, "different test id must yield distinct seed")
+
+test_prng_golden_vector()
+test_prng_ranges()
+test_seed_derivation()
+print("quartz prng test: ALL PASS")
