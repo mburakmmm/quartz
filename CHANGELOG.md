@@ -3,6 +3,16 @@
 All notable changes to the Quartz test framework will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] - 2026-11-02 - Phase 5.2: Bounded Load Testing, Latency Metrics & Thresholds
+
+### Added
+- **Safety Guardrails & Circuit Breaker (`load/safety.nox`)**: Hard upper bounds for virtual users (<= 20), duration (<= 60s), rate (<= 100 req/s), in-flight work (<= 50), and timeouts (`SafetyLimits`). Automatic circuit breaker tripping on consecutive errors (`CircuitBreaker`, `CircuitBreakerTrippedError`). Strict loopback and authorized remote target validation (`validate_load_target`).
+- **Bounded Histograms & Latency Metrics (`load/metrics.nox`)**: Fixed 136-bucket logarithmic-linear latency histogram guaranteeing bounded $O(1)$ memory. High-precision percentiles (`p50`, `p90`, `p95`, `p99`, `min`, `max`, `mean_latency_ms`), throughput calculation (`throughput_rps`), error rate tracking, and JSON serialization (`LoadMetrics`).
+- **Performance Threshold Criteria (`load/thresholds.nox`)**: Declarative performance thresholds (`Threshold`) with comparative operators (`<=`, `<`, `>=`, `>`, `==`). Strict edge-case protection ensuring zero successful requests can never pass a latency threshold.
+- **Workload Models & Scheduler (`load/workload.nox`, `load/executor.nox`)**: Closed workload model with virtual users (`closed_workload`) and open workload model with target arrival rate and bounded in-flight backpressure (`open_workload`). Generic task execution (`run_task_workload`) and HTTP handler load driver (`run_handler_load_test`).
+- **Example (`examples/load_local_example.nox`)**: Runnable example demonstrating in-process HTTP handler load testing with throughput, latency percentiles, and threshold validation.
+- **Test Suites (`tests/load_metrics_test.nox`, `tests/load_scheduler_test.nox`)**: Comprehensive test suites verifying histogram bucketing, percentile monotonicity, threshold criteria, safety limits clamping, circuit breaker aborts, and workload execution.
+
 ## [0.5.0] - 2026-11-02 - Phase 5.1: Authorized Local HTTP Network Transport
 
 ### Added

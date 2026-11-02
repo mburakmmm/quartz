@@ -1,4 +1,4 @@
-# Quartz API Reference — v0.5.0
+# Quartz API Reference — v0.6.0
 
 ## 1. Core Types (`core/types.nox`)
 
@@ -254,5 +254,77 @@ Bounded deterministic byte and structured mutations:
   - `.is_success: bool`
 - `run_network_contract_check(req: HttpRequest, base_url: str, policy: NetworkPolicy, expected_statuses: list[int], required_headers: list[str], expected_content_type: str, body_schema: SchemaDescriptor | None) -> ContractCheckResult`
 - `ContractTestCase.run_on_network(base_url: str, policy: NetworkPolicy) -> ContractCheckResult`
+
+---
+
+## 17. Load Safety Guardrails & Circuit Breaker (`load/safety.nox`)
+
+- `LoadSafetyError(Exception)`
+- `CircuitBreakerTrippedError(LoadSafetyError)`
+- Hard safety limits:
+  - `HARD_CAP_VIRTUAL_USERS: int = 20`
+  - `HARD_CAP_DURATION_SECONDS: int = 60`
+  - `HARD_CAP_RATE_RPS: int = 100`
+  - `HARD_CAP_IN_FLIGHT: int = 50`
+  - `HARD_CAP_TIMEOUT_MS: int = 10000`
+- `SafetyLimits(virtual_users: int = 5, duration_seconds: int = 5, rate_rps: int = 10, max_in_flight: int = 10, timeout_ms: int = 2000, max_consecutive_errors: int = 5, max_error_ratio: float = 0.5)`
+- `default_safety_limits() -> SafetyLimits`
+- `CircuitBreaker(max_consecutive: int = 5)`
+  - `.record_success() -> None`
+  - `.record_failure(reason: str) -> None`
+  - `.check_healthy() -> None` (raises `CircuitBreakerTrippedError` when tripped)
+- `validate_load_target(target: str, authorized_target: str = "") -> None`
+
+---
+
+## 18. Bounded Histograms & Latency Metrics (`load/metrics.nox`)
+
+- `LoadMetrics()`
+  - Fixed 136-bucket logarithmic-linear histogram guaranteeing $O(1)$ memory usage.
+  - `.record_scheduled() -> None`
+  - `.record_rejected() -> None`
+  - `.record_result(status_code: int, duration_ms: int, is_timeout: bool, is_success: bool) -> None`
+  - `.p50() -> int`
+  - `.p90() -> int`
+  - `.p95() -> int`
+  - `.p99() -> int`
+  - `.percentile(p: float) -> int`
+  - `.mean_latency_ms() -> float`
+  - `.throughput_rps(total_duration_ms: int) -> float`
+  - `.error_rate() -> float`
+  - `.to_json(total_duration_ms: int) -> str`
+
+---
+
+## 19. Performance Threshold Criteria (`load/thresholds.nox`)
+
+- `Threshold(metric_name: str, operator: str, target_value: float)`
+  - Supported metrics: `p50`, `p90`, `p95`, `p99`, `mean_latency_ms`, `max_latency_ms`, `error_rate`, `throughput_rps`, `failed`, `timed_out`, `rejected`.
+  - Supported operators: `<=`, `<`, `>=`, `>`, `==`.
+- `ThresholdResult`
+  - `.passed: bool`
+  - `.message: str`
+- `evaluate_threshold(t: Threshold, metrics: LoadMetrics, total_duration_ms: int) -> ThresholdResult`
+- `evaluate_all_thresholds(thresholds: list[Threshold], metrics: LoadMetrics, total_duration_ms: int) -> list[ThresholdResult]`
+- `all_thresholds_passed(results: list[ThresholdResult]) -> bool`
+
+---
+
+## 20. Workload Models & Scheduler (`load/workload.nox`, `load/executor.nox`)
+
+- `MODEL_CLOSED: str = "closed"`
+- `MODEL_OPEN: str = "open"`
+- `WorkloadConfig(name: str, model: str = "closed", virtual_users: int = 5, duration_seconds: int = 5, target_rps: int = 10, max_in_flight: int = 10, max_iterations: int = 100, warmup_seconds: int = 0)`
+- `closed_workload(name: str, virtual_users: int = 5, duration_seconds: int = 5, max_iterations: int = 100) -> WorkloadConfig`
+- `open_workload(name: str, target_rps: int = 10, duration_seconds: int = 5, max_in_flight: int = 10, max_iterations: int = 100) -> WorkloadConfig`
+- `LoadTestSummary`
+  - `.all_passed: bool`
+  - `.aborted: bool`
+  - `.abort_reason: str`
+  - `.metrics: LoadMetrics`
+  - `.threshold_results: list[ThresholdResult]`
+  - `.to_json() -> str`
+- `run_task_workload(workload: WorkloadConfig, task_func: (int) -> bool, thresholds: list[Threshold], limits: SafetyLimits) -> LoadTestSummary`
+- `run_handler_load_test(workload: WorkloadConfig, handler: (HttpRequest) -> HttpResponse, req: HttpRequest, thresholds: list[Threshold], limits: SafetyLimits) -> LoadTestSummary`
 
 

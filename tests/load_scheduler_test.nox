@@ -1,0 +1,146 @@
+# Quartz Load — Scheduler, Safety Guardrails & Workload Test Suite
+import nox.http
+from nox.http import HttpRequest, HttpResponse
+from core.assert import assert_true, assert_false, assert_eq_int, assert_contains_str
+from load.safety import SafetyLimits, default_safety_limits, CircuitBreaker, CircuitBreakerTrippedError
+from load.safety import validate_load_target, LoadSafetyError, HARD_CAP_VIRTUAL_USERS, HARD_CAP_DURATION_SECONDS, HARD_CAP_RATE_RPS
+from load.workload import WorkloadConfig, closed_workload, open_workload, MODEL_CLOSED, MODEL_OPEN
+from load.metrics import LoadMetrics
+from load.thresholds import Threshold
+from load.executor import LoadTestSummary, run_task_workload, run_handler_load_test
+from contract.http import build_request, empty_headers
+
+def test_safety_limits_clamping() -> None:
+    # 1. Values exceeding hard caps must be clamped down
+    over_limits: SafetyLimits = SafetyLimits(1000, 3600, 50000, 1000, 99999)
+    assert_eq_int(over_limits.virtual_users, HARD_CAP_VIRTUAL_USERS, "VU clamped to hard cap")
+    assert_eq_int(over_limits.duration_seconds, HARD_CAP_DURATION_SECONDS, "duration clamped to hard cap")
+    assert_eq_int(over_limits.rate_rps, HARD_CAP_RATE_RPS, "rate clamped to hard cap")
+
+    # 2. Values below 1 must be normalized to 1
+    under_limits: SafetyLimits = SafetyLimits(0, 0, 0, 0, 0)
+    assert_eq_int(under_limits.virtual_users, 1, "VU floor 1")
+    assert_eq_int(under_limits.duration_seconds, 1, "duration floor 1")
+
+def test_load_target_validation() -> None:
+    # Loopback targets are always allowed
+    validate_load_target("http://127.0.0.1:8080/api")
+    validate_load_target("http://localhost:3000/api")
+
+    # Remote targets strictly rejected without authorized_target
+    threw_unauthorized: bool = False
+    try:
+        validate_load_target("http://api.production.internal/v1")
+    except LoadSafetyError as e:
+        threw_unauthorized = True
+    assert_true(threw_unauthorized, "remote target without authorization must be rejected")
+
+    # Matching authorized target passes
+    validate_load_target("http://api.corp.internal:8080/v1", "http://api.corp.internal:8080")
+
+def test_circuit_breaker() -> None:
+    cb: CircuitBreaker = CircuitBreaker(3)
+    assert_false(cb.is_tripped, "initially not tripped")
+
+    cb.record_failure("error 1")
+    assert_false(cb.is_tripped, "not tripped after 1 error")
+    cb.check_healthy()
+
+    cb.record_success()
+    assert_eq_int(cb.consecutive_errors, 0, "success resets consecutive errors")
+
+    cb.record_failure("error 1")
+    cb.record_failure("error 2")
+    cb.record_failure("error 3")
+    assert_true(cb.is_tripped, "tripped after 3 consecutive failures")
+
+    threw_trip: bool = False
+    try:
+        cb.check_healthy()
+    except CircuitBreakerTrippedError as e:
+        threw_trip = True
+    assert_true(threw_trip, "check_healthy raises CircuitBreakerTrippedError when tripped")
+
+def mock_fast_task(case_idx: int) -> bool:
+    # A fast, reliable in-memory task
+    return True
+
+def mock_flaky_task(case_idx: int) -> bool:
+    # Fails after first 5 cases
+    if case_idx >= 5:
+        return False
+    return True
+
+def test_closed_workload_execution() -> None:
+    limits: SafetyLimits = default_safety_limits()
+    wl: WorkloadConfig = closed_workload("fast_test", 3, 2, 30)
+    thresholds: list[Threshold] = [
+        Threshold("p95_latency_ms", "<=", 100.0),
+        Threshold("error_rate", "<=", 0.0)
+    ]
+
+    summary: LoadTestSummary = run_task_workload(wl, mock_fast_task, thresholds, limits)
+
+    assert_false(summary.aborted, "should complete without abort")
+    assert_true(summary.all_passed, "all performance thresholds passed")
+    assert_eq_int(summary.metrics.completed, 30, "30 cases completed")
+    assert_eq_int(summary.metrics.successful, 30, "30 cases successful")
+    assert_eq_int(summary.metrics.failed, 0, "0 cases failed")
+
+def test_open_workload_execution() -> None:
+    limits: SafetyLimits = default_safety_limits()
+    wl: WorkloadConfig = open_workload("open_test", 10, 2, 5, 25)
+    thresholds: list[Threshold] = [
+        Threshold("error_rate", "<=", 0.0)
+    ]
+
+    summary: LoadTestSummary = run_task_workload(wl, mock_fast_task, thresholds, limits)
+
+    assert_false(summary.aborted, "open workload completed without abort")
+    assert_true(summary.all_passed, "threshold passed")
+    assert_eq_int(summary.metrics.completed, 25, "25 cases completed")
+
+def test_circuit_breaker_abort_in_workload() -> None:
+    limits: SafetyLimits = SafetyLimits(3, 2, 10, 10, 2000, 4)
+    wl: WorkloadConfig = closed_workload("failing_test", 1, 2, 50)
+    thresholds: list[Threshold] = []
+
+    # Flaky task fails continuously after case 5, tripping circuit breaker after 4 consecutive failures
+    summary: LoadTestSummary = run_task_workload(wl, mock_flaky_task, thresholds, limits)
+
+    assert_true(summary.aborted, "workload should be aborted by circuit breaker")
+    assert_contains_str(summary.abort_reason, "circuit breaker tripped", "abort reason mentions circuit breaker")
+    assert_true(summary.metrics.completed < 50, "stopped early before completing all 50 cases")
+
+def mock_http_api(req: HttpRequest) -> HttpResponse:
+    headers: dict[str, str] = {}
+    headers["Content-Type"] = "application/json"
+    if req.target == "/ping":
+        return HttpResponse(200, "{\"pong\":true}", headers)
+    return HttpResponse(404, "{\"error\":\"not found\"}", headers)
+
+def test_handler_load_runner() -> None:
+    limits: SafetyLimits = default_safety_limits()
+    wl: WorkloadConfig = closed_workload("api_smoke", 2, 2, 20)
+    req: HttpRequest = build_request("GET", "/ping", "", empty_headers())
+    thresholds: list[Threshold] = [
+        Threshold("p95", "<=", 50.0),
+        Threshold("error_rate", "<=", 0.0)
+    ]
+
+    summary: LoadTestSummary = run_handler_load_test(wl, mock_http_api, req, thresholds, limits)
+    assert_true(summary.all_passed, "handler load test passed")
+    assert_eq_int(summary.metrics.completed, 20, "20 requests executed against handler")
+    assert_eq_int(summary.metrics.successful, 20, "20 successful responses")
+
+def run_all_load_scheduler_tests() -> None:
+    test_safety_limits_clamping()
+    test_load_target_validation()
+    test_circuit_breaker()
+    test_closed_workload_execution()
+    test_open_workload_execution()
+    test_circuit_breaker_abort_in_workload()
+    test_handler_load_runner()
+    print("quartz load scheduler test: ALL PASS")
+
+run_all_load_scheduler_tests()

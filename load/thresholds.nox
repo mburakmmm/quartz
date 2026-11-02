@@ -1,0 +1,107 @@
+# Quartz Load — Performance Threshold Criteria & Evaluator
+from load.metrics import LoadMetrics
+
+class Threshold:
+    metric_name: str
+    operator: str
+    target_value: float
+
+    def __init__(self: Threshold, metric_name: str, operator: str, target_value: float) -> None:
+        self.metric_name = metric_name
+        self.operator = operator
+        self.target_value = target_value
+
+class ThresholdResult:
+    metric_name: str
+    operator: str
+    target_value: float
+    actual_value: float
+    passed: bool
+    message: str
+
+    def __init__(self: ThresholdResult, metric_name: str, operator: str, target_value: float, actual_value: float, passed: bool, message: str) -> None:
+        self.metric_name = metric_name
+        self.operator = operator
+        self.target_value = target_value
+        self.actual_value = actual_value
+        self.passed = passed
+        self.message = message
+
+def evaluate_threshold(t: Threshold, metrics: LoadMetrics, total_duration_ms: int) -> ThresholdResult:
+    # Resolve metric actual value
+    actual: float = 0.0
+    is_latency_metric: bool = False
+
+    if t.metric_name == "p50_latency_ms" or t.metric_name == "p50":
+        actual = float(metrics.p50())
+        is_latency_metric = True
+    elif t.metric_name == "p90_latency_ms" or t.metric_name == "p90":
+        actual = float(metrics.p90())
+        is_latency_metric = True
+    elif t.metric_name == "p95_latency_ms" or t.metric_name == "p95":
+        actual = float(metrics.p95())
+        is_latency_metric = True
+    elif t.metric_name == "p99_latency_ms" or t.metric_name == "p99":
+        actual = float(metrics.p99())
+        is_latency_metric = True
+    elif t.metric_name == "mean_latency_ms" or t.metric_name == "mean":
+        actual = metrics.mean_latency_ms()
+        is_latency_metric = True
+    elif t.metric_name == "max_latency_ms" or t.metric_name == "max":
+        actual = float(metrics.max_latency_ms)
+        is_latency_metric = True
+    elif t.metric_name == "error_rate":
+        actual = metrics.error_rate()
+    elif t.metric_name == "throughput_rps" or t.metric_name == "rps":
+        actual = metrics.throughput_rps(total_duration_ms)
+    elif t.metric_name == "failed":
+        actual = float(metrics.failed)
+    elif t.metric_name == "timed_out":
+        actual = float(metrics.timed_out)
+    elif t.metric_name == "rejected":
+        actual = float(metrics.rejected)
+    else:
+        return ThresholdResult(t.metric_name, t.operator, t.target_value, 0.0, False, "unknown threshold metric: " + t.metric_name)
+
+    # Edge case: zero successful requests cannot pass any latency threshold
+    if is_latency_metric and metrics.successful <= 0:
+        return ThresholdResult(t.metric_name, t.operator, t.target_value, 0.0, False, "latency threshold failed: 0 successful requests recorded")
+
+    passed: bool = False
+    if t.operator == "<=":
+        passed = (actual <= t.target_value)
+    elif t.operator == "<":
+        passed = (actual < t.target_value)
+    elif t.operator == ">=":
+        passed = (actual >= t.target_value)
+    elif t.operator == ">":
+        passed = (actual > t.target_value)
+    elif t.operator == "==":
+        diff: float = actual - t.target_value
+        if diff < 0.0:
+            diff = -diff
+        passed = (diff < 0.0001)
+
+    status_str: str = "PASSED"
+    if not passed:
+        status_str = "FAILED"
+    msg: str = t.metric_name + " " + status_str + ": actual " + str(actual) + " " + t.operator + " target " + str(t.target_value)
+
+    return ThresholdResult(t.metric_name, t.operator, t.target_value, actual, passed, msg)
+
+def evaluate_all_thresholds(thresholds: list[Threshold], metrics: LoadMetrics, total_duration_ms: int) -> list[ThresholdResult]:
+    results: list[ThresholdResult] = []
+    i: int = 0
+    while i < len(thresholds):
+        r: ThresholdResult = evaluate_threshold(thresholds[i], metrics, total_duration_ms)
+        results.append(r)
+        i = i + 1
+    return results
+
+def all_thresholds_passed(results: list[ThresholdResult]) -> bool:
+    i: int = 0
+    while i < len(results):
+        if not results[i].passed:
+            return False
+        i = i + 1
+    return True

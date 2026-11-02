@@ -1,0 +1,31 @@
+# Quartz Load — Workload Models & Scenario Descriptors
+from load.safety import SafetyLimits, default_safety_limits
+
+MODEL_CLOSED: str = "closed"
+MODEL_OPEN: str = "open"
+
+class WorkloadConfig:
+    name: str
+    model: str
+    virtual_users: int
+    duration_seconds: int
+    target_rps: int
+    max_in_flight: int
+    max_iterations: int
+    warmup_seconds: int
+
+    def __init__(self: WorkloadConfig, name: str, model: str = "closed", virtual_users: int = 5, duration_seconds: int = 5, target_rps: int = 10, max_in_flight: int = 10, max_iterations: int = 100, warmup_seconds: int = 0) -> None:
+        self.name = name
+        self.model = model
+        self.virtual_users = virtual_users
+        self.duration_seconds = duration_seconds
+        self.target_rps = target_rps
+        self.max_in_flight = max_in_flight
+        self.max_iterations = max_iterations
+        self.warmup_seconds = warmup_seconds
+
+def closed_workload(name: str, virtual_users: int = 5, duration_seconds: int = 5, max_iterations: int = 100) -> WorkloadConfig:
+    return WorkloadConfig(name, MODEL_CLOSED, virtual_users, duration_seconds, 0, virtual_users, max_iterations, 0)
+
+def open_workload(name: str, target_rps: int = 10, duration_seconds: int = 5, max_in_flight: int = 10, max_iterations: int = 100) -> WorkloadConfig:
+    return WorkloadConfig(name, MODEL_OPEN, 1, duration_seconds, target_rps, max_in_flight, max_iterations, 0)

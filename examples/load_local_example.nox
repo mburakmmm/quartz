@@ -1,0 +1,54 @@
+# Quartz Load Example — Bounded Local HTTP Handler Load Testing
+import nox.http
+from nox.http import HttpRequest, HttpResponse
+from load.safety import SafetyLimits, default_safety_limits
+from load.workload import WorkloadConfig, closed_workload
+from load.thresholds import Threshold, ThresholdResult
+from load.executor import LoadTestSummary, run_handler_load_test
+from contract.http import build_request, empty_headers
+
+print("=== Quartz Local Handler Load Test Example ===")
+
+# 1. Define a mock service endpoint handler
+def sample_api_handler(req: HttpRequest) -> HttpResponse:
+    headers: dict[str, str] = {}
+    headers["Content-Type"] = "application/json"
+    if req.target == "/items":
+        return HttpResponse(200, "{\"status\":\"ok\",\"items\":[1,2,3]}", headers)
+    return HttpResponse(404, "{\"error\":\"not found\"}", headers)
+
+# 2. Configure workload: closed model with 3 virtual users, 50 requests
+workload: WorkloadConfig = closed_workload("items_api_smoke", 3, 5, 50)
+safety: SafetyLimits = default_safety_limits()
+
+# 3. Define performance thresholds
+thresholds: list[Threshold] = [
+    Threshold("p95_latency_ms", "<=", 50.0),
+    Threshold("error_rate", "<=", 0.01),
+    Threshold("throughput_rps", ">=", 10.0)
+]
+
+# 4. Execute load scenario
+req: HttpRequest = build_request("GET", "/items", "", empty_headers())
+summary: LoadTestSummary = run_handler_load_test(workload, sample_api_handler, req, thresholds, safety)
+
+# 5. Display results
+print("Workload: " + summary.workload_name)
+print("Total Duration: " + str(summary.total_duration_ms) + " ms")
+print("Completed Requests: " + str(summary.metrics.completed))
+print("Throughput: " + str(summary.metrics.throughput_rps(summary.total_duration_ms)) + " req/s")
+print("p50 Latency: " + str(summary.metrics.p50()) + " ms")
+print("p95 Latency: " + str(summary.metrics.p95()) + " ms")
+print("p99 Latency: " + str(summary.metrics.p99()) + " ms")
+print("All Thresholds Passed: " + str(summary.all_passed))
+
+i: int = 0
+while i < len(summary.threshold_results):
+    tr: ThresholdResult = summary.threshold_results[i]
+    status_label: str = "PASS"
+    if not tr.passed:
+        status_label = "FAIL"
+    print("  [" + status_label + "] " + tr.message)
+    i = i + 1
+
+print("=== Example completed successfully ===")

@@ -1,0 +1,119 @@
+# Quartz Load — Safety Guardrails, Limits & Circuit Breaker
+import nox.strings
+from contract.http_network import is_loopback_host, parse_url, ParsedUrl
+
+# Hard safety caps — cannot be bypassed without explicit operator authorization
+HARD_CAP_VIRTUAL_USERS: int = 20
+HARD_CAP_DURATION_SECONDS: int = 60
+HARD_CAP_RATE_RPS: int = 100
+HARD_CAP_IN_FLIGHT: int = 50
+HARD_CAP_TIMEOUT_MS: int = 10000
+
+# Recommended safe defaults for local test runs
+DEFAULT_VIRTUAL_USERS: int = 5
+DEFAULT_DURATION_SECONDS: int = 5
+DEFAULT_RATE_RPS: int = 10
+DEFAULT_IN_FLIGHT: int = 10
+DEFAULT_TIMEOUT_MS: int = 2000
+
+class LoadSafetyError(Exception):
+    pass
+
+class CircuitBreakerTrippedError(LoadSafetyError):
+    pass
+
+class SafetyLimits:
+    virtual_users: int
+    duration_seconds: int
+    rate_rps: int
+    max_in_flight: int
+    timeout_ms: int
+    max_consecutive_errors: int
+    max_error_ratio: float
+
+    def __init__(self: SafetyLimits, virtual_users: int = 5, duration_seconds: int = 5, rate_rps: int = 10, max_in_flight: int = 10, timeout_ms: int = 2000, max_consecutive_errors: int = 5, max_error_ratio: float = 0.5) -> None:
+        # Enforce hard upper bounds
+        vu: int = virtual_users
+        if vu > HARD_CAP_VIRTUAL_USERS:
+            vu = HARD_CAP_VIRTUAL_USERS
+        if vu < 1:
+            vu = 1
+        self.virtual_users = vu
+
+        dur: int = duration_seconds
+        if dur > HARD_CAP_DURATION_SECONDS:
+            dur = HARD_CAP_DURATION_SECONDS
+        if dur < 1:
+            dur = 1
+        self.duration_seconds = dur
+
+        rate: int = rate_rps
+        if rate > HARD_CAP_RATE_RPS:
+            rate = HARD_CAP_RATE_RPS
+        if rate < 1:
+            rate = 1
+        self.rate_rps = rate
+
+        inflight: int = max_in_flight
+        if inflight > HARD_CAP_IN_FLIGHT:
+            inflight = HARD_CAP_IN_FLIGHT
+        if inflight < 1:
+            inflight = 1
+        self.max_in_flight = inflight
+
+        t_ms: int = timeout_ms
+        if t_ms > HARD_CAP_TIMEOUT_MS:
+            t_ms = HARD_CAP_TIMEOUT_MS
+        if t_ms < 50:
+            t_ms = 50
+        self.timeout_ms = t_ms
+
+        self.max_consecutive_errors = max_consecutive_errors
+        self.max_error_ratio = max_error_ratio
+
+def default_safety_limits() -> SafetyLimits:
+    return SafetyLimits(DEFAULT_VIRTUAL_USERS, DEFAULT_DURATION_SECONDS, DEFAULT_RATE_RPS, DEFAULT_IN_FLIGHT, DEFAULT_TIMEOUT_MS)
+
+class CircuitBreaker:
+    max_consecutive: int
+    consecutive_errors: int
+    total_samples: int
+    total_errors: int
+    is_tripped: bool
+    trip_reason: str
+
+    def __init__(self: CircuitBreaker, max_consecutive: int = 5) -> None:
+        self.max_consecutive = max_consecutive
+        self.consecutive_errors = 0
+        self.total_samples = 0
+        self.total_errors = 0
+        self.is_tripped = False
+        self.trip_reason = ""
+
+    def record_success(self: CircuitBreaker) -> None:
+        self.total_samples = self.total_samples + 1
+        self.consecutive_errors = 0
+
+    def record_failure(self: CircuitBreaker, reason: str) -> None:
+        self.total_samples = self.total_samples + 1
+        self.total_errors = self.total_errors + 1
+        self.consecutive_errors = self.consecutive_errors + 1
+        if self.consecutive_errors >= self.max_consecutive:
+            self.is_tripped = True
+            self.trip_reason = "circuit breaker tripped: " + str(self.consecutive_errors) + " consecutive errors (" + reason + ")"
+
+    def check_healthy(self: CircuitBreaker) -> None:
+        if self.is_tripped:
+            raise CircuitBreakerTrippedError(self.trip_reason)
+
+def validate_load_target(target: str, authorized_target: str = "") -> None:
+    # If target is an HTTP URL, enforce safety check
+    if nox.strings.starts_with(target, "http://") or nox.strings.starts_with(target, "https://"):
+        parsed: ParsedUrl = parse_url(target)
+        if is_loopback_host(parsed.host):
+            return
+        if len(authorized_target) == 0:
+            raise LoadSafetyError("load test target '" + target + "' rejected: remote load tests strictly prohibited without authorized_target")
+        auth_parsed: ParsedUrl = parse_url(authorized_target)
+        if parsed.scheme != auth_parsed.scheme or parsed.host != auth_parsed.host or parsed.port != auth_parsed.port:
+            raise LoadSafetyError("load target origin '" + parsed.origin + "' does not match authorized origin '" + auth_parsed.origin + "'")

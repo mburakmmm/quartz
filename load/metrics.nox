@@ -1,0 +1,159 @@
+# Quartz Load — Bounded Latency Metrics & Histograms
+import nox.time
+from nox.time import Instant
+from core.report import escape_json
+
+HISTOGRAM_NUM_BUCKETS: int = 136
+
+def get_bucket_index(latency_ms: int) -> int:
+    if latency_ms <= 0:
+        return 0
+    if latency_ms < 100:
+        return latency_ms // 2
+    if latency_ms < 1000:
+        return 50 + (latency_ms - 100) // 20
+    if latency_ms < 5000:
+        return 95 + (latency_ms - 1000) // 100
+    return 135
+
+def get_bucket_midpoint(idx: int) -> int:
+    if idx <= 0:
+        return 1
+    if idx < 50:
+        return idx * 2 + 1
+    if idx < 95:
+        return 100 + (idx - 50) * 20 + 10
+    if idx < 135:
+        return 1000 + (idx - 95) * 100 + 50
+    return 5000
+
+class LoadMetrics:
+    scheduled: int
+    completed: int
+    successful: int
+    failed: int
+    timed_out: int
+    rejected: int
+    min_latency_ms: int
+    max_latency_ms: int
+    sum_latency_ms: int
+    buckets: list[int]
+
+    def __init__(self: LoadMetrics) -> None:
+        self.scheduled = 0
+        self.completed = 0
+        self.successful = 0
+        self.failed = 0
+        self.timed_out = 0
+        self.rejected = 0
+        self.min_latency_ms = -1
+        self.max_latency_ms = 0
+        self.sum_latency_ms = 0
+
+        # Initialize 136 buckets to 0
+        b: list[int] = []
+        i: int = 0
+        while i < HISTOGRAM_NUM_BUCKETS:
+            b.append(0)
+            i = i + 1
+        self.buckets = b
+
+    def record_scheduled(self: LoadMetrics) -> None:
+        self.scheduled = self.scheduled + 1
+
+    def record_rejected(self: LoadMetrics) -> None:
+        self.rejected = self.rejected + 1
+
+    def record_result(self: LoadMetrics, status_code: int, duration_ms: int, is_timeout: bool, is_success: bool) -> None:
+        self.completed = self.completed + 1
+        if is_timeout:
+            self.timed_out = self.timed_out + 1
+            self.failed = self.failed + 1
+            return
+
+        if not is_success or status_code >= 400:
+            self.failed = self.failed + 1
+            return
+
+        self.successful = self.successful + 1
+        self.sum_latency_ms = self.sum_latency_ms + duration_ms
+
+        if self.min_latency_ms < 0 or duration_ms < self.min_latency_ms:
+            self.min_latency_ms = duration_ms
+        if duration_ms > self.max_latency_ms:
+            self.max_latency_ms = duration_ms
+
+        # Record into bounded histogram bucket
+        b_idx: int = get_bucket_index(duration_ms)
+        self.buckets[b_idx] = self.buckets[b_idx] + 1
+
+    def percentile(self: LoadMetrics, p: float) -> int:
+        if self.successful <= 0:
+            return 0
+        
+        target_count: int = int(float(self.successful) * p / 100.0)
+        if target_count < 1:
+            target_count = 1
+
+        accum: int = 0
+        idx: int = 0
+        while idx < HISTOGRAM_NUM_BUCKETS:
+            accum = accum + self.buckets[idx]
+            if accum >= target_count:
+                return get_bucket_midpoint(idx)
+            idx = idx + 1
+
+        return self.max_latency_ms
+
+    def p50(self: LoadMetrics) -> int:
+        return self.percentile(50.0)
+
+    def p90(self: LoadMetrics) -> int:
+        return self.percentile(90.0)
+
+    def p95(self: LoadMetrics) -> int:
+        return self.percentile(95.0)
+
+    def p99(self: LoadMetrics) -> int:
+        return self.percentile(99.0)
+
+    def mean_latency_ms(self: LoadMetrics) -> float:
+        if self.successful <= 0:
+            return 0.0
+        return float(self.sum_latency_ms) / float(self.successful)
+
+    def throughput_rps(self: LoadMetrics, total_duration_ms: int) -> float:
+        if self.completed <= 0:
+            return 0.0
+        dur_ms: int = total_duration_ms
+        if dur_ms < 1:
+            dur_ms = 1
+        sec: float = float(dur_ms) / 1000.0
+        return float(self.completed) / sec
+
+    def error_rate(self: LoadMetrics) -> float:
+        total: int = self.completed + self.rejected
+        if total <= 0:
+            return 0.0
+        return float(self.failed + self.rejected) / float(total)
+
+    def to_json(self: LoadMetrics, total_duration_ms: int) -> str:
+        s: str = "{\n"
+        s = s + "  \"scheduled\": " + str(self.scheduled) + ",\n"
+        s = s + "  \"completed\": " + str(self.completed) + ",\n"
+        s = s + "  \"successful\": " + str(self.successful) + ",\n"
+        s = s + "  \"failed\": " + str(self.failed) + ",\n"
+        s = s + "  \"timed_out\": " + str(self.timed_out) + ",\n"
+        s = s + "  \"rejected\": " + str(self.rejected) + ",\n"
+        s = s + "  \"min_latency_ms\": " + str(self.min_latency_ms) + ",\n"
+        s = s + "  \"max_latency_ms\": " + str(self.max_latency_ms) + ",\n"
+        s = s + "  \"mean_latency_ms\": " + str(self.mean_latency_ms()) + ",\n"
+        s = s + "  \"p50_latency_ms\": " + str(self.p50()) + ",\n"
+        s = s + "  \"p90_latency_ms\": " + str(self.p90()) + ",\n"
+        s = s + "  \"p95_latency_ms\": " + str(self.p95()) + ",\n"
+        s = s + "  \"p99_latency_ms\": " + str(self.p99()) + ",\n"
+        s = s + "  \"throughput_rps\": " + str(self.throughput_rps(total_duration_ms)) + ",\n"
+        s = s + "  \"error_rate\": " + str(self.error_rate()) + ",\n"
+        s = s + "  \"total_duration_ms\": " + str(total_duration_ms) + "\n"
+        s = s + "}\n"
+        return s

@@ -1,0 +1,142 @@
+# Quartz Load — Workload Executor & Test Driver
+import nox.time
+import nox.http
+from nox.time import Instant
+from nox.http import HttpRequest, HttpResponse
+from load.safety import SafetyLimits, CircuitBreaker, default_safety_limits, CircuitBreakerTrippedError
+from load.metrics import LoadMetrics
+from load.workload import WorkloadConfig, MODEL_CLOSED, MODEL_OPEN
+from load.thresholds import Threshold, ThresholdResult, evaluate_all_thresholds, all_thresholds_passed
+
+class LoadTestSummary:
+    workload_name: str
+    metrics: LoadMetrics
+    threshold_results: list[ThresholdResult]
+    total_duration_ms: int
+    all_passed: bool
+    aborted: bool
+    abort_reason: str
+
+    def __init__(self: LoadTestSummary, workload_name: str, metrics: LoadMetrics, threshold_results: list[ThresholdResult], total_duration_ms: int, all_passed: bool, aborted: bool, abort_reason: str) -> None:
+        self.workload_name = workload_name
+        self.metrics = metrics
+        self.threshold_results = threshold_results
+        self.total_duration_ms = total_duration_ms
+        self.all_passed = all_passed
+        self.aborted = aborted
+        self.abort_reason = abort_reason
+
+    def to_json(self: LoadTestSummary) -> str:
+        s: str = "{\n"
+        s = s + "  \"schema_version\": \"1\",\n"
+        s = s + "  \"engine\": \"quartz\",\n"
+        s = s + "  \"kind\": \"load_test\",\n"
+        s = s + "  \"workload_name\": \"" + self.workload_name + "\",\n"
+        s = s + "  \"all_passed\": " + str(self.all_passed) + ",\n"
+        s = s + "  \"aborted\": " + str(self.aborted) + ",\n"
+        s = s + "  \"abort_reason\": \"" + self.abort_reason + "\",\n"
+        s = s + "  \"total_duration_ms\": " + str(self.total_duration_ms) + ",\n"
+        s = s + "  \"metrics\": " + self.metrics.to_json(self.total_duration_ms) + "\n"
+        s = s + "}\n"
+        return s
+
+def run_task_workload(workload: WorkloadConfig, task_func: (int) -> bool, thresholds: list[Threshold], limits: SafetyLimits) -> LoadTestSummary:
+    metrics: LoadMetrics = LoadMetrics()
+    cb: CircuitBreaker = CircuitBreaker(limits.max_consecutive_errors)
+
+    t0: Instant = nox.time.instant_now()
+    deadline_ms: int = limits.duration_seconds * 1000
+    if workload.duration_seconds > 0 and workload.duration_seconds * 1000 < deadline_ms:
+        deadline_ms = workload.duration_seconds * 1000
+
+    max_cases: int = workload.max_iterations
+    case_idx: int = 0
+    aborted: bool = False
+    abort_reason: str = ""
+
+    in_flight: int = 0
+
+    if workload.model == MODEL_CLOSED:
+        # Closed model: virtual users iterate sequentially up to max_cases or deadline
+        vu_count: int = workload.virtual_users
+        if vu_count > limits.virtual_users:
+            vu_count = limits.virtual_users
+
+        while case_idx < max_cases and t0.elapsed_ms() < deadline_ms:
+            # Check circuit breaker before scheduling next task
+            try:
+                cb.check_healthy()
+            except CircuitBreakerTrippedError as e:
+                aborted = True
+                abort_reason = str(e)
+                break
+
+            metrics.record_scheduled()
+            task_t0: Instant = nox.time.instant_now()
+            success: bool = False
+            try:
+                success = task_func(case_idx)
+            except Exception as e:
+                success = False
+
+            task_duration: int = task_t0.elapsed_ms()
+            status: int = 200
+            if not success:
+                status = 500
+                cb.record_failure("task failed at case " + str(case_idx))
+            else:
+                cb.record_success()
+
+            metrics.record_result(status, task_duration, False, success)
+            case_idx = case_idx + 1
+
+    elif workload.model == MODEL_OPEN:
+        # Open model: arrival rate with in-flight backpressure
+        while case_idx < max_cases and t0.elapsed_ms() < deadline_ms:
+            metrics.record_scheduled()
+
+            # Backpressure guard: reject arrival if in_flight capacity reached
+            if in_flight >= limits.max_in_flight:
+                metrics.record_rejected()
+                case_idx = case_idx + 1
+                continue
+
+            try:
+                cb.check_healthy()
+            except CircuitBreakerTrippedError as e:
+                aborted = True
+                abort_reason = str(e)
+                break
+
+            in_flight = in_flight + 1
+            task_t0: Instant = nox.time.instant_now()
+            success: bool = False
+            try:
+                success = task_func(case_idx)
+            except Exception as e:
+                success = False
+            in_flight = in_flight - 1
+
+            task_duration: int = task_t0.elapsed_ms()
+            status: int = 200
+            if not success:
+                status = 500
+                cb.record_failure("task failed at case " + str(case_idx))
+            else:
+                cb.record_success()
+
+            metrics.record_result(status, task_duration, False, success)
+            case_idx = case_idx + 1
+
+    total_duration_ms: int = t0.elapsed_ms()
+    thresh_results: list[ThresholdResult] = evaluate_all_thresholds(thresholds, metrics, total_duration_ms)
+    all_passed: bool = (not aborted) and all_thresholds_passed(thresh_results)
+
+    return LoadTestSummary(workload.name, metrics, thresh_results, total_duration_ms, all_passed, aborted, abort_reason)
+
+def run_handler_load_test(workload: WorkloadConfig, handler: (HttpRequest) -> HttpResponse, req: HttpRequest, thresholds: list[Threshold], limits: SafetyLimits) -> LoadTestSummary:
+    def adapter_task(idx: int) -> bool:
+        res: HttpResponse = handler(req)
+        return (res.status >= 200 and res.status < 400)
+
+    return run_task_workload(workload, adapter_task, thresholds, limits)

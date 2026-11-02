@@ -21,9 +21,14 @@ import contract.compare
 import contract.openapi
 import contract.runner
 import contract.http_network
+import load.safety
+import load.metrics
+import load.thresholds
+import load.workload
+import load.executor
 
 def version() -> str:
-    return "0.5.0"
+    return "0.6.0"
 
 def framework_info() -> str:
     return "Quartz Test Framework v" + version() + " for NOX Ecosystem"
