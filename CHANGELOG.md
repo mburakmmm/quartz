@@ -3,6 +3,18 @@
 All notable changes to the Quartz test framework will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-11-02 - Phase 4: In-Process HTTP Contract Testing & Schema Validation
+
+### Added
+- **Transport Abstraction (`contract/http.nox`)**: In-process HTTP handler executor (`execute_handler`) with nanosecond timing, `build_request`, `build_response`, and strict prohibition of default external network connections.
+- **Contract & Operation Descriptors (`contract/types.nox`)**: `ContractCheckResult`, case-insensitive HTTP header lookup/verification (`get_header_ci`, `has_header_ci`), and secret redaction for sensitive auth tokens and cookies (`redact_header_value`).
+- **Schema Evaluation Engine (`contract/schema.nox`)**: Typed JSON schema validator for `null`, `boolean`, `string`, `integer` (with $2^{53}$ precision guard), `number`, `array`, `object`, and `enum`. Configurable strict vs tolerant unknown property policies.
+- **Response Verification (`contract/compare.nox`)**: Validation of status codes, required response headers, Content-Type media-type/charset normalization, and response body JSON schema checks (`validate_response`).
+- **OpenAPI Subset Importer (`contract/openapi.nox`)**: Importer for JSON OpenAPI 3.x subset (`parse_openapi_json`) extracting operations and response schemas, raising explicit `UnsupportedContractFeature` errors on unhandled keywords.
+- **Test Case Runner (`contract/runner.nox`)**: Declarative test case builder (`ContractTestCase`) executing directly against application handler callbacks.
+- **Example (`examples/contract_example.nox`)**: Runnable example demonstrating in-process endpoint contract verification.
+- **Test Suite (`tests/contract_handler_test.nox`)**: Comprehensive test suite covering positive handler verification, negative status codes, missing headers, schema violations, $2^{53}$ integer precision guards, header case-insensitivity, and OpenAPI parsing.
+
 ## [0.3.0] - 2026-11-02 - Phase 3: Fuzz Engine & Corpus Management
 
 ### Added

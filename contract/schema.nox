@@ -1,0 +1,253 @@
+# Quartz Contract — Schema Descriptor & Validator
+import nox.json
+from nox.json import JsonValue
+
+SCHEMA_NULL: str = "null"
+SCHEMA_BOOLEAN: str = "boolean"
+SCHEMA_STRING: str = "string"
+SCHEMA_NUMBER: str = "number"
+SCHEMA_INTEGER: str = "integer"
+SCHEMA_ARRAY: str = "array"
+SCHEMA_OBJECT: str = "object"
+
+SAFE_INT_MAX: float = 9007199254740992.0
+SAFE_INT_MIN: float = -9007199254740992.0
+
+class PropertyRule:
+    name: str
+    schema: SchemaDescriptor
+
+    def __init__(self: PropertyRule, name: str, schema: SchemaDescriptor) -> None:
+        self.name = name
+        self.schema = schema
+
+class SchemaDescriptor:
+    type_name: str
+    required_keys: list[str]
+    properties: list[PropertyRule]
+    item_schemas: list[SchemaDescriptor]
+    enum_values: list[str]
+    min_val: float
+    max_val: float
+    has_min_val: bool
+    has_max_val: bool
+    min_len: int
+    max_len: int
+    is_strict: bool
+
+    def __init__(self: SchemaDescriptor, type_name: str) -> None:
+        self.type_name = type_name
+        self.required_keys = []
+        self.properties = []
+        self.item_schemas = []
+        self.enum_values = []
+        self.min_val = 0.0
+        self.max_val = 0.0
+        self.has_min_val = False
+        self.has_max_val = False
+        self.min_len = -1
+        self.max_len = -1
+        self.is_strict = True
+
+def schema_string(min_len: int = -1, max_len: int = -1) -> SchemaDescriptor:
+    s: SchemaDescriptor = SchemaDescriptor(SCHEMA_STRING)
+    s.min_len = min_len
+    s.max_len = max_len
+    return s
+
+def schema_enum(enum_vals: list[str]) -> SchemaDescriptor:
+    s: SchemaDescriptor = SchemaDescriptor(SCHEMA_STRING)
+    s.enum_values = enum_vals
+    return s
+
+def schema_integer(min_val: int = 0, max_val: int = 0, has_bounds: bool = False) -> SchemaDescriptor:
+    s: SchemaDescriptor = SchemaDescriptor(SCHEMA_INTEGER)
+    if has_bounds:
+        s.has_min_val = True
+        s.has_max_val = True
+        s.min_val = min_val * 1.0
+        s.max_val = max_val * 1.0
+    return s
+
+def schema_number(min_val: float = 0.0, max_val: float = 0.0, has_bounds: bool = False) -> SchemaDescriptor:
+    s: SchemaDescriptor = SchemaDescriptor(SCHEMA_NUMBER)
+    if has_bounds:
+        s.has_min_val = True
+        s.has_max_val = True
+        s.min_val = min_val
+        s.max_val = max_val
+    return s
+
+def schema_boolean() -> SchemaDescriptor:
+    return SchemaDescriptor(SCHEMA_BOOLEAN)
+
+def schema_null() -> SchemaDescriptor:
+    return SchemaDescriptor(SCHEMA_NULL)
+
+def schema_array(item_schema: SchemaDescriptor, min_len: int = -1, max_len: int = -1) -> SchemaDescriptor:
+    s: SchemaDescriptor = SchemaDescriptor(SCHEMA_ARRAY)
+    items: list[SchemaDescriptor] = []
+    items.append(item_schema)
+    s.item_schemas = items
+    s.min_len = min_len
+    s.max_len = max_len
+    return s
+
+def schema_object(properties: list[PropertyRule], required_keys: list[str], is_strict: bool = True) -> SchemaDescriptor:
+    s: SchemaDescriptor = SchemaDescriptor(SCHEMA_OBJECT)
+    s.properties = properties
+    s.required_keys = required_keys
+    s.is_strict = is_strict
+    return s
+
+def json_has_key(obj: JsonValue, target_key: str) -> bool:
+    n: int = nox.json.object_len(obj)
+    i: int = 0
+    while i < n:
+        if nox.json.object_key(obj, i) == target_key:
+            return True
+        i = i + 1
+    return False
+
+def json_get_key(obj: JsonValue, target_key: str) -> JsonValue:
+    n: int = nox.json.object_len(obj)
+    i: int = 0
+    while i < n:
+        if nox.json.object_key(obj, i) == target_key:
+            return nox.json.object_value(obj, i)
+        i = i + 1
+    return nox.json.parse("null")
+
+def is_key_declared(properties: list[PropertyRule], key: str) -> bool:
+    i: int = 0
+    while i < len(properties):
+        if properties[i].name == key:
+            return True
+        i = i + 1
+    return False
+
+def validate_schema(schema: SchemaDescriptor, val: JsonValue, path: str) -> list[str]:
+    errors: list[str] = []
+
+    # 1. Null check
+    if schema.type_name == SCHEMA_NULL:
+        if not nox.json.is_null(val):
+            errors.append(path + ": expected null")
+        return errors
+
+    # 2. Boolean check
+    if schema.type_name == SCHEMA_BOOLEAN:
+        if not nox.json.is_bool(val):
+            errors.append(path + ": expected boolean")
+        return errors
+
+    # 3. String check
+    if schema.type_name == SCHEMA_STRING:
+        if not nox.json.is_string(val):
+            errors.append(path + ": expected string")
+            return errors
+        s_val: str = nox.json.as_string(val)
+        if schema.min_len >= 0 and len(s_val) < schema.min_len:
+            errors.append(path + ": string length " + str(len(s_val)) + " is less than minimum " + str(schema.min_len))
+        if schema.max_len >= 0 and len(s_val) > schema.max_len:
+            errors.append(path + ": string length " + str(len(s_val)) + " exceeds maximum " + str(schema.max_len))
+        if len(schema.enum_values) > 0:
+            found_enum: bool = False
+            ei: int = 0
+            while ei < len(schema.enum_values):
+                if schema.enum_values[ei] == s_val:
+                    found_enum = True
+                    break
+                ei = ei + 1
+            if not found_enum:
+                errors.append(path + ": value '" + s_val + "' is not in allowed enum set")
+        return errors
+
+    # 4. Number check
+    if schema.type_name == SCHEMA_NUMBER:
+        if not nox.json.is_number(val):
+            errors.append(path + ": expected number")
+            return errors
+        f_val: float = nox.json.as_number(val)
+        if schema.has_min_val and f_val < schema.min_val:
+            errors.append(path + ": number " + str(f_val) + " is less than minimum " + str(schema.min_val))
+        if schema.has_max_val and f_val > schema.max_val:
+            errors.append(path + ": number " + str(f_val) + " exceeds maximum " + str(schema.max_val))
+        return errors
+
+    # 5. Integer check
+    if schema.type_name == SCHEMA_INTEGER:
+        if not nox.json.is_number(val):
+            errors.append(path + ": expected integer")
+            return errors
+        n_val: float = nox.json.as_number(val)
+        int_cast: int = int(n_val)
+        if (int_cast * 1.0) != n_val:
+            errors.append(path + ": expected integer but got float with fractional part (" + str(n_val) + ")")
+            return errors
+        if n_val > SAFE_INT_MAX or n_val < SAFE_INT_MIN:
+            errors.append(path + ": integer exceeds safe 2^53 precision limit (loss of precision)")
+        if schema.has_min_val and n_val < schema.min_val:
+            errors.append(path + ": integer " + str(int_cast) + " is less than minimum " + str(int(schema.min_val)))
+        if schema.has_max_val and n_val > schema.max_val:
+            errors.append(path + ": integer " + str(int_cast) + " exceeds maximum " + str(int(schema.max_val)))
+        return errors
+
+    # 6. Array check
+    if schema.type_name == SCHEMA_ARRAY:
+        if not nox.json.is_array(val):
+            errors.append(path + ": expected array")
+            return errors
+        arr_len: int = nox.json.array_len(val)
+        if schema.min_len >= 0 and arr_len < schema.min_len:
+            errors.append(path + ": array length " + str(arr_len) + " is less than minimum " + str(schema.min_len))
+        if schema.max_len >= 0 and arr_len > schema.max_len:
+            errors.append(path + ": array length " + str(arr_len) + " exceeds maximum " + str(schema.max_len))
+        if len(schema.item_schemas) > 0:
+            sub_schema: SchemaDescriptor = schema.item_schemas[0]
+            ai: int = 0
+            while ai < arr_len:
+                item_val: JsonValue = nox.json.array_get(val, ai)
+                item_errs: list[str] = validate_schema(sub_schema, item_val, path + "[" + str(ai) + "]")
+                errors.extend(item_errs)
+                ai = ai + 1
+        return errors
+
+    # 7. Object check
+    if schema.type_name == SCHEMA_OBJECT:
+        if not nox.json.is_object(val):
+            errors.append(path + ": expected object")
+            return errors
+
+        # Check required keys
+        ri: int = 0
+        while ri < len(schema.required_keys):
+            req_k: str = schema.required_keys[ri]
+            if not json_has_key(val, req_k):
+                errors.append(path + ": missing required property '" + req_k + "'")
+            ri = ri + 1
+
+        # Check properties
+        pi: int = 0
+        while pi < len(schema.properties):
+            prop: PropertyRule = schema.properties[pi]
+            if json_has_key(val, prop.name):
+                prop_val: JsonValue = json_get_key(val, prop.name)
+                prop_errs: list[str] = validate_schema(prop.schema, prop_val, path + "." + prop.name)
+                errors.extend(prop_errs)
+            pi = pi + 1
+
+        # Check strict unknown keys policy
+        if schema.is_strict:
+            obj_size: int = nox.json.object_len(val)
+            oi: int = 0
+            while oi < obj_size:
+                k_name: str = nox.json.object_key(val, oi)
+                if not is_key_declared(schema.properties, k_name):
+                    errors.append(path + ": unknown property '" + k_name + "' rejected by strict schema policy")
+                oi = oi + 1
+
+        return errors
+
+    errors.append(path + ": unsupported schema type '" + schema.type_name + "'")
+    return errors

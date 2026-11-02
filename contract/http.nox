@@ -1,0 +1,30 @@
+# Quartz Contract — In-Process HTTP Handler Transport
+import nox.http
+import nox.time
+from nox.http import HttpRequest, HttpResponse
+from nox.time import Instant
+
+def empty_headers() -> dict[str, str]:
+    h: dict[str, str] = {}
+    return h
+
+def build_request(method: str, target: str, body: str, headers: dict[str, str]) -> HttpRequest:
+    return HttpRequest(method, target, body, headers)
+
+def build_response(status: int, body: str, headers: dict[str, str]) -> HttpResponse:
+    return HttpResponse(status, body, headers)
+
+class HandlerExecutionResult:
+    response: HttpResponse
+    duration_ms: int
+
+    def __init__(self: HandlerExecutionResult, response: HttpResponse, duration_ms: int) -> None:
+        self.response = response
+        self.duration_ms = duration_ms
+
+# Pure in-process handler invocation (zero sockets, zero external network connections)
+def execute_handler(handler: (HttpRequest) -> HttpResponse, req: HttpRequest) -> HandlerExecutionResult:
+    t0: Instant = nox.time.instant_now()
+    res: HttpResponse = handler(req)
+    elapsed: int = t0.elapsed_ms()
+    return HandlerExecutionResult(res, elapsed)

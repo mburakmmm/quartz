@@ -1,0 +1,194 @@
+# Quartz Contract — OpenAPI 3.x Supported Subset Importer
+import nox.json
+import nox.strings
+from nox.json import JsonValue
+from contract.schema import SchemaDescriptor, PropertyRule, schema_string, schema_enum, schema_integer, schema_number, schema_boolean, schema_null, schema_array, schema_object, json_has_key, json_get_key
+
+class UnsupportedContractFeature(Exception):
+    pass
+
+class ParsedResponseSpec:
+    status_code: int
+    content_type: str
+    schema: SchemaDescriptor | None
+
+    def __init__(self: ParsedResponseSpec, status_code: int, content_type: str, schema: SchemaDescriptor | None) -> None:
+        self.status_code = status_code
+        self.content_type = content_type
+        self.schema = schema
+
+class ParsedOperation:
+    method: str
+    path: str
+    operation_id: str
+    summary: str
+    responses: list[ParsedResponseSpec]
+
+    def __init__(self: ParsedOperation, method: str, path: str, op_id: str, summary: str) -> None:
+        self.method = method
+        self.path = path
+        self.operation_id = op_id
+        self.summary = summary
+        self.responses = []
+
+class ParsedOpenApiDoc:
+    title: str
+    version: str
+    operations: list[ParsedOperation]
+
+    def __init__(self: ParsedOpenApiDoc, title: str, version: str) -> None:
+        self.title = title
+        self.version = version
+        self.operations = []
+
+def parse_schema_node(node: JsonValue, path: str) -> SchemaDescriptor:
+    # Explicitly check and reject unsupported keywords
+    if json_has_key(node, "$ref"):
+        raise UnsupportedContractFeature("unsupported OpenAPI keyword '$ref' at " + path)
+    if json_has_key(node, "oneOf"):
+        raise UnsupportedContractFeature("unsupported OpenAPI keyword 'oneOf' at " + path)
+    if json_has_key(node, "anyOf"):
+        raise UnsupportedContractFeature("unsupported OpenAPI keyword 'anyOf' at " + path)
+    if json_has_key(node, "allOf"):
+        raise UnsupportedContractFeature("unsupported OpenAPI keyword 'allOf' at " + path)
+    if json_has_key(node, "not"):
+        raise UnsupportedContractFeature("unsupported OpenAPI keyword 'not' at " + path)
+
+    if not json_has_key(node, "type"):
+        # Default to object if properties are present
+        if json_has_key(node, "properties"):
+            return parse_object_schema(node, path)
+        raise UnsupportedContractFeature("schema missing 'type' at " + path)
+
+    type_val: JsonValue = json_get_key(node, "type")
+    t_name: str = nox.json.as_string(type_val)
+
+    if t_name == "string":
+        if json_has_key(node, "enum"):
+            enum_node: JsonValue = json_get_key(node, "enum")
+            enum_vals: list[str] = []
+            en_len: int = nox.json.array_len(enum_node)
+            ei: int = 0
+            while ei < en_len:
+                enum_vals.append(nox.json.as_string(nox.json.array_get(enum_node, ei)))
+                ei = ei + 1
+            return schema_enum(enum_vals)
+        return schema_string()
+
+    if t_name == "integer":
+        return schema_integer()
+
+    if t_name == "number":
+        return schema_number()
+
+    if t_name == "boolean":
+        return schema_boolean()
+
+    if t_name == "null":
+        return schema_null()
+
+    if t_name == "array":
+        if not json_has_key(node, "items"):
+            raise UnsupportedContractFeature("array schema missing 'items' at " + path)
+        items_node: JsonValue = json_get_key(node, "items")
+        item_desc: SchemaDescriptor = parse_schema_node(items_node, path + ".items")
+        return schema_array(item_desc)
+
+    if t_name == "object":
+        return parse_object_schema(node, path)
+
+    raise UnsupportedContractFeature("unsupported schema type '" + t_name + "' at " + path)
+
+def parse_object_schema(node: JsonValue, path: str) -> SchemaDescriptor:
+    props: list[PropertyRule] = []
+    if json_has_key(node, "properties"):
+        props_node: JsonValue = json_get_key(node, "properties")
+        p_len: int = nox.json.object_len(props_node)
+        pi: int = 0
+        while pi < p_len:
+            p_name: str = nox.json.object_key(props_node, pi)
+            p_sub_node: JsonValue = nox.json.object_value(props_node, pi)
+            p_desc: SchemaDescriptor = parse_schema_node(p_sub_node, path + "." + p_name)
+            props.append(PropertyRule(p_name, p_desc))
+            pi = pi + 1
+
+    req_keys: list[str] = []
+    if json_has_key(node, "required"):
+        req_node: JsonValue = json_get_key(node, "required")
+        r_len: int = nox.json.array_len(req_node)
+        ri: int = 0
+        while ri < r_len:
+            req_keys.append(nox.json.as_string(nox.json.array_get(req_node, ri)))
+            ri = ri + 1
+
+    return schema_object(props, req_keys, True)
+
+def parse_openapi_json(doc_json_str: str) -> ParsedOpenApiDoc:
+    root: JsonValue = nox.json.parse(doc_json_str)
+
+    title: str = "API"
+    ver: str = "1.0.0"
+    if json_has_key(root, "info"):
+        info: JsonValue = json_get_key(root, "info")
+        if json_has_key(info, "title"):
+            title = nox.json.as_string(json_get_key(info, "title"))
+        if json_has_key(info, "version"):
+            ver = nox.json.as_string(json_get_key(info, "version"))
+
+    doc: ParsedOpenApiDoc = ParsedOpenApiDoc(title, ver)
+
+    if not json_has_key(root, "paths"):
+        return doc
+
+    paths_node: JsonValue = json_get_key(root, "paths")
+    path_count: int = nox.json.object_len(paths_node)
+    path_i: int = 0
+    while path_i < path_count:
+        path_str: str = nox.json.object_key(paths_node, path_i)
+        item_node: JsonValue = nox.json.object_value(paths_node, path_i)
+
+        method_count: int = nox.json.object_len(item_node)
+        m_i: int = 0
+        while m_i < method_count:
+            method_str: str = nox.json.object_key(item_node, m_i)
+            # Skip parameters/summary at path level
+            if method_str != "parameters" and method_str != "summary" and method_str != "description":
+                op_node: JsonValue = nox.json.object_value(item_node, m_i)
+                op_id: str = ""
+                if json_has_key(op_node, "operationId"):
+                    op_id = nox.json.as_string(json_get_key(op_node, "operationId"))
+                summary: str = ""
+                if json_has_key(op_node, "summary"):
+                    summary = nox.json.as_string(json_get_key(op_node, "summary"))
+
+                op: ParsedOperation = ParsedOperation(nox.strings.upper(method_str), path_str, op_id, summary)
+
+                if json_has_key(op_node, "responses"):
+                    resp_node: JsonValue = json_get_key(op_node, "responses")
+                    resp_count: int = nox.json.object_len(resp_node)
+                    r_i: int = 0
+                    while r_i < resp_count:
+                        status_str: str = nox.json.object_key(resp_node, r_i)
+                        single_resp: JsonValue = nox.json.object_value(resp_node, r_i)
+                        status_code: int = int(status_str)
+
+                        schema_desc: SchemaDescriptor | None = None
+                        content_type: str = "application/json"
+
+                        if json_has_key(single_resp, "content"):
+                            c_node: JsonValue = json_get_key(single_resp, "content")
+                            if nox.json.object_len(c_node) > 0:
+                                content_type = nox.json.object_key(c_node, 0)
+                                media_node: JsonValue = nox.json.object_value(c_node, 0)
+                                if json_has_key(media_node, "schema"):
+                                    s_node: JsonValue = json_get_key(media_node, "schema")
+                                    schema_desc = parse_schema_node(s_node, path_str + "." + method_str + "." + status_str)
+
+                        op.responses.append(ParsedResponseSpec(status_code, content_type, schema_desc))
+                        r_i = r_i + 1
+
+                doc.operations.append(op)
+            m_i = m_i + 1
+        path_i = path_i + 1
+
+    return doc

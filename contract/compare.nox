@@ -1,0 +1,67 @@
+# Quartz Contract — Response Comparison & Validation
+import nox.json
+import nox.strings
+from nox.http import HttpResponse
+from nox.json import JsonValue, JsonError
+from contract.types import ContractCheckResult, get_header_ci, has_header_ci
+from contract.schema import SchemaDescriptor, validate_schema
+
+def validate_response(res: HttpResponse, expected_statuses: list[int], required_headers: list[str], expected_content_type: str, body_schema: SchemaDescriptor | None, duration_ms: int) -> ContractCheckResult:
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    # 1. Status code check
+    status_matched: bool = False
+    si: int = 0
+    while si < len(expected_statuses):
+        if expected_statuses[si] == res.status:
+            status_matched = True
+            break
+        si = si + 1
+
+    if not status_matched:
+        status_list_str: str = ""
+        ei: int = 0
+        while ei < len(expected_statuses):
+            if ei > 0:
+                status_list_str = status_list_str + ", "
+            status_list_str = status_list_str + str(expected_statuses[ei])
+            ei = ei + 1
+        errors.append("HTTP status " + str(res.status) + " not in expected status codes [" + status_list_str + "]")
+
+    # 2. Required response headers check (case-insensitive)
+    hi: int = 0
+    while hi < len(required_headers):
+        h_name: str = required_headers[hi]
+        if not has_header_ci(res.headers, h_name):
+            errors.append("missing required response header '" + h_name + "'")
+        hi = hi + 1
+
+    # 3. Content-Type normalization check
+    if len(expected_content_type) > 0:
+        actual_ct: str = get_header_ci(res.headers, "content-type")
+        if len(actual_ct) == 0:
+            errors.append("missing 'Content-Type' header; expected '" + expected_content_type + "'")
+        else:
+            lower_actual: str = nox.strings.lower(actual_ct)
+            lower_expected: str = nox.strings.lower(expected_content_type)
+            if not nox.strings.contains(lower_actual, lower_expected):
+                errors.append("Content-Type mismatch: got '" + actual_ct + "', expected to contain '" + expected_content_type + "'")
+
+    # 4. Body & Schema check
+    if body_schema != None:
+        target_schema: SchemaDescriptor = body_schema
+        if len(res.body) == 0:
+            errors.append("expected non-empty response body matching schema, but received empty body")
+        else:
+            try:
+                parsed_json: JsonValue = nox.json.parse(res.body)
+                schema_errs: list[str] = validate_schema(target_schema, parsed_json, "body")
+                errors.extend(schema_errs)
+            except JsonError as e:
+                errors.append("response body is not valid JSON: " + str(e))
+            except Exception as e:
+                errors.append("failed to parse response JSON: " + str(e))
+
+    is_valid: bool = len(errors) == 0
+    return ContractCheckResult(is_valid, errors, warnings, res.status, duration_ms)

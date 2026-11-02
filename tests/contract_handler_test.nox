@@ -1,0 +1,199 @@
+# Quartz Contract Test Suite — In-Process Handler & Schema Validation
+import nox.http
+import nox.strings
+from nox.http import HttpRequest, HttpResponse
+from core.assert import assert_true, assert_false, assert_eq_int, assert_eq_str, assert_contains_str
+from contract.types import ContractCheckResult, redact_header_value, get_header_ci, has_header_ci
+from contract.schema import SchemaDescriptor, PropertyRule, schema_string, schema_integer, schema_boolean, schema_array, schema_object, schema_enum
+from contract.http import build_request, build_response, execute_handler, empty_headers, HandlerExecutionResult
+from contract.compare import validate_response
+from contract.runner import ContractTestCase
+from contract.openapi import parse_openapi_json, ParsedOpenApiDoc, UnsupportedContractFeature
+
+def mock_user_api(req: HttpRequest) -> HttpResponse:
+    headers: dict[str, str] = {}
+    headers["Content-Type"] = "application/json; charset=utf-8"
+    headers["X-Request-Id"] = "req-12345"
+
+    if req.target == "/users/42" and req.method == "GET":
+        body: str = "{\"id\":42,\"username\":\"melih\",\"active\":true,\"roles\":[\"admin\",\"dev\"]}"
+        return HttpResponse(200, body, headers)
+    elif req.target == "/users/bad-schema":
+        # Returns string instead of bool for 'active', and adds unknown property
+        body: str = "{\"id\":42,\"username\":\"melih\",\"active\":\"not_bool\",\"extra_leaked\":\"secret\"}"
+        return HttpResponse(200, body, headers)
+    elif req.target == "/users/missing-id":
+        body: str = "{\"username\":\"melih\",\"active\":true}"
+        return HttpResponse(200, body, headers)
+    elif req.target == "/users/big-int":
+        body: str = "{\"id\":9999999999999999,\"username\":\"overflow\"}"
+        return HttpResponse(200, body, headers)
+
+    # 404 Not Found
+    return HttpResponse(404, "{\"error\":\"user not found\"}", headers)
+
+def get_user_schema(strict: bool) -> SchemaDescriptor:
+    props: list[PropertyRule] = [
+        PropertyRule("id", schema_integer(1, 1000, True)),
+        PropertyRule("username", schema_string(3, 20)),
+        PropertyRule("active", schema_boolean()),
+        PropertyRule("roles", schema_array(schema_string()))
+    ]
+    req_keys: list[str] = ["id", "username", "active"]
+    return schema_object(props, req_keys, strict)
+
+def test_handler_positive_contract() -> None:
+    req: HttpRequest = build_request("GET", "/users/42", "", empty_headers())
+    user_schema: SchemaDescriptor = get_user_schema(True)
+
+    expected_statuses: list[int] = [200]
+    required_headers: list[str] = ["content-type", "x-request-id"]
+
+    tc: ContractTestCase = ContractTestCase(
+        "get_user_positive",
+        req,
+        expected_statuses,
+        required_headers,
+        "application/json",
+        user_schema
+    )
+
+    check: ContractCheckResult = tc.run_on_handler(mock_user_api)
+    assert_true(check.is_valid, "positive contract verification should be valid")
+    assert_eq_int(len(check.errors), 0, "zero errors on positive test")
+    assert_eq_int(check.status_code, 200, "status code 200")
+
+def test_handler_negative_status_code() -> None:
+    req: HttpRequest = build_request("GET", "/users/999", "", empty_headers())
+    user_schema: SchemaDescriptor = get_user_schema(True)
+
+    tc: ContractTestCase = ContractTestCase("not_found_check", req, [200], [], "", user_schema)
+    check: ContractCheckResult = tc.run_on_handler(mock_user_api)
+
+    assert_false(check.is_valid, "must fail due to 404 status")
+    assert_contains_str(check.error_summary(), "HTTP status 404 not in expected status codes [200]", "error notes status mismatch")
+
+def test_handler_negative_missing_header() -> None:
+    req: HttpRequest = build_request("GET", "/users/42", "", empty_headers())
+    # Require header not sent by handler
+    tc: ContractTestCase = ContractTestCase("missing_header", req, [200], ["x-non-existent-token"], "", None)
+    check: ContractCheckResult = tc.run_on_handler(mock_user_api)
+
+    assert_false(check.is_valid, "must fail due to missing header")
+    assert_contains_str(check.error_summary(), "missing required response header 'x-non-existent-token'", "header error message")
+
+def test_handler_negative_schema_violations() -> None:
+    # 1. Type mismatch (active is string instead of boolean) & strict extra property
+    req_bad: HttpRequest = build_request("GET", "/users/bad-schema", "", empty_headers())
+    strict_schema: SchemaDescriptor = get_user_schema(True)
+    tc_bad: ContractTestCase = ContractTestCase("bad_schema", req_bad, [200], [], "application/json", strict_schema)
+    check_bad: ContractCheckResult = tc_bad.run_on_handler(mock_user_api)
+
+    assert_false(check_bad.is_valid, "must fail on type mismatch and extra property")
+    assert_contains_str(check_bad.error_summary(), "body.active: expected boolean", "type error reported")
+    assert_contains_str(check_bad.error_summary(), "unknown property 'extra_leaked' rejected by strict schema policy", "strict unknown key rejected")
+
+    # 2. Missing required property ('id')
+    req_missing: HttpRequest = build_request("GET", "/users/missing-id", "", empty_headers())
+    tc_missing: ContractTestCase = ContractTestCase("missing_id", req_missing, [200], [], "", strict_schema)
+    check_missing: ContractCheckResult = tc_missing.run_on_handler(mock_user_api)
+
+    assert_false(check_missing.is_valid, "must fail on missing required key")
+    assert_contains_str(check_missing.error_summary(), "missing required property 'id'", "missing required property error")
+
+def test_integer_precision_guard() -> None:
+    req_big: HttpRequest = build_request("GET", "/users/big-int", "", empty_headers())
+    props: list[PropertyRule] = [
+        PropertyRule("id", schema_integer()),
+        PropertyRule("username", schema_string())
+    ]
+    big_schema: SchemaDescriptor = schema_object(props, ["id"], False)
+
+    tc: ContractTestCase = ContractTestCase("big_int", req_big, [200], [], "", big_schema)
+    check: ContractCheckResult = tc.run_on_handler(mock_user_api)
+
+    assert_false(check.is_valid, "must flag integer exceeding 2^53")
+    assert_contains_str(check.error_summary(), "2^53 precision limit", "precision guard error reported")
+
+def test_header_case_insensitivity_and_redaction() -> None:
+    h: dict[str, str] = {}
+    h["Content-Type"] = "application/json"
+    h["Authorization"] = "Bearer super-secret-token-123"
+    h["Cookie"] = "sessionid=xyz987"
+    h["X-CUSTOM-HEADER"] = "my-value"
+
+    # Case-insensitive lookup
+    assert_true(has_header_ci(h, "content-type"), "case-insensitive lower")
+    assert_true(has_header_ci(h, "CONTENT-TYPE"), "case-insensitive upper")
+    assert_true(has_header_ci(h, "x-custom-header"), "case-insensitive custom")
+    assert_eq_str(get_header_ci(h, "authorization"), "Bearer super-secret-token-123", "value retrieved")
+
+    # Secret redaction
+    assert_eq_str(redact_header_value("Authorization", h["Authorization"]), "[REDACTED]", "auth token redacted")
+    assert_eq_str(redact_header_value("Cookie", h["Cookie"]), "[REDACTED]", "cookie redacted")
+    assert_eq_str(redact_header_value("X-CUSTOM-HEADER", h["X-CUSTOM-HEADER"]), "my-value", "non-sensitive header unredacted")
+
+def test_openapi_subset_parser() -> None:
+    spec_json: str = "{\n"
+    spec_json = spec_json + "  \"openapi\": \"3.0.3\",\n"
+    spec_json = spec_json + "  \"info\": {\"title\": \"PetStore\", \"version\": \"1.0.0\"},\n"
+    spec_json = spec_json + "  \"paths\": {\n"
+    spec_json = spec_json + "    \"/pets\": {\n"
+    spec_json = spec_json + "      \"get\": {\n"
+    spec_json = spec_json + "        \"operationId\": \"listPets\",\n"
+    spec_json = spec_json + "        \"summary\": \"List all pets\",\n"
+    spec_json = spec_json + "        \"responses\": {\n"
+    spec_json = spec_json + "          \"200\": {\n"
+    spec_json = spec_json + "            \"description\": \"success\",\n"
+    spec_json = spec_json + "            \"content\": {\n"
+    spec_json = spec_json + "              \"application/json\": {\n"
+    spec_json = spec_json + "                \"schema\": {\n"
+    spec_json = spec_json + "                  \"type\": \"array\",\n"
+    spec_json = spec_json + "                  \"items\": {\n"
+    spec_json = spec_json + "                    \"type\": \"object\",\n"
+    spec_json = spec_json + "                    \"required\": [\"id\", \"name\"],\n"
+    spec_json = spec_json + "                    \"properties\": {\n"
+    spec_json = spec_json + "                      \"id\": {\"type\": \"integer\"},\n"
+    spec_json = spec_json + "                      \"name\": {\"type\": \"string\"}\n"
+    spec_json = spec_json + "                    }\n"
+    spec_json = spec_json + "                  }\n"
+    spec_json = spec_json + "                }\n"
+    spec_json = spec_json + "              }\n"
+    spec_json = spec_json + "            }\n"
+    spec_json = spec_json + "          }\n"
+    spec_json = spec_json + "        }\n"
+    spec_json = spec_json + "      }\n"
+    spec_json = spec_json + "    }\n"
+    spec_json = spec_json + "  }\n"
+    spec_json = spec_json + "}\n"
+
+    doc: ParsedOpenApiDoc = parse_openapi_json(spec_json)
+    assert_eq_str(doc.title, "PetStore", "openapi title parsed")
+    assert_eq_str(doc.version, "1.0.0", "openapi version parsed")
+    assert_eq_int(len(doc.operations), 1, "1 operation parsed")
+    assert_eq_str(doc.operations[0].method, "GET", "GET method parsed")
+    assert_eq_str(doc.operations[0].path, "/pets", "/pets path parsed")
+    assert_eq_int(len(doc.operations[0].responses), 1, "1 response spec parsed")
+    assert_eq_int(doc.operations[0].responses[0].status_code, 200, "status 200 parsed")
+
+    # Verify rejection of unsupported OpenAPI keywords ($ref, oneOf, etc.)
+    bad_spec: str = "{\"openapi\": \"3.0.0\", \"paths\": {\"/x\": {\"get\": {\"responses\": {\"200\": {\"content\": {\"application/json\": {\"schema\": {\"$ref\": \"#/components/schemas/Pet\"}}}}}}}}}"
+    threw_unsupported: bool = False
+    try:
+        parse_openapi_json(bad_spec)
+    except UnsupportedContractFeature as e:
+        threw_unsupported = True
+
+    assert_true(threw_unsupported, "unsupported keyword $ref must raise UnsupportedContractFeature")
+
+def run_all_contract_tests() -> None:
+    test_handler_positive_contract()
+    test_handler_negative_status_code()
+    test_handler_negative_missing_header()
+    test_handler_negative_schema_violations()
+    test_integer_precision_guard()
+    test_header_case_insensitivity_and_redaction()
+    test_openapi_subset_parser()
+    print("quartz contract handler test: ALL PASS")
+
+run_all_contract_tests()

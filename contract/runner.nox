@@ -1,0 +1,34 @@
+# Quartz Contract — Contract Test Case & Suite Runner
+import nox.http
+from nox.http import HttpRequest, HttpResponse
+from contract.types import ContractCheckResult
+from contract.schema import SchemaDescriptor
+from contract.http import execute_handler, HandlerExecutionResult
+from contract.compare import validate_response
+
+class ContractTestCase:
+    name: str
+    request: HttpRequest
+    expected_statuses: list[int]
+    required_headers: list[str]
+    expected_content_type: str
+    body_schema: SchemaDescriptor | None
+
+    def __init__(self: ContractTestCase, name: str, request: HttpRequest, expected_statuses: list[int], required_headers: list[str], expected_content_type: str, body_schema: SchemaDescriptor | None) -> None:
+        self.name = name
+        self.request = request
+        self.expected_statuses = expected_statuses
+        self.required_headers = required_headers
+        self.expected_content_type = expected_content_type
+        self.body_schema = body_schema
+
+    def run_on_handler(self: ContractTestCase, handler: (HttpRequest) -> HttpResponse) -> ContractCheckResult:
+        exec_res: HandlerExecutionResult = execute_handler(handler, self.request)
+        return validate_response(
+            exec_res.response,
+            self.expected_statuses,
+            self.required_headers,
+            self.expected_content_type,
+            self.body_schema,
+            exec_res.duration_ms
+        )

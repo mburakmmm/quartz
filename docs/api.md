@@ -1,4 +1,4 @@
-# Quartz API Reference — v0.3.0
+# Quartz API Reference — v0.4.0
 
 ## 1. Core Types (`core/types.nox`)
 
@@ -171,4 +171,56 @@ Bounded deterministic byte and structured mutations:
   - `.save_crash_artifact(input_data: str, outcome: FuzzOutcome, seed: int, case_index: int) -> str`
 - `minimize_crash(target_func: (str) -> None, failing_input: str, expected_signature: str, max_steps: int) -> MinimizationResult`
 - `run_fuzz(target_name: str, target_func: (str) -> None, initial_seeds: list[str], iterations: int, seed: int, corpus: CorpusManager, max_len: int) -> FuzzSummary`
+
+---
+
+## 12. HTTP Transport Abstraction (`contract/http.nox`)
+
+- `build_request(method: str, target: str, body: str, headers: dict[str, str]) -> HttpRequest`
+- `build_response(status: int, body: str, headers: dict[str, str]) -> HttpResponse`
+- `empty_headers() -> dict[str, str]`
+- `execute_handler(handler: (HttpRequest) -> HttpResponse, req: HttpRequest) -> HandlerExecutionResult`
+  - In-process direct execution with zero network sockets.
+
+---
+
+## 13. Schema Descriptors & Validation (`contract/schema.nox`)
+
+- `PropertyRule(name: str, schema: SchemaDescriptor)`
+- `SchemaDescriptor(type_name: str)`
+- Factory functions:
+  - `schema_string(min_len: int = -1, max_len: int = -1) -> SchemaDescriptor`
+  - `schema_enum(enum_vals: list[str]) -> SchemaDescriptor`
+  - `schema_integer(min_val: int = 0, max_val: int = 0, has_bounds: bool = False) -> SchemaDescriptor`
+  - `schema_number(min_val: float = 0.0, max_val: float = 0.0, has_bounds: bool = False) -> SchemaDescriptor`
+  - `schema_boolean() -> SchemaDescriptor`
+  - `schema_null() -> SchemaDescriptor`
+  - `schema_array(item_schema: SchemaDescriptor, min_len: int = -1, max_len: int = -1) -> SchemaDescriptor`
+  - `schema_object(properties: list[PropertyRule], required_keys: list[str], is_strict: bool = True) -> SchemaDescriptor`
+- `validate_schema(schema: SchemaDescriptor, val: JsonValue, path: str) -> list[str]`
+
+---
+
+## 14. Response Verification & Runner (`contract/compare.nox`, `contract/runner.nox`, `contract/types.nox`)
+
+- `ContractCheckResult(is_valid: bool, errors: list[str], warnings: list[str], status_code: int, duration_ms: int)`
+  - `.has_errors() -> bool`
+  - `.error_summary() -> str`
+- `get_header_ci(headers: dict[str, str], target_name: str) -> str`
+- `has_header_ci(headers: dict[str, str], target_name: str) -> bool`
+- `redact_header_value(header_name: str, value: str) -> str`
+- `validate_response(res: HttpResponse, expected_statuses: list[int], required_headers: list[str], expected_content_type: str, body_schema: SchemaDescriptor | None, duration_ms: int) -> ContractCheckResult`
+- `ContractTestCase(name: str, request: HttpRequest, expected_statuses: list[int], required_headers: list[str], expected_content_type: str, body_schema: SchemaDescriptor | None)`
+  - `.run_on_handler(handler: (HttpRequest) -> HttpResponse) -> ContractCheckResult`
+
+---
+
+## 15. OpenAPI Subset Importer (`contract/openapi.nox`)
+
+- `UnsupportedContractFeature(Exception)`
+- `parse_openapi_json(doc_json_str: str) -> ParsedOpenApiDoc`
+  - `.title: str`
+  - `.version: str`
+  - `.operations: list[ParsedOperation]`
+
 

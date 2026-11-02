@@ -1,0 +1,47 @@
+# Quartz Contract Testing Example — In-Process HTTP Handler
+import nox.http
+from nox.http import HttpRequest, HttpResponse
+from contract.http import build_request, empty_headers
+from contract.schema import SchemaDescriptor, PropertyRule, schema_string, schema_integer, schema_boolean, schema_object
+from contract.runner import ContractTestCase
+from contract.types import ContractCheckResult
+
+def my_api_handler(req: HttpRequest) -> HttpResponse:
+    headers: dict[str, str] = {}
+    headers["Content-Type"] = "application/json"
+    headers["X-API-Version"] = "1.0.0"
+
+    if req.target == "/status" and req.method == "GET":
+        return HttpResponse(200, "{\"service\":\"quartz-demo\",\"healthy\":true,\"uptime_sec\":3600}", headers)
+
+    return HttpResponse(404, "{\"error\":\"not found\"}", headers)
+
+def run_example() -> None:
+    print("Starting Quartz In-Process HTTP Contract Example...")
+
+    status_schema: SchemaDescriptor = schema_object([
+        PropertyRule("service", schema_string()),
+        PropertyRule("healthy", schema_boolean()),
+        PropertyRule("uptime_sec", schema_integer())
+    ], ["service", "healthy"])
+
+    req: HttpRequest = build_request("GET", "/status", "", empty_headers())
+    tc: ContractTestCase = ContractTestCase(
+        "status_endpoint_contract",
+        req,
+        [200],
+        ["Content-Type", "X-API-Version"],
+        "application/json",
+        status_schema
+    )
+
+    check: ContractCheckResult = tc.run_on_handler(my_api_handler)
+    print("Contract Check Valid: " + str(check.is_valid))
+    print("Status Code: " + str(check.status_code))
+    print("Duration: " + str(check.duration_ms) + " ms")
+    if check.has_errors():
+        print("Errors: " + check.error_summary())
+    else:
+        print("Contract verified successfully!")
+
+run_example()

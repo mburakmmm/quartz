@@ -1,0 +1,69 @@
+# Quartz Contract — Contract & Operation Types
+import nox.strings
+
+SENSITIVE_HEADERS: list[str] = [
+    "authorization",
+    "cookie",
+    "set-cookie",
+    "api-key",
+    "x-api-key",
+    "token",
+    "x-auth-token"
+]
+
+def is_sensitive_header(header_name: str) -> bool:
+    lower: str = nox.strings.lower(header_name)
+    i: int = 0
+    while i < len(SENSITIVE_HEADERS):
+        if SENSITIVE_HEADERS[i] == lower:
+            return True
+        i = i + 1
+    return False
+
+def redact_header_value(header_name: str, value: str) -> str:
+    if is_sensitive_header(header_name):
+        return "[REDACTED]"
+    return value
+
+def get_header_ci(headers: dict[str, str], target_name: str) -> str:
+    target_lower: str = nox.strings.lower(target_name)
+    for k in headers:
+        if nox.strings.lower(k) == target_lower:
+            return headers[k]
+    return ""
+
+def has_header_ci(headers: dict[str, str], target_name: str) -> bool:
+    target_lower: str = nox.strings.lower(target_name)
+    for k in headers:
+        if nox.strings.lower(k) == target_lower:
+            return True
+    return False
+
+class ContractCheckResult:
+    is_valid: bool
+    errors: list[str]
+    warnings: list[str]
+    status_code: int
+    duration_ms: int
+
+    def __init__(self: ContractCheckResult, is_valid: bool, errors: list[str], warnings: list[str], status_code: int, duration_ms: int) -> None:
+        self.is_valid = is_valid
+        self.errors = errors
+        self.warnings = warnings
+        self.status_code = status_code
+        self.duration_ms = duration_ms
+
+    def has_errors(self: ContractCheckResult) -> bool:
+        return len(self.errors) > 0
+
+    def error_summary(self: ContractCheckResult) -> str:
+        if len(self.errors) == 0:
+            return "OK"
+        res: str = ""
+        i: int = 0
+        while i < len(self.errors):
+            if i > 0:
+                res = res + "; "
+            res = res + self.errors[i]
+            i = i + 1
+        return res
