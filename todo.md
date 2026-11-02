@@ -292,3 +292,5 @@
 | 2026-11-02 | Phase 1 | Reports | `core/report.nox` | JUnit XML, JSON summary, secret redaction, atomic disk writes | [x] DONE |
 | 2026-11-02 | Phase 1 | Verification | `noxc test` | `tests/core_test.nox` (25+ checks) and baseline passed cleanly | [x] DONE |
 | 2026-11-02 | Phase 1 | Docs & Release | `docs/api.md`, `CHANGELOG.md` | Complete v0.1.0 public API reference and changelog updated | [x] DONE |
+| 2026-11-02 | Phase 1 | Git & CI | `.github/workflows/ci.yml` | Multi-arch CI (Linux x64/arm64, macOS arm64, Windows x64) | [x] DONE |
+| 2026-11-02 | Phase 1 | Registry Publish | `noxc publish` | `submitted: quartz (id=dac20c43-f400-4a74-a954-2d1b0f800fad)` | [x] DONE |
