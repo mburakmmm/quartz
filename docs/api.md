@@ -417,4 +417,45 @@ Published as the `quartz` binary via `nox.json` and runnable via `noxc run cli/m
   - `.emit_threshold_breach(workload: str, metric_name: str, target_val: float, observed_val: float) -> None`
 - `run_task_workload_streaming(workload: WorkloadConfig, task_func: (int) -> bool, thresholds: list[Threshold], limits: SafetyLimits, reporter: JsonlStreamReporter) -> LoadTestSummary`: Runs workload with real-time JSONL telemetry logging.
 
+---
+
+## 26. Interactive HTML Visual Reports (`core/report_html.nox`)
+
+- `escape_html(s: str) -> str`: Escapes HTML entity characters (`&`, `<`, `>`, `"`, `'`).
+- `format_html_test_report(title: str, summary: RunSummary, run_id: str, compiler_ver: str, backend: str) -> str`: Produces a complete, dependency-free HTML5 test execution dashboard with embedded SVG distribution bar, status pill badges, summary metrics, and collapsible diagnostic details with secret redaction.
+- `format_html_load_report(title: str, summary: LoadTestSummary) -> str`: Produces a complete HTML5 load test report with embedded SVG Latency Percentile step curve (Min, p50, p90, p95, p99, Max), threshold evaluation tables, and per-VU breakdown cards.
+- `write_html_report(path: str, html_content: str) -> None`: Atomically saves HTML report to disk, automatically creating parent directories.
+
+---
+
+## 27. WebSocket Handshake & Conversation Protocol Contracts (`contract/websocket.nox`)
+
+- Opcode Constants: `WS_TEXT`, `WS_BINARY`, `WS_PING`, `WS_PONG`, `WS_CLOSE`.
+- `WsMessage(msg_type: str, payload: str, timestamp_ms: int = 0)`
+- `WsStepExpectation(direction: str, msg_type: str, exact_payload: str, schema: SchemaDescriptor, has_schema: bool, close_code: int)`
+  - `ws_expect_text(direction: str, exact_text: str) -> WsStepExpectation`
+  - `ws_expect_json(direction: str, schema: SchemaDescriptor) -> WsStepExpectation`
+  - `ws_expect_ping(direction: str = "server") -> WsStepExpectation`
+  - `ws_expect_pong(direction: str = "client") -> WsStepExpectation`
+  - `ws_expect_close(direction: str = "server", close_code: int = 1000) -> WsStepExpectation`
+- `WsValidationResult(is_valid: bool, step_index: int, error_message: str)`
+- `mock_ws_client_handshake(target: str = "/ws", key: str = "...", subprotocol: str = "") -> HttpRequest`: Constructs compliant RFC 6455 upgrade request.
+- `mock_ws_server_handshake(subprotocol: str = "") -> HttpResponse`: Constructs compliant 101 Switching Protocols response.
+- `validate_ws_handshake_request(req: HttpRequest, required_subprotocol: str = "") -> WsValidationResult`: Verifies method, Upgrade headers, Sec-WebSocket-Key, Sec-WebSocket-Version: 13, and optional subprotocol.
+- `validate_ws_handshake_response(res: HttpResponse, expected_subprotocol: str = "") -> WsValidationResult`: Verifies 101 status code, Upgrade headers, and negotiated subprotocol.
+- `validate_ws_conversation(messages: list[WsMessage], expected_steps: list[WsStepExpectation]) -> WsValidationResult`: Verifies message step sequence, opcodes, exact string payloads, and JSON schema constraints.
+
+---
+
+## 28. Property Test Suite & Aggregate Invariant Runner (`property/suite.nox`)
+
+- `PropertySuite(name: str, seed: int = 147291, cases_per_property: int = 100, timeout_ms: int = 5000)`
+  - `.check_int(test_id: str, gen: IntGen, predicate: (int) -> bool) -> PropertyResult`
+  - `.check_str(test_id: str, gen: StringGen, predicate: (str) -> bool) -> PropertyResult`
+  - `.check_list_int(test_id: str, gen: ListIntGen, predicate: (list[int]) -> bool) -> PropertyResult`
+  - `.is_successful() -> bool`: Returns true if all registered property invariants passed.
+  - `.to_summary() -> RunSummary`: Converts suite results into standard `RunSummary` for unified JUnit XML, summary JSON, and HTML report export.
+  - `.to_json() -> str`: Serializes comprehensive suite statistics and counterexample details to JSON.
+
+
 

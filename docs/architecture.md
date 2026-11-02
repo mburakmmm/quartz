@@ -121,3 +121,12 @@ Quartz is designed as a standalone, zero-dependency testing framework for the NO
   1. Virtual user workers are spawned concurrently using `Channel[int]` for non-blocking lock-free metric streaming (`vu_id`, `dur_ms`, `status_code`), completely avoiding heap allocations and memory corruption.
   2. Coroutine task functions are scoped within the module where `spawn` is executed.
   3. The CLI test runner implements a two-stage execution strategy: static type verification via `noxc check <path>` (immune to missing C compiler toolchain in child process) followed by dynamic test execution, providing informative diagnostics when child process compiler execution is restricted by environment sandboxing.
+
+### ADR-013: RFC 6455 WebSocket Handshake & Conversation Protocol Contracts
+- **Context:** Real-time applications (streaming chats, metrics tickers, notifications) communicate over WebSockets. Existing HTTP contract testing tools verify single request/response cycles but cannot validate upgrade handshakes or bidirectional message conversations.
+- **Decision:** Implement `contract/websocket.nox` with transport-agnostic message verification. Validate RFC 6455 client handshake headers (`Upgrade: websocket`, `Connection: Upgrade`, `Sec-WebSocket-Key`, `Sec-WebSocket-Version: 13`), server 101 status code responses, and multi-step conversation dialogues against typed `SchemaDescriptor` definitions.
+
+### ADR-014: Standalone Zero-Dependency Embedded SVG HTML Reporting
+- **Context:** CI systems and developers need rich visual reports (percentile latency curves, distribution charts) without depending on external JavaScript libraries, CDNs, or rendering engines.
+- **Decision:** Implement `core/report_html.nox` with zero third-party dependencies, generating clean HTML5 documents with embedded inline SVG vector graphics (`<polyline>`, `<svg width="100%" height="220">`, `<circle>`). Reports open offline in any browser and format properly across light and dark modes.
+

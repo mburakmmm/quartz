@@ -1,0 +1,98 @@
+# Quartz Test Suite — Interactive HTML Visual Reports
+import nox.fs
+import nox.strings
+from core.assert import assert_true, assert_false, assert_eq_int, assert_contains_str
+from core.types import STATUS_PASS, STATUS_FAIL, STATUS_SKIP, TestResult, RunSummary
+from core.report_html import format_html_test_report, format_html_load_report, write_html_report, escape_html
+from load.metrics import LoadMetrics
+from load.workload import WorkloadConfig, closed_workload
+from load.thresholds import ThresholdResult
+from load.executor import LoadTestSummary, VirtualUserState
+
+def test_html_escape() -> None:
+    escaped: str = escape_html("Hello <world> & 'quotes' \"test\"")
+    assert_contains_str(escaped, "&lt;world&gt;", "escaped tags")
+    assert_contains_str(escaped, "&amp;", "escaped ampersand")
+    assert_contains_str(escaped, "&#39;quotes&#39;", "escaped single quotes")
+    assert_contains_str(escaped, "&quot;test&quot;", "escaped double quotes")
+
+def test_html_test_report_pass() -> None:
+    summary: RunSummary = RunSummary()
+    summary.record(TestResult("t1", "test_addition", STATUS_PASS, 5, "", None))
+    summary.record(TestResult("t2", "test_subtraction", STATUS_PASS, 8, "", None))
+
+    html: str = format_html_test_report("Core Math Tests", summary, "run-101", "noxc 2.0.108", "llvm")
+    assert_contains_str(html, "<title>Core Math Tests — Quartz Report</title>", "title rendered")
+    assert_contains_str(html, "badge-pass", "pass badge")
+    assert_contains_str(html, "100% Passed", "100% pass rate")
+    assert_contains_str(html, "test_addition", "test name 1")
+    assert_contains_str(html, "test_subtraction", "test name 2")
+    assert_contains_str(html, "<svg width=\"100%\" height=\"20\"", "svg bar")
+
+def test_html_test_report_fail_and_redaction() -> None:
+    summary: RunSummary = RunSummary()
+    summary.record(TestResult("t1", "test_auth_flow", STATUS_FAIL, 15, "Auth header Bearer secret_token_xyz invalid", None))
+    summary.record(TestResult("t2", "test_skipped_flow", STATUS_SKIP, 2, "Platform unsupported", None))
+
+    html: str = format_html_test_report("Auth Suite", summary, "run-102", "noxc 2.0.108", "qbe")
+    assert_contains_str(html, "badge-fail", "fail badge")
+    assert_contains_str(html, "badge-skip", "skip badge")
+    # Sensitive token must be redacted
+    assert_contains_str(html, "Bearer [REDACTED]", "secret redacted")
+    assert_false(nox.strings.contains(html, "secret_token_xyz"), "secret token unmasked")
+    assert_contains_str(html, "<details>", "collapsible diagnostic")
+    assert_contains_str(html, "<summary>View Diagnostic</summary>", "summary label")
+
+def test_html_load_report_charts() -> None:
+    metrics: LoadMetrics = LoadMetrics()
+    metrics.record_scheduled()
+    metrics.record_result(200, 10, False, True)
+    metrics.record_scheduled()
+    metrics.record_result(200, 25, False, True)
+    metrics.record_scheduled()
+    metrics.record_result(200, 45, False, True)
+    metrics.record_scheduled()
+    metrics.record_result(500, 120, False, False)
+
+    tr1: ThresholdResult = ThresholdResult("p95_latency_ms", "<=", 100.0, 45.0, True, "OK")
+    tr2: ThresholdResult = ThresholdResult("error_rate", "<=", 0.05, 0.25, False, "violated")
+    thresholds: list[ThresholdResult] = [tr1, tr2]
+
+    vu1: VirtualUserState = VirtualUserState(1)
+    vu1.record(10, True)
+    vu1.record(25, True)
+    vu2: VirtualUserState = VirtualUserState(2)
+    vu2.record(45, True)
+    vu2.record(120, False)
+    vus: list[VirtualUserState] = [vu1, vu2]
+
+    summary: LoadTestSummary = LoadTestSummary("checkout_load", metrics, thresholds, 1000, False, False, "", vus)
+    html: str = format_html_load_report("API Checkout Load Test", summary)
+
+    assert_contains_str(html, "<title>API Checkout Load Test — Quartz Load Report</title>", "title rendered")
+    assert_contains_str(html, "checkout_load", "workload name")
+    assert_contains_str(html, "Latency Percentile Curve (ms)", "percentile chart heading")
+    assert_contains_str(html, "<polyline fill=\"none\" stroke=\"#06b6d4\"", "svg polyline")
+    assert_contains_str(html, "VU #1", "vu 1 present")
+    assert_contains_str(html, "VU #2", "vu 2 present")
+    assert_contains_str(html, "VIOLATED", "threshold violation badge")
+    assert_contains_str(html, "error_rate", "threshold metric name")
+
+def test_html_disk_write() -> None:
+    summary: RunSummary = RunSummary()
+    summary.record(TestResult("d1", "disk_test", STATUS_PASS, 4, "", None))
+    html: str = format_html_test_report("Disk Report Test", summary, "run-disk", "noxc", "llvm")
+
+    out_path: str = "artifacts/test_generated_report.html"
+    write_html_report(out_path, html)
+
+    assert_true(nox.fs.exists(out_path), "html file written to disk")
+    content: str = nox.fs.read_to_string(out_path)
+    assert_contains_str(content, "Disk Report Test", "content matches")
+
+test_html_escape()
+test_html_test_report_pass()
+test_html_test_report_fail_and_redaction()
+test_html_load_report_charts()
+test_html_disk_write()
+print("quartz html report test: ALL PASS")

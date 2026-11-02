@@ -11,6 +11,8 @@ from nox.json import JsonValue
 from nox.process import Command, Output
 from core.prng import Prng, PRNG_VERSION
 from core.report import escape_json
+from core.report_html import format_html_load_report, format_html_test_report, write_html_report
+from core.types import RunSummary, TestResult, STATUS_PASS
 from property.generator import IntGen, ListIntGen
 from property.property import PropertyConfig, run_list_int_property, PropertyResult
 from property.replay import replay_int_case
@@ -178,6 +180,14 @@ def cmd_load() -> None:
             print("Wrote load test JSON summary to: " + out_opt)
         else:
             print(json_str)
+        return
+    elif format_opt == "html":
+        html_str: str = format_html_load_report("Quartz Load Scenario: " + workload.name, summary)
+        if len(out_opt) > 0:
+            write_html_report(out_opt, html_str)
+            print("Wrote load test HTML report to: " + out_opt)
+        else:
+            print(html_str)
         return
 
     print("Completed Requests: " + str(summary.metrics.completed))
@@ -421,6 +431,17 @@ def cmd_report() -> None:
             print("Wrote report JSON summary to: " + out_opt)
         else:
             print(rep_json)
+        return
+    elif format_opt == "html":
+        summ: RunSummary = RunSummary()
+        summ.total = total_files
+        summ.passed = json_count + xml_count
+        rep_html: str = format_html_test_report("Quartz Test Artifacts Summary (" + report_dir + ")", summ, "report-inspection", "noxc", "default")
+        if len(out_opt) > 0:
+            write_html_report(out_opt, rep_html)
+            print("Wrote report HTML summary to: " + out_opt)
+        else:
+            print(rep_html)
         return
 
     print("=== Quartz Test Artifacts & Report Summary ===")

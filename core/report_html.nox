@@ -1,0 +1,348 @@
+# Quartz Core — Interactive HTML Visual Report Exporter
+# Generates self-contained, dependency-free HTML5 reports with embedded responsive SVG charts
+# for test suite execution summaries and load testing performance metrics.
+
+import nox.fs
+import nox.strings
+from core.types import STATUS_PASS, STATUS_FAIL, STATUS_SKIP, STATUS_ERROR, STATUS_TIMEOUT, TestResult, RunSummary
+from core.report import redact_secrets
+from load.executor import LoadTestSummary, VirtualUserState
+from load.thresholds import ThresholdResult
+from load.metrics import LoadMetrics
+
+def escape_html(s: str) -> str:
+    s1: str = nox.strings.replace(s, "&", "&amp;")
+    s2: str = nox.strings.replace(s1, "<", "&lt;")
+    s3: str = nox.strings.replace(s2, ">", "&gt;")
+    s4: str = nox.strings.replace(s3, "\"", "&quot;")
+    return nox.strings.replace(s4, "'", "&#39;")
+
+def format_html_test_report(title: str, summary: RunSummary, run_id: str, compiler_ver: str, backend: str) -> str:
+    pass_pct: float = 0.0
+    if summary.total > 0:
+        pass_pct = (float(summary.passed) / float(summary.total)) * 100.0
+
+    # Inline SVG horizontal bar chart
+    pass_width: float = 0.0
+    fail_width: float = 0.0
+    skip_width: float = 0.0
+    err_width: float = 0.0
+    if summary.total > 0:
+        tot_f: float = float(summary.total)
+        pass_width = (float(summary.passed) / tot_f) * 100.0
+        fail_width = (float(summary.failed) / tot_f) * 100.0
+        skip_width = (float(summary.skipped) / tot_f) * 100.0
+        err_width = (float(summary.errors) / tot_f) * 100.0
+
+    status_theme: str = "#10b981"
+    if summary.failed > 0 or summary.errors > 0:
+        status_theme = "#ef4444"
+
+    html: str = "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n"
+    html = html + "  <meta charset=\"UTF-8\">\n"
+    html = html + "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
+    html = html + "  <title>" + escape_html(title) + " — Quartz Report</title>\n"
+    html = html + "  <style>\n"
+    html = html + "    :root { --bg: #0f172a; --card: #1e293b; --border: #334155; --text: #f8fafc; --muted: #94a3b8; --pass: #10b981; --fail: #ef4444; --skip: #f59e0b; --err: #8b5cf6; }\n"
+    html = html + "    body { margin: 0; padding: 2rem; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); }\n"
+    html = html + "    .container { max-width: 1000px; margin: 0 auto; }\n"
+    html = html + "    .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 1.5rem; margin-bottom: 2rem; }\n"
+    html = html + "    .header h1 { margin: 0; font-size: 1.75rem; font-weight: 700; }\n"
+    html = html + "    .badge { display: inline-block; padding: 0.25rem 0.75rem; border-radius: 9999px; font-weight: 600; font-size: 0.875rem; text-transform: uppercase; }\n"
+    html = html + "    .badge-pass { background: rgba(16, 185, 129, 0.2); color: var(--pass); border: 1px solid var(--pass); }\n"
+    html = html + "    .badge-fail { background: rgba(239, 68, 68, 0.2); color: var(--fail); border: 1px solid var(--fail); }\n"
+    html = html + "    .badge-skip { background: rgba(245, 158, 11, 0.2); color: var(--skip); border: 1px solid var(--skip); }\n"
+    html = html + "    .badge-err { background: rgba(139, 92, 246, 0.2); color: var(--err); border: 1px solid var(--err); }\n"
+    html = html + "    .meta { font-size: 0.875rem; color: var(--muted); margin-top: 0.25rem; }\n"
+    html = html + "    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem; margin-bottom: 2rem; }\n"
+    html = html + "    .card { background: var(--card); border: 1px solid var(--border); border-radius: 0.75rem; padding: 1.25rem; }\n"
+    html = html + "    .card-num { font-size: 1.75rem; font-weight: 700; margin: 0.25rem 0 0 0; }\n"
+    html = html + "    .card-label { font-size: 0.8125rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }\n"
+    html = html + "    .chart-container { background: var(--card); border: 1px solid var(--border); border-radius: 0.75rem; padding: 1.5rem; margin-bottom: 2rem; }\n"
+    html = html + "    .table-card { background: var(--card); border: 1px solid var(--border); border-radius: 0.75rem; overflow: hidden; }\n"
+    html = html + "    table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.875rem; }\n"
+    html = html + "    th { background: rgba(0,0,0,0.2); padding: 0.75rem 1rem; color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--border); }\n"
+    html = html + "    td { padding: 0.75rem 1rem; border-bottom: 1px solid var(--border); }\n"
+    html = html + "    tr:last-child td { border-bottom: none; }\n"
+    html = html + "    .pre-box { background: rgba(0,0,0,0.4); border: 1px solid var(--border); border-radius: 0.375rem; padding: 0.5rem; margin-top: 0.5rem; font-family: monospace; font-size: 0.8125rem; color: #f87171; white-space: pre-wrap; word-break: break-all; }\n"
+    html = html + "    details summary { cursor: pointer; color: var(--muted); font-size: 0.8125rem; }\n"
+    html = html + "  </style>\n</head>\n<body>\n"
+    html = html + "  <div class=\"container\">\n"
+    html = html + "    <div class=\"header\">\n"
+    html = html + "      <div>\n"
+    html = html + "        <h1>" + escape_html(title) + "</h1>\n"
+    html = html + "        <div class=\"meta\">Run ID: " + escape_html(run_id) + " | Compiler: " + escape_html(compiler_ver) + " | Backend: " + escape_html(backend) + "</div>\n"
+    html = html + "      </div>\n"
+    
+    if summary.is_successful():
+        html = html + "      <span class=\"badge badge-pass\">PASS</span>\n"
+    else:
+        html = html + "      <span class=\"badge badge-fail\">FAIL</span>\n"
+        
+    html = html + "    </div>\n\n"
+
+    # Stat cards
+    html = html + "    <div class=\"stats-grid\">\n"
+    html = html + "      <div class=\"card\"><div class=\"card-label\">Total Tests</div><div class=\"card-num\">" + str(summary.total) + "</div></div>\n"
+    html = html + "      <div class=\"card\"><div class=\"card-label\">Passed</div><div class=\"card-num\" style=\"color: var(--pass)\">" + str(summary.passed) + "</div></div>\n"
+    html = html + "      <div class=\"card\"><div class=\"card-label\">Failed</div><div class=\"card-num\" style=\"color: var(--fail)\">" + str(summary.failed) + "</div></div>\n"
+    html = html + "      <div class=\"card\"><div class=\"card-label\">Skipped</div><div class=\"card-num\" style=\"color: var(--skip)\">" + str(summary.skipped) + "</div></div>\n"
+    html = html + "      <div class=\"card\"><div class=\"card-label\">Errors</div><div class=\"card-num\" style=\"color: var(--err)\">" + str(summary.errors) + "</div></div>\n"
+    html = html + "      <div class=\"card\"><div class=\"card-label\">Duration</div><div class=\"card-num\">" + str(summary.duration_ms) + "<span style=\"font-size:0.875rem; color:var(--muted); font-weight:normal;\"> ms</span></div></div>\n"
+    html = html + "    </div>\n\n"
+
+    # SVG Visual distribution bar
+    html = html + "    <div class=\"chart-container\">\n"
+    html = html + "      <div style=\"display:flex; justify-content:space-between; margin-bottom:0.5rem; font-size:0.875rem;\">\n"
+    html = html + "        <span style=\"font-weight:600;\">Execution Distribution</span>\n"
+    html = html + "        <span style=\"color:var(--muted);\">" + str(int(pass_pct)) + "% Passed</span>\n"
+    html = html + "      </div>\n"
+    html = html + "      <svg width=\"100%\" height=\"20\" style=\"border-radius:4px; overflow:hidden; background:rgba(255,255,255,0.05);\">\n"
+
+    curr_x: float = 0.0
+    if pass_width > 0.0:
+        html = html + "        <rect x=\"" + str(curr_x) + "%\" y=\"0\" width=\"" + str(pass_width) + "%\" height=\"100%\" fill=\"#10b981\"/>\n"
+        curr_x = curr_x + pass_width
+    if fail_width > 0.0:
+        html = html + "        <rect x=\"" + str(curr_x) + "%\" y=\"0\" width=\"" + str(fail_width) + "%\" height=\"100%\" fill=\"#ef4444\"/>\n"
+        curr_x = curr_x + fail_width
+    if skip_width > 0.0:
+        html = html + "        <rect x=\"" + str(curr_x) + "%\" y=\"0\" width=\"" + str(skip_width) + "%\" height=\"100%\" fill=\"#f59e0b\"/>\n"
+        curr_x = curr_x + skip_width
+    if err_width > 0.0:
+        html = html + "        <rect x=\"" + str(curr_x) + "%\" y=\"0\" width=\"" + str(err_width) + "%\" height=\"100%\" fill=\"#8b5cf6\"/>\n"
+
+    html = html + "      </svg>\n"
+    html = html + "    </div>\n\n"
+
+    # Test cases table
+    html = html + "    <div class=\"table-card\">\n"
+    html = html + "      <table>\n"
+    html = html + "        <thead>\n"
+    html = html + "          <tr><th>Status</th><th>Test Name</th><th>ID</th><th>Duration</th><th>Details</th></tr>\n"
+    html = html + "        </thead>\n"
+    html = html + "        <tbody>\n"
+
+    i: int = 0
+    while i < len(summary.results):
+        r: TestResult = summary.results[i]
+        badge_cls: str = "badge-pass"
+        if r.status == STATUS_FAIL:
+            badge_cls = "badge-fail"
+        elif r.status == STATUS_SKIP:
+            badge_cls = "badge-skip"
+        elif r.status == STATUS_ERROR or r.status == STATUS_TIMEOUT:
+            badge_cls = "badge-err"
+
+        html = html + "          <tr>\n"
+        html = html + "            <td><span class=\"badge " + badge_cls + "\">" + r.status + "</span></td>\n"
+        html = html + "            <td style=\"font-weight:600;\">" + escape_html(r.name) + "</td>\n"
+        html = html + "            <td style=\"color:var(--muted); font-family:monospace;\">" + escape_html(r.id) + "</td>\n"
+        html = html + "            <td>" + str(r.duration_ms) + " ms</td>\n"
+        html = html + "            <td>\n"
+        if len(r.message) > 0:
+            redacted: str = redact_secrets(r.message)
+            html = html + "              <details>\n"
+            html = html + "                <summary>View Diagnostic</summary>\n"
+            html = html + "                <div class=\"pre-box\">" + escape_html(redacted) + "</div>\n"
+            html = html + "              </details>\n"
+        else:
+            html = html + "              <span style=\"color:var(--muted);\">—</span>\n"
+        html = html + "            </td>\n"
+        html = html + "          </tr>\n"
+        i = i + 1
+
+    html = html + "        </tbody>\n"
+    html = html + "      </table>\n"
+    html = html + "    </div>\n\n"
+
+    html = html + "    <div style=\"text-align:center; margin-top:2rem; font-size:0.8125rem; color:var(--muted);\">\n"
+    html = html + "      Generated by Quartz Test Framework for NOX Ecosystem\n"
+    html = html + "    </div>\n"
+    html = html + "  </div>\n</body>\n</html>\n"
+    return html
+
+def format_html_load_report(title: str, summary: LoadTestSummary) -> str:
+    m: LoadMetrics = summary.metrics
+    p50_val: int = m.p50()
+    p90_val: int = m.p90()
+    p95_val: int = m.p95()
+    p99_val: int = m.p99()
+    min_val: int = m.min_latency_ms if m.min_latency_ms >= 0 else 0
+    max_val: int = m.max_latency_ms
+
+    overall_pass: bool = summary.all_passed and not summary.aborted
+
+    html: str = "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n"
+    html = html + "  <meta charset=\"UTF-8\">\n"
+    html = html + "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
+    html = html + "  <title>" + escape_html(title) + " — Quartz Load Report</title>\n"
+    html = html + "  <style>\n"
+    html = html + "    :root { --bg: #0b0f19; --card: #151d30; --border: #24324f; --text: #f1f5f9; --muted: #8e9db7; --pass: #10b981; --fail: #ef4444; --cyan: #06b6d4; --indigo: #6366f1; }\n"
+    html = html + "    body { margin: 0; padding: 2rem; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); }\n"
+    html = html + "    .container { max-width: 1050px; margin: 0 auto; }\n"
+    html = html + "    .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 1.5rem; margin-bottom: 2rem; }\n"
+    html = html + "    .badge { display: inline-block; padding: 0.25rem 0.75rem; border-radius: 9999px; font-weight: 600; font-size: 0.875rem; text-transform: uppercase; }\n"
+    html = html + "    .badge-pass { background: rgba(16, 185, 129, 0.2); color: var(--pass); border: 1px solid var(--pass); }\n"
+    html = html + "    .badge-fail { background: rgba(239, 68, 68, 0.2); color: var(--fail); border: 1px solid var(--fail); }\n"
+    html = html + "    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem; margin-bottom: 2rem; }\n"
+    html = html + "    .card { background: var(--card); border: 1px solid var(--border); border-radius: 0.75rem; padding: 1.25rem; }\n"
+    html = html + "    .card-num { font-size: 1.75rem; font-weight: 700; margin: 0.25rem 0 0 0; }\n"
+    html = html + "    .card-label { font-size: 0.8125rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }\n"
+    html = html + "    .chart-card { background: var(--card); border: 1px solid var(--border); border-radius: 0.75rem; padding: 1.5rem; margin-bottom: 2rem; }\n"
+    html = html + "    table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.875rem; }\n"
+    html = html + "    th { background: rgba(0,0,0,0.2); padding: 0.75rem 1rem; color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--border); }\n"
+    html = html + "    td { padding: 0.75rem 1rem; border-bottom: 1px solid var(--border); }\n"
+    html = html + "    tr:last-child td { border-bottom: none; }\n"
+    html = html + "  </style>\n</head>\n<body>\n"
+    html = html + "  <div class=\"container\">\n"
+    html = html + "    <div class=\"header\">\n"
+    html = html + "      <div>\n"
+    html = html + "        <h1 style=\"margin:0;\">" + escape_html(title) + "</h1>\n"
+    html = html + "        <div style=\"font-size:0.875rem; color:var(--muted); margin-top:0.25rem;\">Workload: " + escape_html(summary.workload_name) + " | Duration: " + str(summary.total_duration_ms) + " ms</div>\n"
+    html = html + "      </div>\n"
+
+    if overall_pass:
+        html = html + "      <span class=\"badge badge-pass\">PASS</span>\n"
+    else:
+        html = html + "      <span class=\"badge badge-fail\">FAIL</span>\n"
+        
+    html = html + "    </div>\n\n"
+
+    # Load Metrics Cards
+    html = html + "    <div class=\"stats-grid\">\n"
+    html = html + "      <div class=\"card\"><div class=\"card-label\">Completed</div><div class=\"card-num\">" + str(m.completed) + "</div></div>\n"
+    html = html + "      <div class=\"card\"><div class=\"card-label\">Successful</div><div class=\"card-num\" style=\"color:var(--pass);\">" + str(m.successful) + "</div></div>\n"
+    html = html + "      <div class=\"card\"><div class=\"card-label\">Failed</div><div class=\"card-num\" style=\"color:var(--fail);\">" + str(m.failed) + "</div></div>\n"
+    html = html + "      <div class=\"card\"><div class=\"card-label\">Throughput</div><div class=\"card-num\" style=\"color:var(--cyan);\">" + str(int(m.throughput_rps(summary.total_duration_ms))) + "<span style=\"font-size:0.875rem; color:var(--muted); font-weight:normal;\"> rps</span></div></div>\n"
+    html = html + "      <div class=\"card\"><div class=\"card-label\">Mean Latency</div><div class=\"card-num\">" + str(int(m.mean_latency_ms())) + "<span style=\"font-size:0.875rem; color:var(--muted); font-weight:normal;\"> ms</span></div></div>\n"
+    html = html + "      <div class=\"card\"><div class=\"card-label\">p95 Latency</div><div class=\"card-num\" style=\"color:#f59e0b;\">" + str(p95_val) + "<span style=\"font-size:0.875rem; color:var(--muted); font-weight:normal;\"> ms</span></div></div>\n"
+    html = html + "    </div>\n\n"
+
+    # SVG Latency Percentiles Curve Chart
+    # ViewBox 0 0 600 220
+    # Map p-points: Min (x=60), p50 (x=160), p90 (x=270), p95 (x=380), p99 (x=490), Max (x=560)
+    top_limit: int = max_val
+    if top_limit < 10:
+        top_limit = 10
+        
+    def scale_y(val: int) -> int:
+        if top_limit <= 0:
+            return 170
+        y_scaled: float = float(val) / float(top_limit)
+        return int(170.0 - (y_scaled * 120.0))
+
+    y_min: int = scale_y(min_val)
+    y_p50: int = scale_y(p50_val)
+    y_p90: int = scale_y(p90_val)
+    y_p95: int = scale_y(p95_val)
+    y_p99: int = scale_y(p99_val)
+    y_max: int = scale_y(max_val)
+
+    points_str: str = "60," + str(y_min) + " 160," + str(y_p50) + " 270," + str(y_p90) + " 380," + str(y_p95) + " 490," + str(y_p99) + " 560," + str(y_max)
+
+    html = html + "    <div class=\"chart-card\">\n"
+    html = html + "      <div style=\"font-weight:600; font-size:1rem; margin-bottom:1rem;\">Latency Percentile Curve (ms)</div>\n"
+    html = html + "      <svg width=\"100%\" height=\"220\" viewBox=\"0 0 600 220\" style=\"overflow:visible;\">\n"
+    html = html + "        <line x1=\"60\" y1=\"170\" x2=\"560\" y2=\"170\" stroke=\"#334155\" stroke-width=\"1\"/>\n"
+    html = html + "        <line x1=\"60\" y1=\"50\" x2=\"560\" y2=\"50\" stroke=\"#334155\" stroke-width=\"1\" stroke-dasharray=\"4\"/>\n"
+    html = html + "        <polyline fill=\"none\" stroke=\"#06b6d4\" stroke-width=\"3\" stroke-linecap=\"round\" stroke-linejoin=\"round\" points=\"" + points_str + "\"/>\n"
+
+    # Data points and labels
+    html = html + "        <circle cx=\"60\" cy=\"" + str(y_min) + "\" r=\"4\" fill=\"#06b6d4\"/>\n"
+    html = html + "        <text x=\"60\" y=\"" + str(y_min - 10) + "\" fill=\"#f1f5f9\" font-size=\"11\" text-anchor=\"middle\">" + str(min_val) + "ms</text>\n"
+    html = html + "        <text x=\"60\" y=\"190\" fill=\"#8e9db7\" font-size=\"11\" text-anchor=\"middle\">Min</text>\n"
+
+    html = html + "        <circle cx=\"160\" cy=\"" + str(y_p50) + "\" r=\"4\" fill=\"#06b6d4\"/>\n"
+    html = html + "        <text x=\"160\" y=\"" + str(y_p50 - 10) + "\" fill=\"#f1f5f9\" font-size=\"11\" text-anchor=\"middle\">" + str(p50_val) + "ms</text>\n"
+    html = html + "        <text x=\"160\" y=\"190\" fill=\"#8e9db7\" font-size=\"11\" text-anchor=\"middle\">p50</text>\n"
+
+    html = html + "        <circle cx=\"270\" cy=\"" + str(y_p90) + "\" r=\"4\" fill=\"#06b6d4\"/>\n"
+    html = html + "        <text x=\"270\" y=\"" + str(y_p90 - 10) + "\" fill=\"#f1f5f9\" font-size=\"11\" text-anchor=\"middle\">" + str(p90_val) + "ms</text>\n"
+    html = html + "        <text x=\"270\" y=\"190\" fill=\"#8e9db7\" font-size=\"11\" text-anchor=\"middle\">p90</text>\n"
+
+    html = html + "        <circle cx=\"380\" cy=\"" + str(y_p95) + "\" r=\"5\" fill=\"#f59e0b\"/>\n"
+    html = html + "        <text x=\"380\" y=\"" + str(y_p95 - 10) + "\" fill=\"#f59e0b\" font-size=\"11\" font-weight=\"bold\" text-anchor=\"middle\">" + str(p95_val) + "ms</text>\n"
+    html = html + "        <text x=\"380\" y=\"190\" fill=\"#8e9db7\" font-size=\"11\" text-anchor=\"middle\">p95</text>\n"
+
+    html = html + "        <circle cx=\"490\" cy=\"" + str(y_p99) + "\" r=\"4\" fill=\"#06b6d4\"/>\n"
+    html = html + "        <text x=\"490\" y=\"" + str(y_p99 - 10) + "\" fill=\"#f1f5f9\" font-size=\"11\" text-anchor=\"middle\">" + str(p99_val) + "ms</text>\n"
+    html = html + "        <text x=\"490\" y=\"190\" fill=\"#8e9db7\" font-size=\"11\" text-anchor=\"middle\">p99</text>\n"
+
+    html = html + "        <circle cx=\"560\" cy=\"" + str(y_max) + "\" r=\"4\" fill=\"#ef4444\"/>\n"
+    html = html + "        <text x=\"560\" y=\"" + str(y_max - 10) + "\" fill=\"#ef4444\" font-size=\"11\" text-anchor=\"middle\">" + str(max_val) + "ms</text>\n"
+    html = html + "        <text x=\"560\" y=\"190\" fill=\"#8e9db7\" font-size=\"11\" text-anchor=\"middle\">Max</text>\n"
+
+    html = html + "      </svg>\n"
+    html = html + "    </div>\n\n"
+
+    # Threshold Results Table
+    if len(summary.threshold_results) > 0:
+        html = html + "    <div class=\"chart-card\" style=\"padding:0; overflow:hidden;\">\n"
+        html = html + "      <div style=\"padding:1.25rem; font-weight:600; font-size:1rem; border-bottom:1px solid var(--border);\">Configured Thresholds</div>\n"
+        html = html + "      <table>\n"
+        html = html + "        <thead><tr><th>Metric</th><th>Condition</th><th>Target Value</th><th>Actual Value</th><th>Result</th></tr></thead>\n"
+        html = html + "        <tbody>\n"
+        t_i: int = 0
+        while t_i < len(summary.threshold_results):
+            tr: ThresholdResult = summary.threshold_results[t_i]
+            t_badge: str = "<span class=\"badge badge-pass\">PASS</span>"
+            if not tr.passed:
+                t_badge = "<span class=\"badge badge-fail\">VIOLATED</span>"
+            html = html + "          <tr>\n"
+            html = html + "            <td style=\"font-weight:600;\">" + escape_html(tr.metric_name) + "</td>\n"
+            html = html + "            <td>" + escape_html(tr.operator) + "</td>\n"
+            html = html + "            <td>" + str(tr.target_value) + "</td>\n"
+            html = html + "            <td style=\"font-family:monospace;\">" + str(tr.actual_value) + "</td>\n"
+            html = html + "            <td>" + t_badge + "</td>\n"
+            html = html + "          </tr>\n"
+            t_i = t_i + 1
+        html = html + "        </tbody>\n"
+        html = html + "      </table>\n"
+        html = html + "    </div>\n\n"
+
+    # Virtual Users Breakdown
+    if len(summary.virtual_users) > 0:
+        html = html + "    <div class=\"chart-card\" style=\"padding:0; overflow:hidden;\">\n"
+        html = html + "      <div style=\"padding:1.25rem; font-weight:600; font-size:1rem; border-bottom:1px solid var(--border);\">Virtual User Concurrency Breakdown</div>\n"
+        html = html + "      <table>\n"
+        html = html + "        <thead><tr><th>VU ID</th><th>Completed</th><th>Successful</th><th>Failed</th><th>Total Latency</th></tr></thead>\n"
+        html = html + "        <tbody>\n"
+        vu_i: int = 0
+        while vu_i < len(summary.virtual_users):
+            vu: VirtualUserState = summary.virtual_users[vu_i]
+            html = html + "          <tr>\n"
+            html = html + "            <td style=\"font-weight:600; font-family:monospace;\">VU #" + str(vu.vu_id) + "</td>\n"
+            html = html + "            <td>" + str(vu.completed) + "</td>\n"
+            html = html + "            <td style=\"color:var(--pass);\">" + str(vu.successful) + "</td>\n"
+            html = html + "            <td style=\"color:var(--fail);\">" + str(vu.failed) + "</td>\n"
+            html = html + "            <td>" + str(vu.total_latency_ms) + " ms</td>\n"
+            html = html + "          </tr>\n"
+            vu_i = vu_i + 1
+        html = html + "        </tbody>\n"
+        html = html + "      </table>\n"
+        html = html + "    </div>\n\n"
+
+    html = html + "    <div style=\"text-align:center; margin-top:2rem; font-size:0.8125rem; color:var(--muted);\">\n"
+    html = html + "      Generated by Quartz Load Performance Suite for NOX Ecosystem\n"
+    html = html + "    </div>\n"
+    html = html + "  </div>\n</body>\n</html>\n"
+    return html
+
+def write_html_report(path: str, html_content: str) -> None:
+    if nox.strings.contains(path, "/"):
+        dir_parts: list[str] = nox.strings.split(path, "/")
+        if len(dir_parts) > 1:
+            dir_path: str = ""
+            p_idx: int = 0
+            while p_idx < len(dir_parts) - 1:
+                if p_idx > 0:
+                    dir_path = dir_path + "/"
+                dir_path = dir_path + dir_parts[p_idx]
+                p_idx = p_idx + 1
+            if len(dir_path) > 0 and not nox.fs.exists(dir_path):
+                try:
+                    nox.fs.create_dir(dir_path)
+                except Exception as e:
+                    pass
+    nox.fs.write_string_atomic(path, html_content)

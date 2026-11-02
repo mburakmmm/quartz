@@ -1,0 +1,103 @@
+# Quartz Property — Property Test Suite & Aggregate Invariant Runner
+# Groups multiple property tests under a unified seed, derives isolated seeds per invariant,
+# and converts property execution results into standard RunSummary for JUnit/JSON/HTML export.
+
+import nox.time
+from nox.time import Instant
+from core.types import STATUS_PASS, STATUS_FAIL, TestResult, RunSummary
+from core.report import escape_json
+from property.generator import IntGen, StringGen, ListIntGen
+from property.property import PropertyConfig, PropertyResult, run_int_property, run_str_property, run_list_int_property
+
+class PropertySuite:
+    name: str
+    seed: int
+    cases_per_property: int
+    timeout_ms: int
+    results: list[PropertyResult]
+    total_cases_run: int
+    passed_count: int
+    failed_count: int
+    duration_ms: int
+
+    def __init__(self: PropertySuite, name: str, seed: int = 147291, cases_per_property: int = 100, timeout_ms: int = 5000) -> None:
+        self.name = name
+        self.seed = seed
+        self.cases_per_property = cases_per_property
+        self.timeout_ms = timeout_ms
+        self.results = []
+        self.total_cases_run = 0
+        self.passed_count = 0
+        self.failed_count = 0
+        self.duration_ms = 0
+
+    def check_int(self: PropertySuite, test_id: str, gen: IntGen, predicate: (int) -> bool) -> PropertyResult:
+        cfg: PropertyConfig = PropertyConfig(self.cases_per_property, 5, self.seed, self.timeout_ms)
+        t0: Instant = nox.time.instant_now()
+        res: PropertyResult = run_int_property(test_id, cfg, gen, predicate)
+        elapsed: int = t0.elapsed_ms()
+        self.duration_ms = self.duration_ms + elapsed
+        self._record_result(res)
+        return res
+
+    def check_str(self: PropertySuite, test_id: str, gen: StringGen, predicate: (str) -> bool) -> PropertyResult:
+        cfg: PropertyConfig = PropertyConfig(self.cases_per_property, 5, self.seed, self.timeout_ms)
+        t0: Instant = nox.time.instant_now()
+        res: PropertyResult = run_str_property(test_id, cfg, gen, predicate)
+        elapsed: int = t0.elapsed_ms()
+        self.duration_ms = self.duration_ms + elapsed
+        self._record_result(res)
+        return res
+
+    def check_list_int(self: PropertySuite, test_id: str, gen: ListIntGen, predicate: (list[int]) -> bool) -> PropertyResult:
+        cfg: PropertyConfig = PropertyConfig(self.cases_per_property, 5, self.seed, self.timeout_ms)
+        t0: Instant = nox.time.instant_now()
+        res: PropertyResult = run_list_int_property(test_id, cfg, gen, predicate)
+        elapsed: int = t0.elapsed_ms()
+        self.duration_ms = self.duration_ms + elapsed
+        self._record_result(res)
+        return res
+
+    def _record_result(self: PropertySuite, res: PropertyResult) -> None:
+        self.results.append(res)
+        self.total_cases_run = self.total_cases_run + res.cases_executed
+        if res.is_passed():
+            self.passed_count = self.passed_count + 1
+        else:
+            self.failed_count = self.failed_count + 1
+
+    def is_successful(self: PropertySuite) -> bool:
+        return self.failed_count == 0
+
+    def to_summary(self: PropertySuite) -> RunSummary:
+        summary: RunSummary = RunSummary()
+        i: int = 0
+        while i < len(self.results):
+            r: PropertyResult = self.results[i]
+            msg: str = ""
+            if not r.is_passed():
+                msg = "Violated at case " + str(r.failing_case_index) + " (seed=" + str(r.seed) + "): original=" + r.original_counterexample + ", shrunk=" + r.shrunk_counterexample + " (" + str(r.shrink_attempts) + " shrinks)"
+            summary.record(TestResult(r.test_id, r.test_id, r.status, 0, msg, None))
+            i = i + 1
+
+        summary.duration_ms = self.duration_ms
+        return summary
+
+    def to_json(self: PropertySuite) -> str:
+        s: str = "{"
+        s = s + "\"suite_name\":\"" + escape_json(self.name) + "\","
+        s = s + "\"seed\":" + str(self.seed) + ","
+        s = s + "\"total_invariants\":" + str(len(self.results)) + ","
+        s = s + "\"passed_invariants\":" + str(self.passed_count) + ","
+        s = s + "\"failed_invariants\":" + str(self.failed_count) + ","
+        s = s + "\"total_cases_run\":" + str(self.total_cases_run) + ","
+        s = s + "\"duration_ms\":" + str(self.duration_ms) + ","
+        s = s + "\"results\":["
+        i: int = 0
+        while i < len(self.results):
+            if i > 0:
+                s = s + ","
+            s = s + self.results[i].to_json()
+            i = i + 1
+        s = s + "]}"
+        return s

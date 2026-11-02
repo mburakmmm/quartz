@@ -1,0 +1,119 @@
+# Quartz Test Suite — WebSocket Handshake & Conversation Protocol Contracts
+import nox.test
+import nox.strings
+from nox.http import HttpRequest, HttpResponse
+from core.assert import assert_true, assert_false, assert_eq_int, assert_contains_str
+from contract.schema import schema_object, schema_string, schema_integer, PropertyRule
+from contract.websocket import WS_TEXT, WS_BINARY, WS_PING, WS_PONG, WS_CLOSE
+from contract.websocket import WsMessage, WsStepExpectation, WsValidationResult
+from contract.websocket import ws_expect_text, ws_expect_json, ws_expect_ping, ws_expect_pong, ws_expect_close
+from contract.websocket import validate_ws_handshake_request, validate_ws_handshake_response
+from contract.websocket import validate_ws_conversation, mock_ws_client_handshake, mock_ws_server_handshake
+
+def test_handshake_request_valid() -> None:
+    req: HttpRequest = mock_ws_client_handshake("/chat", "dGhlIHNhbXBsZSBub25jZQ==", "graphql-ws")
+    res: WsValidationResult = validate_ws_handshake_request(req, "graphql-ws")
+    assert_true(res.is_valid, "valid handshake request passes")
+
+def test_handshake_request_invalid_method() -> None:
+    headers: dict[str, str] = {}
+    headers["Upgrade"] = "websocket"
+    headers["Connection"] = "Upgrade"
+    headers["Sec-WebSocket-Key"] = "dGhlIHNhbXBsZSBub25jZQ=="
+    headers["Sec-WebSocket-Version"] = "13"
+    req: HttpRequest = HttpRequest("POST", "/ws", "", headers)
+    res: WsValidationResult = validate_ws_handshake_request(req)
+    assert_false(res.is_valid, "post method rejected for ws handshake")
+    assert_contains_str(res.error_message, "method must be GET", "method error message")
+
+def test_handshake_request_missing_headers() -> None:
+    headers: dict[str, str] = {}
+    headers["Host"] = "localhost"
+    req: HttpRequest = HttpRequest("GET", "/ws", "", headers)
+    res: WsValidationResult = validate_ws_handshake_request(req)
+    assert_false(res.is_valid, "missing upgrade header fails")
+    assert_contains_str(res.error_message, "Upgrade", "upgrade error diagnosed")
+
+def test_handshake_response_valid() -> None:
+    res: HttpResponse = mock_ws_server_handshake("chat.v1")
+    val_res: WsValidationResult = validate_ws_handshake_response(res, "chat.v1")
+    assert_true(val_res.is_valid, "valid 101 server response passes")
+
+def test_handshake_response_wrong_status() -> None:
+    headers: dict[str, str] = {}
+    headers["Upgrade"] = "websocket"
+    headers["Connection"] = "Upgrade"
+    res: HttpResponse = HttpResponse(200, "OK", headers)
+    val_res: WsValidationResult = validate_ws_handshake_response(res)
+    assert_false(val_res.is_valid, "status 200 rejected for ws handshake")
+    assert_contains_str(val_res.error_message, "101", "status 101 required")
+
+def test_conversation_script_pass() -> None:
+    props: list[PropertyRule] = [
+        PropertyRule("event", schema_string()),
+        PropertyRule("user_id", schema_integer(1, 1000, True, True))
+    ]
+    req_keys: list[str] = ["event", "user_id"]
+    ack_schema: SchemaDescriptor = schema_object(props, req_keys, False)
+
+    script: list[WsStepExpectation] = [
+        ws_expect_text("client", "connect"),
+        ws_expect_json("server", ack_schema),
+        ws_expect_ping("server"),
+        ws_expect_pong("client"),
+        ws_expect_close("server", 1000)
+    ]
+
+    messages: list[WsMessage] = [
+        WsMessage(WS_TEXT, "connect", 10),
+        WsMessage(WS_TEXT, "{\"event\":\"joined\",\"user_id\":42}", 20),
+        WsMessage(WS_PING, "", 30),
+        WsMessage(WS_PONG, "", 35),
+        WsMessage(WS_CLOSE, "", 50)
+    ]
+
+    res: WsValidationResult = validate_ws_conversation(messages, script)
+    assert_true(res.is_valid, "full conversation script passes")
+
+def test_conversation_script_schema_violation() -> None:
+    props: list[PropertyRule] = [
+        PropertyRule("status", schema_string())
+    ]
+    req_keys: list[str] = ["status"]
+    msg_schema: SchemaDescriptor = schema_object(props, req_keys, False)
+
+    script: list[WsStepExpectation] = [
+        ws_expect_json("server", msg_schema)
+    ]
+
+    # Payload has integer instead of string for 'status'
+    messages: list[WsMessage] = [
+        WsMessage(WS_TEXT, "{\"status\":500}", 10)
+    ]
+
+    res: WsValidationResult = validate_ws_conversation(messages, script)
+    assert_false(res.is_valid, "invalid schema in conversation rejected")
+    assert_eq_int(res.step_index, 0, "failed at step 0")
+    assert_contains_str(res.error_message, "schema violation", "schema error identified")
+
+def test_conversation_step_count_mismatch() -> None:
+    script: list[WsStepExpectation] = [
+        ws_expect_text("client", "ping"),
+        ws_expect_text("server", "pong")
+    ]
+    messages: list[WsMessage] = [
+        WsMessage(WS_TEXT, "ping", 5)
+    ]
+    res: WsValidationResult = validate_ws_conversation(messages, script)
+    assert_false(res.is_valid, "truncated conversation rejected")
+    assert_contains_str(res.error_message, "count mismatch", "count mismatch detected")
+
+test_handshake_request_valid()
+test_handshake_request_invalid_method()
+test_handshake_request_missing_headers()
+test_handshake_response_valid()
+test_handshake_response_wrong_status()
+test_conversation_script_pass()
+test_conversation_script_schema_violation()
+test_conversation_step_count_mismatch()
+print("quartz websocket contract test: ALL PASS")

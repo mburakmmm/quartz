@@ -1,0 +1,172 @@
+# Quartz Contract — WebSocket Handshake & Conversation Protocol Contracts
+# RFC 6455 compliant handshake validators, message expectations, and conversation script checking.
+
+import nox.json
+import nox.strings
+from nox.http import HttpRequest, HttpResponse
+from nox.json import JsonValue, JsonError
+from contract.types import get_header_ci, has_header_ci
+from contract.schema import SchemaDescriptor, validate_schema, schema_null
+
+WS_TEXT: str = "text"
+WS_BINARY: str = "binary"
+WS_PING: str = "ping"
+WS_PONG: str = "pong"
+WS_CLOSE: str = "close"
+
+class WsMessage:
+    msg_type: str
+    payload: str
+    timestamp_ms: int
+
+    def __init__(self: WsMessage, msg_type: str, payload: str, timestamp_ms: int = 0) -> None:
+        self.msg_type = msg_type
+        self.payload = payload
+        self.timestamp_ms = timestamp_ms
+
+class WsStepExpectation:
+    direction: str
+    msg_type: str
+    exact_payload: str
+    has_schema: bool
+    schema: SchemaDescriptor
+    close_code: int
+
+    def __init__(self: WsStepExpectation, direction: str, msg_type: str, exact_payload: str, schema: SchemaDescriptor, has_schema: bool, close_code: int) -> None:
+        self.direction = direction
+        self.msg_type = msg_type
+        self.exact_payload = exact_payload
+        self.schema = schema
+        self.has_schema = has_schema
+        self.close_code = close_code
+
+def ws_expect_text(direction: str, exact_text: str) -> WsStepExpectation:
+    return WsStepExpectation(direction, WS_TEXT, exact_text, schema_null(), False, 1000)
+
+def ws_expect_json(direction: str, schema: SchemaDescriptor) -> WsStepExpectation:
+    return WsStepExpectation(direction, WS_TEXT, "", schema, True, 1000)
+
+def ws_expect_ping(direction: str = "server") -> WsStepExpectation:
+    return WsStepExpectation(direction, WS_PING, "", schema_null(), False, 1000)
+
+def ws_expect_pong(direction: str = "client") -> WsStepExpectation:
+    return WsStepExpectation(direction, WS_PONG, "", schema_null(), False, 1000)
+
+def ws_expect_close(direction: str = "server", close_code: int = 1000) -> WsStepExpectation:
+    return WsStepExpectation(direction, WS_CLOSE, "", schema_null(), False, close_code)
+
+class WsValidationResult:
+    is_valid: bool
+    step_index: int
+    error_message: str
+
+    def __init__(self: WsValidationResult, is_valid: bool, step_index: int, error_message: str) -> None:
+        self.is_valid = is_valid
+        self.step_index = step_index
+        self.error_message = error_message
+
+def ws_validation_pass() -> WsValidationResult:
+    return WsValidationResult(True, -1, "")
+
+def ws_validation_fail(step_index: int, msg: str) -> WsValidationResult:
+    return WsValidationResult(False, step_index, msg)
+
+def mock_ws_client_handshake(target: str = "/ws", key: str = "dGhlIHNhbXBsZSBub25jZQ==", subprotocol: str = "") -> HttpRequest:
+    headers: dict[str, str] = {}
+    headers["Host"] = "localhost"
+    headers["Upgrade"] = "websocket"
+    headers["Connection"] = "Upgrade"
+    headers["Sec-WebSocket-Key"] = key
+    headers["Sec-WebSocket-Version"] = "13"
+    if len(subprotocol) > 0:
+        headers["Sec-WebSocket-Protocol"] = subprotocol
+    return HttpRequest("GET", target, "", headers)
+
+def mock_ws_server_handshake(subprotocol: str = "") -> HttpResponse:
+    headers: dict[str, str] = {}
+    headers["Upgrade"] = "websocket"
+    headers["Connection"] = "Upgrade"
+    headers["Sec-WebSocket-Accept"] = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+    if len(subprotocol) > 0:
+        headers["Sec-WebSocket-Protocol"] = subprotocol
+    return HttpResponse(101, "", headers)
+
+def validate_ws_handshake_request(req: HttpRequest, required_subprotocol: str = "") -> WsValidationResult:
+    if req.method != "GET":
+        return ws_validation_fail(-1, "WebSocket handshake method must be GET; received " + req.method)
+
+    upgrade_val: str = get_header_ci(req.headers, "Upgrade")
+    if nox.strings.lower(upgrade_val) != "websocket":
+        return ws_validation_fail(-1, "missing or invalid 'Upgrade: websocket' header; received '" + upgrade_val + "'")
+
+    conn_val: str = get_header_ci(req.headers, "Connection")
+    if not nox.strings.contains(nox.strings.lower(conn_val), "upgrade"):
+        return ws_validation_fail(-1, "missing or invalid 'Connection: Upgrade' header; received '" + conn_val + "'")
+
+    ws_ver: str = get_header_ci(req.headers, "Sec-WebSocket-Version")
+    if ws_ver != "13":
+        return ws_validation_fail(-1, "unsupported 'Sec-WebSocket-Version'; expected '13', received '" + ws_ver + "'")
+
+    ws_key: str = get_header_ci(req.headers, "Sec-WebSocket-Key")
+    if len(ws_key) == 0:
+        return ws_validation_fail(-1, "missing required 'Sec-WebSocket-Key' header")
+
+    if len(required_subprotocol) > 0:
+        proto_val: str = get_header_ci(req.headers, "Sec-WebSocket-Protocol")
+        if not nox.strings.contains(proto_val, required_subprotocol):
+            return ws_validation_fail(-1, "missing required subprotocol '" + required_subprotocol + "'; header is '" + proto_val + "'")
+
+    return ws_validation_pass()
+
+def validate_ws_handshake_response(res: HttpResponse, expected_subprotocol: str = "") -> WsValidationResult:
+    if res.status != 101:
+        return ws_validation_fail(-1, "WebSocket handshake response status must be 101 Switching Protocols; received " + str(res.status))
+
+    upgrade_val: str = get_header_ci(res.headers, "Upgrade")
+    if nox.strings.lower(upgrade_val) != "websocket":
+        return ws_validation_fail(-1, "missing or invalid response 'Upgrade: websocket' header; received '" + upgrade_val + "'")
+
+    conn_val: str = get_header_ci(res.headers, "Connection")
+    if not nox.strings.contains(nox.strings.lower(conn_val), "upgrade"):
+        return ws_validation_fail(-1, "missing or invalid response 'Connection: Upgrade' header; received '" + conn_val + "'")
+
+    if len(expected_subprotocol) > 0:
+        proto_val: str = get_header_ci(res.headers, "Sec-WebSocket-Protocol")
+        if proto_val != expected_subprotocol:
+            return ws_validation_fail(-1, "subprotocol mismatch; expected '" + expected_subprotocol + "', received '" + proto_val + "'")
+
+    return ws_validation_pass()
+
+def validate_ws_conversation(messages: list[WsMessage], expected_steps: list[WsStepExpectation]) -> WsValidationResult:
+    if len(messages) != len(expected_steps):
+        return ws_validation_fail(len(messages), "conversation step count mismatch: expected " + str(len(expected_steps)) + " messages, received " + str(len(messages)))
+
+    idx: int = 0
+    while idx < len(expected_steps):
+        exp: WsStepExpectation = expected_steps[idx]
+        msg: WsMessage = messages[idx]
+
+        # 1. Message opcode / type check
+        if msg.msg_type != exp.msg_type:
+            return ws_validation_fail(idx, "step " + str(idx) + ": message type mismatch, expected '" + exp.msg_type + "', got '" + msg.msg_type + "'")
+
+        # 2. Exact payload match (if specified)
+        if len(exp.exact_payload) > 0:
+            if msg.payload != exp.exact_payload:
+                return ws_validation_fail(idx, "step " + str(idx) + ": exact payload mismatch, expected '" + exp.exact_payload + "', got '" + msg.payload + "'")
+
+        # 3. Schema descriptor validation for JSON payloads
+        if exp.has_schema:
+            try:
+                json_node: JsonValue = nox.json.parse(msg.payload)
+                errs: list[str] = validate_schema(exp.schema, json_node, "$")
+                if len(errs) > 0:
+                    return ws_validation_fail(idx, "step " + str(idx) + " schema violation: " + errs[0])
+            except JsonError as je:
+                return ws_validation_fail(idx, "step " + str(idx) + " payload is not valid JSON: " + je.message)
+            except Exception as e:
+                return ws_validation_fail(idx, "step " + str(idx) + " JSON parsing error: " + str(e))
+
+        idx = idx + 1
+
+    return ws_validation_pass()

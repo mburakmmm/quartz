@@ -3,6 +3,29 @@
 All notable changes to the Quartz test framework will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.3] - 2026-11-02 - Phase 10: Interactive HTML Visual Reports, WebSocket Contracts & PropertySuite
+
+### Added
+- **Interactive Standalone HTML Visual Reports (`core/report_html.nox`)**:
+  - Implemented `format_html_test_report`: Zero-dependency, modern HTML5 report with embedded responsive SVG distribution bars, status pill badges, summary metrics, and collapsible diagnostic cards with automatic secret redaction.
+  - Implemented `format_html_load_report`: HTML5 load test performance dashboard featuring an inline SVG Latency Percentile step curve (Min, p50, p90, p95, p99, Max), threshold evaluation tables, and per-VU breakdown cards.
+  - Implemented `write_html_report`: Atomic file writer with automatic parent directory creation.
+- **WebSocket Handshake & Conversation Protocol Contracts (`contract/websocket.nox`)**:
+  - RFC 6455 compliant handshake validators: `validate_ws_handshake_request` and `validate_ws_handshake_response`, verifying HTTP Upgrade headers, connection upgrade tokens, `Sec-WebSocket-Key`, version 13, and subprotocol negotiation.
+  - Handshake mock factories: `mock_ws_client_handshake` and `mock_ws_server_handshake` (101 Switching Protocols).
+  - Conversation script validator: `validate_ws_conversation` with typed step expectations (`ws_expect_text`, `ws_expect_json`, `ws_expect_ping`, `ws_expect_pong`, `ws_expect_close`) and JSON schema validation via `contract/schema.nox`.
+- **Property Test Suite & Aggregate Invariant Runner (`property/suite.nox`)**:
+  - Implemented `PropertySuite` grouping multiple property tests under a unified suite seed, isolating per-invariant seeds.
+  - Added `.to_summary()` converting property invariants into standard `RunSummary` for unified JUnit XML, summary JSON, and HTML report export.
+  - Added `.to_json()` for comprehensive property suite statistics serialization.
+- **CLI HTML Reporting Integration (`cli/main.nox`)**:
+  - Added `--format html` and `--out <path>` support across `quartz load` and `quartz report`.
+- **Dedicated Test Suites (`tests/html_report_test.nox`, `tests/websocket_contract_test.nox`, `tests/property_suite_test.nox`)**:
+  - Added 3 new test suites covering HTML generation, WebSocket handshakes and conversation scripts, and PropertySuite execution (increasing total test suites from 15 to 18, all passing cleanly).
+- **Documentation Updates (`docs/recipes.md`, `docs/api.md`, `docs/architecture.md`)**:
+  - Added Recipe 9 (WebSocket Contract Testing) and Recipe 10 (Interactive HTML Test & Load Reports) with automated verification in `tests/doc_examples_test.nox`.
+  - Added ADR-013 (WebSocket Protocol & Handshake Contracts) and ADR-014 (Embedded SVG HTML Reporting).
+
 ## [0.9.2] - 2026-11-02 - Phase 9: Real-time Live Event Streaming (JSONL), SSE Event Stream Contracts & Extended CLI Formats
 
 ### Added

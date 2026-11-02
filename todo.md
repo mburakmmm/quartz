@@ -481,6 +481,35 @@
 
 ---
 
+## Phase 10: v0.9.3 — Interactive HTML Visual Reports, WebSocket Contracts & PropertySuite Matrix
+*Objective: Build self-contained HTML5 reports with embedded responsive SVG latency percentiles and distribution charts, RFC 6455 WebSocket handshake and conversation contracts, and PropertySuite aggregate invariant runner.*
+
+- [x] **10.1 Interactive HTML Visual Reports (`core/report_html.nox`)**
+  - [x] Implement `format_html_test_report` with embedded SVG status distribution bar, metrics cards, and collapsible diagnostic cards with secret redaction.
+  - [x] Implement `format_html_load_report` with inline SVG Latency Percentile step curve (Min, p50, p90, p95, p99, Max), threshold evaluation tables, and per-VU breakdown cards.
+  - [x] Implement `write_html_report` with automatic directory creation and atomic file writing.
+- [x] **10.2 WebSocket Handshake & Conversation Protocol Contracts (`contract/websocket.nox`)**
+  - [x] Implement RFC 6455 handshake validation (`validate_ws_handshake_request`, `validate_ws_handshake_response`).
+  - [x] Implement mock handshake factories (`mock_ws_client_handshake`, `mock_ws_server_handshake`).
+  - [x] Implement conversation script checking (`validate_ws_conversation`) with typed step expectations (`ws_expect_text`, `ws_expect_json`, `ws_expect_ping`, `ws_expect_pong`, `ws_expect_close`) and JSON schema validation.
+- [x] **10.3 Property Test Suite Engine (`property/suite.nox`)**
+  - [x] Implement `PropertySuite` grouping multiple property tests under a unified suite seed.
+  - [x] Implement `.to_summary()` converting property invariants into standard `RunSummary` for unified JUnit XML, summary JSON, and HTML report export.
+  - [x] Implement `.to_json()` for comprehensive property suite statistics serialization.
+- [x] **10.4 CLI HTML Reporting Integration (`cli/main.nox`)**
+  - [x] Support `--format html` in `quartz load` and `quartz report`.
+- [x] **10.5 Phase 10 Verification & Dedicated Test Suites (`tests/html_report_test.nox`, `tests/websocket_contract_test.nox`, `tests/property_suite_test.nox`)**
+  - [x] Add 3 new test suites covering HTML report rendering, WebSocket protocol validation, and PropertySuite execution.
+  - [x] Run full test suite: 18/18 test suites passing cleanly via `noxc test`.
+  - [x] Update `docs/recipes.md` (Recipes 9 & 10), `docs/api.md` (Sections 26-28), and `docs/architecture.md` (ADR-013 & ADR-014).
+- [x] **10.6 Release Packaging & Verification (v0.9.3)**
+  - [x] Update facade `quartz.nox` to `0.9.3`.
+  - [x] Tag `v0.9.3`, push to GitHub, verify CI green across all 4 platforms, and run `noxc publish`.
+
+*Phase 10 Exit Gate:* PASSED. Interactive HTML reports, WebSocket contracts, and PropertySuite verified; 18/18 test suites passing; published as v0.9.3.
+
+---
+
 ## Execution Log & Audit Trail
 
 | Date | Phase | Task | Action / Command | Result / Evidence | Status |
@@ -540,3 +569,7 @@
 | 2026-11-02 | Phase 8.2 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 14/14 tests pass, CLI tests verified, published v0.9.1 | [x] DONE |
 | 2026-11-02 | Phase 9 | Streaming & SSE Contracts | `core/report.nox`, `contract/sse.nox`, `cli/` | Live JSONL reporter, SSE event parser/validator, CLI --format flags | [x] DONE |
 | 2026-11-02 | Phase 9 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 15/15 tests pass, recipes 7 & 8 verified, published v0.9.2 | [x] DONE |
+| 2026-11-02 | Phase 10 | HTML Reports | `core/report_html.nox` | Responsive HTML5 reports, embedded SVG latency curve & distribution bar | [x] DONE |
+| 2026-11-02 | Phase 10 | WebSocket Contracts | `contract/websocket.nox` | RFC 6455 handshakes, conversation script checking, schema payloads | [x] DONE |
+| 2026-11-02 | Phase 10 | Property Suite | `property/suite.nox` | Unified suite PRNG, RunSummary conversion, aggregate statistics JSON | [x] DONE |
+| 2026-11-02 | Phase 10 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 18/18 tests pass, recipes 9 & 10 verified, published v0.9.3 | [x] DONE |

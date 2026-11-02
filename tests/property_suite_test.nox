@@ -1,0 +1,79 @@
+# Quartz Test Suite — PropertySuite Aggregate Invariant Runner
+import nox.test
+import nox.strings
+from core.assert import assert_true, assert_false, assert_eq_int, assert_contains_str
+from core.types import RunSummary
+from core.report_html import format_html_test_report
+from property.generator import IntGen, StringGen, ListIntGen
+from property.property import PropertyResult
+from property.suite import PropertySuite
+
+def test_property_suite_all_pass() -> None:
+    suite: PropertySuite = PropertySuite("algebra_suite", 42, 50, 2000)
+
+    def inv_add_zero(n: int) -> bool:
+        return (n + 0) == n
+
+    def inv_str_concat(s: str) -> bool:
+        return len(s + "a") == (len(s) + 1)
+
+    def inv_list_len(xs: list[int]) -> bool:
+        return len(xs) >= 0
+
+    suite.check_int("add_zero", IntGen(-50, 50, True), inv_add_zero)
+    suite.check_str("str_concat", StringGen(0, 15, "abcdefghijklmnopqrstuvwxyz"), inv_str_concat)
+    suite.check_list_int("list_len", ListIntGen(0, 10, IntGen(0, 20, False)), inv_list_len)
+
+    assert_true(suite.is_successful(), "all invariants pass")
+    assert_eq_int(suite.passed_count, 3, "3 passed")
+    assert_eq_int(suite.failed_count, 0, "0 failed")
+    assert_eq_int(suite.total_cases_run, 150, "150 total cases executed")
+
+    summary: RunSummary = suite.to_summary()
+    assert_true(summary.is_successful(), "summary reports success")
+    assert_eq_int(summary.total, 3, "3 total results in summary")
+    assert_eq_int(summary.passed, 3, "3 passed results in summary")
+
+    json_out: str = suite.to_json()
+    assert_contains_str(json_out, "\"suite_name\":\"algebra_suite\"", "json suite name")
+    assert_contains_str(json_out, "\"total_cases_run\":150", "json total cases")
+    assert_contains_str(json_out, "\"passed_invariants\":3", "json passed invariants")
+
+def test_property_suite_failure_and_shrinking() -> None:
+    suite: PropertySuite = PropertySuite("failing_suite", 999, 40, 2000)
+
+    # Invariant requires all numbers to be less than 50 (fails for range 1..100)
+    def inv_less_than_fifty(n: int) -> bool:
+        return n < 50
+
+    res: PropertyResult = suite.check_int("bounded_under_50", IntGen(1, 100, True), inv_less_than_fifty)
+
+    assert_false(suite.is_successful(), "failing invariant detected")
+    assert_eq_int(suite.failed_count, 1, "1 failed")
+    assert_eq_int(suite.passed_count, 0, "0 passed")
+    assert_false(res.is_passed(), "result marked failed")
+
+    summary: RunSummary = suite.to_summary()
+    assert_false(summary.is_successful(), "summary reflects failure")
+    assert_eq_int(summary.failed, 1, "1 failure in summary")
+    assert_contains_str(summary.results[0].message, "Violated at case", "failure diagnostic message")
+    assert_contains_str(summary.results[0].message, "shrunk=", "shrunk counterexample present")
+
+def test_property_suite_html_report() -> None:
+    suite: PropertySuite = PropertySuite("math_invariants", 555, 20, 2000)
+
+    def inv_square_nonneg(n: int) -> bool:
+        return (n * n) >= 0
+
+    suite.check_int("square_nonnegative", IntGen(-30, 30, True), inv_square_nonneg)
+    summary: RunSummary = suite.to_summary()
+
+    html: str = format_html_test_report("Math Invariant Suite", summary, "run-prop-suite", "noxc", "llvm")
+    assert_contains_str(html, "<title>Math Invariant Suite — Quartz Report</title>", "html title")
+    assert_contains_str(html, "square_nonnegative", "invariant test name")
+    assert_contains_str(html, "badge-pass", "pass badge in html")
+
+test_property_suite_all_pass()
+test_property_suite_failure_and_shrinking()
+test_property_suite_html_report()
+print("quartz property suite test: ALL PASS")

@@ -279,3 +279,64 @@ reporter.emit_case_start("api_suite", "test_user_profile")
 reporter.emit_metric_tick("workload_api", 100, 2500.0, 2, 6)
 reporter.emit_case_result("api_suite", "test_user_profile", "PASS", 4, "ok")
 ```
+
+---
+
+## 9. WebSocket Handshake & Conversation Protocol Contracts
+
+Validate RFC 6455 WebSocket handshakes and full duplex message conversations with typed JSON schema validation for payloads.
+
+```nox
+from nox.http import HttpRequest, HttpResponse
+from contract.schema import schema_object, schema_string, PropertyRule, SchemaDescriptor
+from contract.websocket import (
+    WS_TEXT, WS_PING, WS_PONG, WsMessage, WsStepExpectation, WsValidationResult,
+    ws_expect_text, ws_expect_json, ws_expect_ping, ws_expect_pong,
+    validate_ws_handshake_request, validate_ws_conversation, mock_ws_client_handshake
+)
+
+# 1. Handshake verification
+req: HttpRequest = mock_ws_client_handshake("/chat", "dGhlIHNhbXBsZSBub25jZQ==", "chat.v1")
+res: WsValidationResult = validate_ws_handshake_request(req, "chat.v1")
+assert res.is_valid
+
+# 2. Conversation contract verification
+msg_schema: SchemaDescriptor = schema_object([
+    PropertyRule("text", schema_string(1, 100))
+], ["text"])
+
+script: list[WsStepExpectation] = [
+    ws_expect_text("client", "hello"),
+    ws_expect_json("server", msg_schema),
+    ws_expect_ping("server"),
+    ws_expect_pong("client")
+]
+
+dialogue: list[WsMessage] = [
+    WsMessage(WS_TEXT, "hello", 5),
+    WsMessage(WS_TEXT, "{\"text\":\"welcome!\"}", 12),
+    WsMessage(WS_PING, "", 20),
+    WsMessage(WS_PONG, "", 22)
+]
+
+conv_res: WsValidationResult = validate_ws_conversation(dialogue, script)
+assert conv_res.is_valid
+```
+
+---
+
+## 10. Interactive HTML Visual Reports with Embedded SVG Charts
+
+Generate zero-dependency, self-contained HTML5 reports with interactive SVG latency curves and test distribution visual charts.
+
+```nox
+from core.types import RunSummary, TestResult, STATUS_PASS
+from core.report_html import format_html_test_report, format_html_load_report, write_html_report
+
+# Export test execution HTML dashboard
+summary: RunSummary = RunSummary()
+summary.record(TestResult("t1", "test_api_ping", STATUS_PASS, 4, "", None))
+html_content: str = format_html_test_report("Core API Suite", summary, "run-2026", "noxc 2.0.108", "llvm")
+write_html_report("artifacts/test_report.html", html_content)
+```
+
