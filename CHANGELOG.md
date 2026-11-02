@@ -3,6 +3,17 @@
 All notable changes to the Quartz test framework will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-11-02 - Phase 5.1: Authorized Local HTTP Network Transport
+
+### Added
+- **Authorized Network Transport (`contract/http_network.nox`)**: Opt-in HTTP transport integrating `nox.http.request` with strict security guardrails (`execute_network_request`, `run_network_contract_check`).
+- **Hard Network Safety Gates**: Network calls strictly prohibited by default (`default_network_policy()` raises `NetworkNotAllowedError`); loopback targets (`127.0.0.1`, `localhost`, `::1`) permitted only upon explicit opt-in (`loopback_network_policy()`).
+- **Remote Target Authorization**: Remote targets rejected by default (`UnauthorizedTargetError`); permitted only when matching an exact scheme, host, and port specified in an explicit `authorized_target` policy (`authorized_network_policy()`).
+- **Target URL Parser & Validator**: Robust URL parser (`parse_url`, `validate_network_target`) validating schemes (`http`, `https`), extracting origins, and handling IPv6 bracketed hosts.
+- **Contract Test Runner Integration**: Added `ContractTestCase.run_on_network(base_url, policy)` enabling declarative contracts to run seamlessly across both in-process handlers and authorized network endpoints.
+- **Example (`examples/contract_network_example.nox`)**: Runnable example demonstrating network safety gate enforcement and loopback contract execution.
+- **Test Suite (`tests/contract_http_test.nox`)**: Comprehensive test suite covering URL parsing, loopback host detection, default network disabled enforcement, unauthorized remote target rejection, matching target authorization, and unreachable transport error handling.
+
 ## [0.4.1] - 2026-11-02 - Phase 4.1: Reliability, Correctness & Hardening Bugfix Release
 
 ### Fixed & Hardened

@@ -213,11 +213,12 @@
 ## Phase 5: v0.5.0 & v0.6.0 — Authorized Local HTTP & Bounded Load Testing
 *Objective: Authorized loopback transport, bounded load workload models, latency percentiles, and safety gates.*
 
-- [ ] **5.1 Authorized Loopback Network Transport (`contract/http_network.nox` - v0.5.0)**
-  - [ ] Opt-in network transport using `nox.http.request` with timeouts.
-  - [ ] Hard safety gate: restrict strictly to `127.0.0.1` / `::1` unless explicitly authorized.
-  - [ ] Reject all remote hosts without `--authorized-target` flag.
-  - [ ] Inactive redirect policy by default.
+- [x] **5.1 Authorized Loopback Network Transport (`contract/http_network.nox` - v0.5.0)**
+  - [x] Opt-in network transport using `nox.http.request` with timeouts.
+  - [x] Hard safety gate: restrict strictly to `127.0.0.1` / `::1` / `localhost` unless explicitly authorized.
+  - [x] Reject all remote hosts without `--authorized-target` flag / authorized target policy.
+  - [x] Inactive redirect policy by default.
+  - [x] `tests/contract_http_test.nox`: 6 comprehensive checks verifying all safety gates.
 - [ ] **5.2 Safety Guardrails & Policy Validator (`load/safety.nox` - v0.6.0)**
   - [ ] Hard caps: max virtual users (default <= 5), duration (<= 10s), rate (<= 10 req/s), in-flight (<= 10).
   - [ ] Safety circuit breaker: instant abort on repeated transport errors or connection refusals.

@@ -1,0 +1,135 @@
+# Quartz Contract — Authorized Network Transport & Safety Test Suite
+import nox.http
+from nox.http import HttpRequest
+from core.assert import assert_true, assert_false, assert_eq_int, assert_eq_str, assert_contains_str
+from contract.http_network import NetworkPolicy, default_network_policy, loopback_network_policy, authorized_network_policy
+from contract.http_network import parse_url, ParsedUrl, is_loopback_host, validate_network_target
+from contract.http_network import NetworkSafetyError, NetworkNotAllowedError, UnauthorizedTargetError
+from contract.http_network import execute_network_request, NetworkExecutionResult, run_network_contract_check
+from contract.http import build_request, empty_headers
+from contract.types import ContractCheckResult
+
+def test_url_parser() -> None:
+    # 1. Standard HTTP with explicit port and path
+    p1: ParsedUrl = parse_url("http://127.0.0.1:8080/api/v1/users")
+    assert_eq_str(p1.scheme, "http", "scheme http")
+    assert_eq_str(p1.host, "127.0.0.1", "host 127.0.0.1")
+    assert_eq_int(p1.port, 8080, "port 8080")
+    assert_eq_str(p1.path, "/api/v1/users", "path parsed")
+    assert_eq_str(p1.origin, "http://127.0.0.1:8080", "origin parsed")
+
+    # 2. HTTPS default port 443 without explicit port
+    p2: ParsedUrl = parse_url("https://api.mycorp.internal/status")
+    assert_eq_str(p2.scheme, "https", "scheme https")
+    assert_eq_str(p2.host, "api.mycorp.internal", "host parsed")
+    assert_eq_int(p2.port, 443, "default https port 443")
+    assert_eq_str(p2.path, "/status", "path parsed")
+
+    # 3. IPv6 bracketed loopback
+    p3: ParsedUrl = parse_url("http://[::1]:9090/metrics")
+    assert_eq_str(p3.scheme, "http", "scheme http")
+    assert_eq_str(p3.host, "[::1]", "host [::1]")
+    assert_eq_int(p3.port, 9090, "port 9090")
+
+    # 4. Invalid scheme rejection
+    threw_scheme: bool = False
+    try:
+        parse_url("ftp://127.0.0.1/file")
+    except NetworkSafetyError as e:
+        threw_scheme = True
+    assert_true(threw_scheme, "ftp scheme must raise NetworkSafetyError")
+
+def test_loopback_host_detector() -> None:
+    assert_true(is_loopback_host("127.0.0.1"), "127.0.0.1 is loopback")
+    assert_true(is_loopback_host("localhost"), "localhost is loopback")
+    assert_true(is_loopback_host("::1"), "::1 is loopback")
+    assert_true(is_loopback_host("[::1]"), "[::1] is loopback")
+    assert_false(is_loopback_host("example.com"), "example.com is not loopback")
+    assert_false(is_loopback_host("192.168.1.1"), "LAN IP is not loopback")
+    assert_false(is_loopback_host("10.0.0.1"), "LAN IP is not loopback")
+
+def test_default_network_disabled_safety_gate() -> None:
+    # Default policy has allow_network = False
+    policy: NetworkPolicy = default_network_policy()
+    assert_false(policy.allow_network, "default policy has network strictly disabled")
+
+    threw_not_allowed: bool = False
+    try:
+        validate_network_target("http://127.0.0.1:8080/test", policy)
+    except NetworkNotAllowedError as e:
+        threw_not_allowed = True
+    assert_true(threw_not_allowed, "loopback request rejected when network disabled")
+
+def test_remote_host_rejection_without_authorization() -> None:
+    # Loopback policy has allow_network = True, but NO authorized_target
+    policy: NetworkPolicy = loopback_network_policy()
+    assert_true(policy.allow_network, "loopback policy allows network")
+
+    # Permitted loopback target
+    p_ok: ParsedUrl = validate_network_target("http://127.0.0.1:8000/health", policy)
+    assert_eq_str(p_ok.host, "127.0.0.1", "loopback target validated")
+
+    # Rejected remote target
+    threw_unauthorized: bool = False
+    try:
+        validate_network_target("https://api.external.com/v1", policy)
+    except UnauthorizedTargetError as e:
+        threw_unauthorized = True
+    assert_true(threw_unauthorized, "remote target must raise UnauthorizedTargetError without explicit authorization")
+
+def test_authorized_remote_target_matching() -> None:
+    auth_origin: str = "https://service.corp.internal:8443"
+    policy: NetworkPolicy = authorized_network_policy(auth_origin)
+
+    # 1. Matching target passes
+    p_ok: ParsedUrl = validate_network_target("https://service.corp.internal:8443/orders", policy)
+    assert_eq_str(p_ok.path, "/orders", "authorized remote path allowed")
+
+    # 2. Scheme mismatch rejected
+    threw_scheme: bool = False
+    try:
+        validate_network_target("http://service.corp.internal:8443/orders", policy)
+    except UnauthorizedTargetError as e:
+        threw_scheme = True
+    assert_true(threw_scheme, "scheme mismatch must be rejected")
+
+    # 3. Port mismatch rejected
+    threw_port: bool = False
+    try:
+        validate_network_target("https://service.corp.internal:9999/orders", policy)
+    except UnauthorizedTargetError as e:
+        threw_port = True
+    assert_true(threw_port, "port mismatch must be rejected")
+
+    # 4. Host mismatch / phishing / spoof rejected
+    threw_host: bool = False
+    try:
+        validate_network_target("https://evil-attacker.com:8443/orders", policy)
+    except UnauthorizedTargetError as e:
+        threw_host = True
+    assert_true(threw_host, "evil host must be rejected")
+
+def test_unreachable_transport_error_handling() -> None:
+    # Request to a non-existent port on loopback with short timeout
+    policy: NetworkPolicy = loopback_network_policy(100)
+    req: HttpRequest = build_request("GET", "/unreachable", "", empty_headers())
+
+    exec_res: NetworkExecutionResult = execute_network_request(req, "http://127.0.0.1:59999", policy)
+    assert_false(exec_res.is_success, "unreachable server must report is_success=False")
+    assert_true(len(exec_res.error_message) > 0, "error message populated on connection failure")
+
+    # Contract check should gracefully return invalid result without throwing uncaught exceptions
+    check: ContractCheckResult = run_network_contract_check(req, "http://127.0.0.1:59999", policy, [200], [], "", None)
+    assert_false(check.is_valid, "contract check on failed connection must be invalid")
+    assert_true(check.has_errors(), "contract check records error")
+
+def run_all_contract_http_tests() -> None:
+    test_url_parser()
+    test_loopback_host_detector()
+    test_default_network_disabled_safety_gate()
+    test_remote_host_rejection_without_authorization()
+    test_authorized_remote_target_matching()
+    test_unreachable_transport_error_handling()
+    print("quartz contract http test: ALL PASS")
+
+run_all_contract_http_tests()

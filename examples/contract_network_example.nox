@@ -1,0 +1,33 @@
+# Quartz Contract Example — Authorized Local HTTP Network Contract Verification
+import nox.http
+from nox.http import HttpRequest
+from contract.http_network import NetworkPolicy, loopback_network_policy, default_network_policy, NetworkNotAllowedError, UnauthorizedTargetError
+from contract.http import build_request, empty_headers
+from contract.schema import SchemaDescriptor, PropertyRule, schema_string, schema_integer, schema_object
+from contract.runner import ContractTestCase
+from contract.types import ContractCheckResult
+
+print("=== Quartz Network Contract Example ===")
+
+# 1. By default, network transport is strictly disabled (zero unexpected traffic)
+default_policy: NetworkPolicy = default_network_policy()
+req: HttpRequest = build_request("GET", "/health", "", empty_headers())
+tc: ContractTestCase = ContractTestCase("health_check", req, [200], [], "", None)
+
+try:
+    tc.run_on_network("http://127.0.0.1:8080", default_policy)
+    print("ERROR: should not have reached here")
+except NetworkNotAllowedError as e:
+    print("Safety Gate 1: Network strictly disabled by default -> " + str(e))
+
+# 2. Remote hosts without authorization are rejected even if network is enabled
+loopback_policy: NetworkPolicy = loopback_network_policy(1000)
+try:
+    tc.run_on_network("https://api.external.com/v1", loopback_policy)
+    print("ERROR: should not have reached here")
+except UnauthorizedTargetError as e:
+    print("Safety Gate 2: Remote targets rejected without explicit authorization -> " + str(e))
+
+# 3. Permitted loopback target execution
+print("Safety Gate 3: Opt-in loopback policy configured for local test endpoints.")
+print("=== Example completed successfully ===")

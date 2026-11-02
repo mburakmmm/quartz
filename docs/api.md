@@ -1,4 +1,4 @@
-# Quartz API Reference — v0.4.1
+# Quartz API Reference — v0.5.0
 
 ## 1. Core Types (`core/types.nox`)
 
@@ -227,5 +227,32 @@ Bounded deterministic byte and structured mutations:
   - Supports `additionalProperties` (defaults to non-strict per OpenAPI 3 spec).
   - Supports status codes and ranges (`2XX`..`5XX`, `default`).
   - Rejects unsupported keywords (`$ref`, `oneOf`, `anyOf`, `allOf`, `not`, `pattern`, `discriminator`, etc.) by raising `UnsupportedContractFeature`.
+
+---
+
+## 16. Authorized Network Transport & Safety Gate (`contract/http_network.nox`)
+
+- `NetworkSafetyError(Exception)`
+- `NetworkNotAllowedError(NetworkSafetyError)`
+- `UnauthorizedTargetError(NetworkSafetyError)`
+
+### Classes & Policies
+- `NetworkPolicy(allow_network: bool, authorized_target: str, timeout_ms: int, max_body_bytes: int)`
+- `default_network_policy() -> NetworkPolicy` (strictly disables network)
+- `loopback_network_policy(timeout_ms: int = 2000) -> NetworkPolicy` (allows loopback targets only)
+- `authorized_network_policy(authorized_target: str, timeout_ms: int = 2000) -> NetworkPolicy` (allows loopback + exact matching origin)
+- `parse_url(url: str) -> ParsedUrl`
+  - `.scheme: str`, `.host: str`, `.port: int`, `.path: str`, `.origin: str`
+- `is_loopback_host(host: str) -> bool`
+- `validate_network_target(url: str, policy: NetworkPolicy) -> ParsedUrl`
+- `execute_network_request(req: HttpRequest, base_url: str, policy: NetworkPolicy) -> NetworkExecutionResult`
+  - `.responses: list[HttpResponse]`
+  - `.duration_ms: int`
+  - `.status_code: int`
+  - `.error_message: str`
+  - `.is_timeout: bool`
+  - `.is_success: bool`
+- `run_network_contract_check(req: HttpRequest, base_url: str, policy: NetworkPolicy, expected_statuses: list[int], required_headers: list[str], expected_content_type: str, body_schema: SchemaDescriptor | None) -> ContractCheckResult`
+- `ContractTestCase.run_on_network(base_url: str, policy: NetworkPolicy) -> ContractCheckResult`
 
 

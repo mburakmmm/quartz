@@ -1,0 +1,196 @@
+# Quartz Contract — Authorized Network Transport & Safety Gate
+import nox.http
+import nox.strings
+import nox.time
+from nox.http import HttpRequest, HttpResponse, HttpError, HttpTimeoutError
+from nox.time import Instant
+from contract.types import ContractCheckResult
+from contract.schema import SchemaDescriptor
+from contract.compare import validate_response
+
+class NetworkSafetyError(Exception):
+    pass
+
+class NetworkNotAllowedError(NetworkSafetyError):
+    pass
+
+class UnauthorizedTargetError(NetworkSafetyError):
+    pass
+
+class NetworkPolicy:
+    allow_network: bool
+    authorized_target: str
+    timeout_ms: int
+    max_body_bytes: int
+
+    def __init__(self: NetworkPolicy, allow_network: bool = False, authorized_target: str = "", timeout_ms: int = 2000, max_body_bytes: int = 1048576) -> None:
+        self.allow_network = allow_network
+        self.authorized_target = authorized_target
+        self.timeout_ms = timeout_ms
+        self.max_body_bytes = max_body_bytes
+
+def default_network_policy() -> NetworkPolicy:
+    # Safe default: network strictly disabled
+    return NetworkPolicy(False, "", 2000, 1048576)
+
+def loopback_network_policy(timeout_ms: int = 2000) -> NetworkPolicy:
+    # Explicit loopback-only policy
+    return NetworkPolicy(True, "", timeout_ms, 1048576)
+
+def authorized_network_policy(authorized_target: str, timeout_ms: int = 2000) -> NetworkPolicy:
+    # Explicit authorized remote target policy
+    return NetworkPolicy(True, authorized_target, timeout_ms, 1048576)
+
+class ParsedUrl:
+    scheme: str
+    host: str
+    port: int
+    path: str
+    origin: str
+
+    def __init__(self: ParsedUrl, scheme: str, host: str, port: int, path: str, origin: str) -> None:
+        self.scheme = scheme
+        self.host = host
+        self.port = port
+        self.path = path
+        self.origin = origin
+
+def parse_url(url: str) -> ParsedUrl:
+    scheme: str = ""
+    rest: str = url
+    if nox.strings.starts_with(url, "http://"):
+        scheme = "http"
+        rest = url[7:len(url)]
+    elif nox.strings.starts_with(url, "https://"):
+        scheme = "https"
+        rest = url[8:len(url)]
+    else:
+        raise NetworkSafetyError("invalid URL scheme (must be http:// or https://): " + url)
+
+    # Split host and path
+    host_port: str = ""
+    path: str = "/"
+    slash_idx: int = nox.strings.index_of(rest, "/")
+    if slash_idx >= 0:
+        host_port = rest[0:slash_idx]
+        path = rest[slash_idx:len(rest)]
+    else:
+        host_port = rest
+
+    host: str = host_port
+    port: int = 80
+    if scheme == "https":
+        port = 443
+
+    # Check for port in host_port
+    # Handle IPv6 bracketed address e.g. [::1]:8080
+    if nox.strings.starts_with(host_port, "["):
+        close_bracket: int = nox.strings.index_of(host_port, "]")
+        if close_bracket >= 0:
+            host = host_port[0:close_bracket + 1]
+            if len(host_port) > close_bracket + 1 and host_port[close_bracket + 1:close_bracket + 2] == ":":
+                p_str: str = host_port[close_bracket + 2:len(host_port)]
+                try:
+                    port = int(p_str)
+                except Exception as e:
+                    pass
+    else:
+        colon_idx: int = nox.strings.index_of(host_port, ":")
+        if colon_idx >= 0:
+            host = host_port[0:colon_idx]
+            p_str: str = host_port[colon_idx + 1:len(host_port)]
+            try:
+                port = int(p_str)
+            except Exception as e:
+                pass
+
+    origin: str = scheme + "://" + host + ":" + str(port)
+    return ParsedUrl(scheme, host, port, path, origin)
+
+def is_loopback_host(host: str) -> bool:
+    h: str = nox.strings.lower(host)
+    if h == "127.0.0.1" or h == "localhost" or h == "::1" or h == "[::1]":
+        return True
+    return False
+
+def validate_network_target(url: str, policy: NetworkPolicy) -> ParsedUrl:
+    if not policy.allow_network:
+        raise NetworkNotAllowedError("network transport disabled by policy (pass allow_network=True to opt-in): " + url)
+
+    parsed: ParsedUrl = parse_url(url)
+
+    # 1. Loopback check: always permitted when allow_network is True
+    if is_loopback_host(parsed.host):
+        return parsed
+
+    # 2. Remote host check: strictly requires matching authorized_target
+    if len(policy.authorized_target) == 0:
+        raise UnauthorizedTargetError("remote network target rejected (only loopback is allowed without explicit authorized_target): " + url)
+
+    auth_parsed: ParsedUrl = parse_url(policy.authorized_target)
+    if parsed.scheme != auth_parsed.scheme or parsed.host != auth_parsed.host or parsed.port != auth_parsed.port:
+        raise UnauthorizedTargetError("target origin '" + parsed.origin + "' does not match authorized origin '" + auth_parsed.origin + "'")
+
+    return parsed
+
+class NetworkExecutionResult:
+    responses: list[HttpResponse]
+    duration_ms: int
+    status_code: int
+    error_message: str
+    is_timeout: bool
+    is_success: bool
+
+    def __init__(self: NetworkExecutionResult, responses: list[HttpResponse], duration_ms: int, status_code: int, error_message: str, is_timeout: bool, is_success: bool) -> None:
+        self.responses = responses
+        self.duration_ms = duration_ms
+        self.status_code = status_code
+        self.error_message = error_message
+        self.is_timeout = is_timeout
+        self.is_success = is_success
+
+def execute_network_request(req: HttpRequest, base_url: str, policy: NetworkPolicy) -> NetworkExecutionResult:
+    target_path: str = req.target
+    if len(target_path) == 0 or target_path[0:1] != "/":
+        target_path = "/" + target_path
+
+    full_url: str = base_url + target_path
+    parsed: ParsedUrl = validate_network_target(full_url, policy)
+
+    empty_res_list: list[HttpResponse] = []
+    t0: Instant = nox.time.instant_now()
+    try:
+        res: HttpResponse = nox.http.request(req.method, full_url, req.body, req.headers, policy.timeout_ms)
+        elapsed_ms: int = t0.elapsed_ms()
+
+        # Enforce response body size cap
+        if len(res.body) > policy.max_body_bytes:
+            truncated_body: str = res.body[0:policy.max_body_bytes]
+            res = HttpResponse(res.status, truncated_body, res.headers)
+
+        res_list: list[HttpResponse] = [res]
+        return NetworkExecutionResult(res_list, elapsed_ms, res.status, "", False, True)
+    except HttpTimeoutError as e:
+        elapsed_ms: int = t0.elapsed_ms()
+        return NetworkExecutionResult(empty_res_list, elapsed_ms, 0, "request timed out after " + str(policy.timeout_ms) + "ms", True, False)
+    except HttpError as e:
+        elapsed_ms: int = t0.elapsed_ms()
+        return NetworkExecutionResult(empty_res_list, elapsed_ms, 0, "http transport error: " + str(e), False, False)
+    except Exception as e:
+        elapsed_ms: int = t0.elapsed_ms()
+        return NetworkExecutionResult(empty_res_list, elapsed_ms, 0, "unexpected network failure: " + str(e), False, False)
+
+def run_network_contract_check(req: HttpRequest, base_url: str, policy: NetworkPolicy, expected_statuses: list[int], required_headers: list[str], expected_content_type: str, body_schema: SchemaDescriptor | None) -> ContractCheckResult:
+    exec_res: NetworkExecutionResult = execute_network_request(req, base_url, policy)
+    if not exec_res.is_success:
+        errs: list[str] = [exec_res.error_message]
+        warns: list[str] = []
+        return ContractCheckResult(False, errs, warns, exec_res.status_code, exec_res.duration_ms)
+
+    if len(exec_res.responses) > 0:
+        actual_res: HttpResponse = exec_res.responses[0]
+        return validate_response(actual_res, expected_statuses, required_headers, expected_content_type, body_schema, exec_res.duration_ms)
+
+    errs: list[str] = ["missing response from transport"]
+    warns: list[str] = []
+    return ContractCheckResult(False, errs, warns, 0, exec_res.duration_ms)

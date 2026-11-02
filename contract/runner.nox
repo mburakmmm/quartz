@@ -5,6 +5,7 @@ from contract.types import ContractCheckResult
 from contract.schema import SchemaDescriptor
 from contract.http import execute_handler, HandlerExecutionResult
 from contract.compare import validate_response
+from contract.http_network import NetworkPolicy, run_network_contract_check
 
 class ContractTestCase:
     name: str
@@ -31,4 +32,15 @@ class ContractTestCase:
             self.expected_content_type,
             self.body_schema,
             exec_res.duration_ms
+        )
+
+    def run_on_network(self: ContractTestCase, base_url: str, policy: NetworkPolicy) -> ContractCheckResult:
+        return run_network_contract_check(
+            self.request,
+            base_url,
+            policy,
+            self.expected_statuses,
+            self.required_headers,
+            self.expected_content_type,
+            self.body_schema
         )
