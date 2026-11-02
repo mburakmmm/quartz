@@ -1,0 +1,161 @@
+# Quartz Contract — Server-Sent Events (SSE) Stream Validator
+import nox.strings
+import nox.json
+from nox.json import JsonValue
+from contract.schema import SchemaDescriptor, validate_schema
+
+class SseEvent:
+    event: str
+    data: str
+    id: str
+    retry: int
+
+    def __init__(self: SseEvent, event: str, data: str, id: str, retry: int) -> None:
+        self.event = event
+        self.data = data
+        self.id = id
+        self.retry = retry
+
+    def is_json(self: SseEvent) -> bool:
+        trimmed: str = nox.strings.trim(self.data)
+        if len(trimmed) == 0:
+            return False
+        first_c: str = trimmed[0]
+        last_c: str = trimmed[len(trimmed) - 1]
+        return (first_c == "{" and last_c == "}") or (first_c == "[" and last_c == "]")
+
+def parse_sse_events(raw_body: str) -> list[SseEvent]:
+    events: list[SseEvent] = []
+    # Normalize CRLF to LF
+    clean: str = nox.strings.replace(raw_body, "\r\n", "\n")
+    blocks: list[str] = nox.strings.split(clean, "\n\n")
+
+    b_i: int = 0
+    while b_i < len(blocks):
+        block: str = nox.strings.trim(blocks[b_i])
+        if len(block) > 0:
+            event_name: str = "message"
+            data_acc: str = ""
+            event_id: str = ""
+            retry_ms: int = 0
+            has_fields: bool = False
+
+            lines: list[str] = nox.strings.split(block, "\n")
+            l_i: int = 0
+            while l_i < len(lines):
+                line: str = lines[l_i]
+                # Ignore SSE comments starting with ':'
+                if len(line) > 0 and line[0] != ":":
+                    if nox.strings.starts_with(line, "event:"):
+                        ev: str = nox.strings.replace(line, "event:", "")
+                        event_name = nox.strings.trim(ev)
+                        has_fields = True
+                    elif nox.strings.starts_with(line, "data:"):
+                        d: str = nox.strings.replace(line, "data:", "")
+                        if len(d) > 0 and d[0] == " ":
+                            # Remove single leading space per SSE spec
+                            if len(d) == 1:
+                                d = ""
+                            else:
+                                parts: list[str] = nox.strings.splitn(d, " ", 2)
+                                if len(parts) > 1:
+                                    d = parts[1]
+                        if len(data_acc) > 0:
+                            data_acc = data_acc + "\n" + d
+                        else:
+                            data_acc = d
+                        has_fields = True
+                    elif nox.strings.starts_with(line, "id:"):
+                        raw_id: str = nox.strings.replace(line, "id:", "")
+                        event_id = nox.strings.trim(raw_id)
+                        has_fields = True
+                    elif nox.strings.starts_with(line, "retry:"):
+                        raw_retry: str = nox.strings.replace(line, "retry:", "")
+                        raw_retry = nox.strings.trim(raw_retry)
+                        try:
+                            retry_ms = int(raw_retry)
+                        except Exception as e:
+                            retry_ms = 0
+                        has_fields = True
+                l_i = l_i + 1
+
+            if has_fields:
+                events.append(SseEvent(event_name, data_acc, event_id, retry_ms))
+        b_i = b_i + 1
+
+    return events
+
+class SseEventExpectation:
+    expected_event: str
+    schema: SchemaDescriptor
+    has_schema: bool
+    require_id: bool
+
+    def __init__(self: SseEventExpectation, expected_event: str, schema: SchemaDescriptor, has_schema: bool, require_id: bool) -> None:
+        self.expected_event = expected_event
+        self.schema = schema
+        self.has_schema = has_schema
+        self.require_id = require_id
+
+class SseValidationResult:
+    is_valid: bool
+    total_events: int
+    errors: list[str]
+
+    def __init__(self: SseValidationResult, is_valid: bool, total_events: int, errors: list[str]) -> None:
+        self.is_valid = is_valid
+        self.total_events = total_events
+        self.errors = errors
+
+    def error_summary(self: SseValidationResult) -> str:
+        if len(self.errors) == 0:
+            return ""
+        s: str = ""
+        i: int = 0
+        while i < len(self.errors):
+            s = s + self.errors[i]
+            if i + 1 < len(self.errors):
+                s = s + "; "
+            i = i + 1
+        return s
+
+def validate_sse_stream(raw_body: str, expectations: list[SseEventExpectation]) -> SseValidationResult:
+    events: list[SseEvent] = parse_sse_events(raw_body)
+    errs: list[str] = []
+
+    if len(events) != len(expectations):
+        errs.append("event count mismatch: expected " + str(len(expectations)) + " events, received " + str(len(events)))
+        return SseValidationResult(False, len(events), errs)
+
+    i: int = 0
+    while i < len(events):
+        ev: SseEvent = events[i]
+        exp: SseEventExpectation = expectations[i]
+        prefix: str = "event[" + str(i) + "] "
+
+        # 1. Event name check
+        if ev.event != exp.expected_event:
+            errs.append(prefix + "name mismatch: expected '" + exp.expected_event + "', received '" + ev.event + "'")
+
+        # 2. Event ID check
+        if exp.require_id and len(ev.id) == 0:
+            errs.append(prefix + "missing required id field")
+
+        # 3. Schema validation on payload
+        if exp.has_schema:
+            try:
+                json_node: JsonValue = nox.json.parse(ev.data)
+                schema_errs: list[str] = validate_schema(exp.schema, json_node, "$")
+                if len(schema_errs) > 0:
+                    s_i: int = 0
+                    while s_i < len(schema_errs):
+                        se: str = schema_errs[s_i]
+                        errs.append(prefix + "schema violation: " + se)
+                        s_i = s_i + 1
+            except Exception as e:
+                errs.append(prefix + "invalid JSON data payload: " + str(e))
+
+        i = i + 1
+
+    is_ok: bool = (len(errs) == 0)
+    return SseValidationResult(is_ok, len(events), errs)

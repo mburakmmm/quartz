@@ -384,11 +384,37 @@ Optional bridges connecting NOX web frameworks to Quartz Contract and Load testi
 Published as the `quartz` binary via `nox.json` and runnable via `noxc run cli/main.nox -- <command>`:
 - `quartz version`: Prints framework identity and version.
 - `quartz help`: Displays formatted command usage and flags.
-- `quartz property [--seed <int>] [--cases <int>]`: Executes property-based invariant check.
+- `quartz property [--seed <int>] [--cases <int>] [--format json|summary] [--out <file>]`: Executes property-based invariant check.
 - `quartz fuzz [--seed <int>] [--max-cases <int>]`: Executes mutation fuzzer against target.
-- `quartz load [--vus <int>] [--duration <int>] [--requests <int>]`: Runs bounded local load test scenario.
+- `quartz load [--vus <int>] [--duration <int>] [--requests <int>] [--format json|summary] [--out <file>]`: Runs bounded local load test scenario with latency metrics.
 - `quartz replay <file.json>`: Inspects and replays saved failure artifact.
-- `quartz contract`: Displays contract testing status and examples.
-- `quartz test`: Runs test suite execution instructions.
+- `quartz contract [spec.json]`: Validates API contracts and inspects OpenAPI specs.
+- `quartz test [path]`: Runs test suite execution with static and dynamic verification.
+- `quartz report [dir] [--format json|summary] [--out <file>]`: Inspects test result artifacts and exports summaries.
+
+---
+
+## 24. Server-Sent Events (SSE) Stream Contracts (`contract/sse.nox`)
+
+- `SseEvent(event: str, data: str, id: str, retry: int)`
+  - `.is_json() -> bool`: Returns true if data payload starts and ends with `{}` or `[]`.
+- `parse_sse_events(raw_body: str) -> list[SseEvent]`: Parses chunked/multiline SSE text streams into structured event records, ignoring comments.
+- `SseEventExpectation(expected_event: str, schema: SchemaDescriptor, has_schema: bool, require_id: bool)`
+- `SseValidationResult(is_valid: bool, total_events: int, errors: list[str])`
+  - `.error_summary() -> str`
+- `validate_sse_stream(raw_body: str, expectations: list[SseEventExpectation]) -> SseValidationResult`: Validates event stream ordering, event names, required IDs, and typed payload schemas.
+
+---
+
+## 25. Real-Time Streaming JSONL Reporting (`core/report.nox`, `load/executor.nox`)
+
+- `format_jsonl_event(event_type: str, test_id: str, status: str, duration_ms: int, payload_json: str) -> str`: Formats single newline-delimited JSON event.
+- `JsonlStreamReporter(path: str)`
+  - `.emit(event_type: str, test_id: str, status: str, duration_ms: int, payload_json: str) -> None`: Appends live event to file.
+  - `.emit_case_start(test_id: str, case_name: str) -> None`
+  - `.emit_case_result(test_id: str, case_name: str, status: str, duration_ms: int, message: str) -> None`
+  - `.emit_metric_tick(workload: str, completed: int, throughput_rps: float, p50: int, p95: int) -> None`
+  - `.emit_threshold_breach(workload: str, metric_name: str, target_val: float, observed_val: float) -> None`
+- `run_task_workload_streaming(workload: WorkloadConfig, task_func: (int) -> bool, thresholds: list[Threshold], limits: SafetyLimits, reporter: JsonlStreamReporter) -> LoadTestSummary`: Runs workload with real-time JSONL telemetry logging.
 
 

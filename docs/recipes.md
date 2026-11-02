@@ -238,3 +238,44 @@ adapter.use_before(auth_middleware)
 res: HttpResponse = adapter.dispatch(build_request("GET", "/secure", "", empty_headers()))
 assert res.status == 401
 ```
+
+---
+
+## 7. Server-Sent Events (SSE) Stream Contract Testing
+
+Validate chunked HTTP event streams (`text/event-stream`), verifying event types, IDs, and payload schema integrity across multiple stream blocks.
+
+```nox
+from contract.sse import SseEvent, parse_sse_events, SseEventExpectation, SseValidationResult, validate_sse_stream
+from contract.schema import schema_object, schema_string, schema_integer, PropertyRule, SchemaDescriptor
+
+user_schema: SchemaDescriptor = schema_object([
+    PropertyRule("user_id", schema_integer(1, 1000, True, True)),
+    PropertyRule("email", schema_string(3, 50))
+], ["user_id", "email"])
+
+raw_stream: str = "event: user_created\nid: 1\ndata: {\"user_id\": 42, \"email\": \"alice@example.com\"}\n\nevent: ping\ndata: {}\n\n"
+
+expectations: list[SseEventExpectation] = [
+    SseEventExpectation("user_created", user_schema, True, True),
+    SseEventExpectation("ping", schema_object([], []), True, False)
+]
+
+val_result: SseValidationResult = validate_sse_stream(raw_stream, expectations)
+assert val_result.is_valid
+```
+
+---
+
+## 8. Real-Time JSONL Live Event Logging
+
+Stream live test outcomes and workload performance telemetry directly to append-only `.jsonl` event logs for real-time observability.
+
+```nox
+from core.report import JsonlStreamReporter
+
+reporter: JsonlStreamReporter = JsonlStreamReporter("artifacts/live_telemetry.jsonl")
+reporter.emit_case_start("api_suite", "test_user_profile")
+reporter.emit_metric_tick("workload_api", 100, 2500.0, 2, 6)
+reporter.emit_case_result("api_suite", "test_user_profile", "PASS", 4, "ok")
+```

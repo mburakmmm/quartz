@@ -44,6 +44,18 @@ def print_usage() -> None:
     print("  report [dir]         Inspect test result artifacts and export summaries")
     print("  help                 Show this help message")
 
+def parse_flag_str(flag_name: str, default_val: str) -> str:
+    count: int = nox.os.arg_count()
+    i: int = 1
+    while i < count:
+        a: str = nox.os.arg(i)
+        if a == flag_name and (i + 1) < count:
+            return nox.os.arg(i + 1)
+        elif nox.strings.starts_with(a, flag_name + "="):
+            return nox.strings.replace(a, flag_name + "=", "")
+        i = i + 1
+    return default_val
+
 def parse_flag_int(flag_name: str, default_val: int) -> int:
     count: int = nox.os.arg_count()
     i: int = 1
@@ -70,8 +82,12 @@ def cmd_version() -> None:
 def cmd_property() -> None:
     seed: int = parse_flag_int("--seed", 42)
     cases: int = parse_flag_int("--cases", 100)
-    print("Running Quartz Property Invariant Check...")
-    print("Config: seed=" + str(seed) + ", cases=" + str(cases))
+    format_opt: str = parse_flag_str("--format", "summary")
+    out_opt: str = parse_flag_str("--out", "")
+
+    if format_opt != "json":
+        print("Running Quartz Property Invariant Check...")
+        print("Config: seed=" + str(seed) + ", cases=" + str(cases))
 
     def sample_invariant(xs: list[int]) -> bool:
         rev: list[int] = []
@@ -97,6 +113,15 @@ def cmd_property() -> None:
     gen: ListIntGen = ListIntGen(0, 15, item_gen)
     cfg: PropertyConfig = PropertyConfig(cases, 10, seed, 5000)
     res: PropertyResult = run_list_int_property("cli_property_check", cfg, gen, sample_invariant)
+
+    if format_opt == "json":
+        json_str: str = res.to_json()
+        if len(out_opt) > 0:
+            nox.fs.write_string(out_opt, json_str)
+            print("Wrote property JSON report to: " + out_opt)
+        else:
+            print(json_str)
+        return
 
     print("Result Status: " + res.status)
     print("Cases Executed: " + str(res.cases_executed))
@@ -127,8 +152,12 @@ def cmd_load() -> None:
     vus: int = parse_flag_int("--vus", 2)
     dur: int = parse_flag_int("--duration", 2)
     reqs: int = parse_flag_int("--requests", 20)
-    print("Running Quartz Bounded Load Test...")
-    print("Config: vus=" + str(vus) + ", duration=" + str(dur) + "s, requests=" + str(reqs))
+    format_opt: str = parse_flag_str("--format", "summary")
+    out_opt: str = parse_flag_str("--out", "")
+
+    if format_opt != "json":
+        print("Running Quartz Bounded Load Test...")
+        print("Config: vus=" + str(vus) + ", duration=" + str(dur) + "s, requests=" + str(reqs))
 
     workload: WorkloadConfig = closed_workload("cli_load_scenario", vus, dur, reqs)
     safety: SafetyLimits = default_safety_limits()
@@ -141,6 +170,16 @@ def cmd_load() -> None:
         return True
 
     summary: LoadTestSummary = run_task_workload(workload, dummy_task, thresholds, safety)
+    
+    if format_opt == "json":
+        json_str: str = summary.to_json()
+        if len(out_opt) > 0:
+            nox.fs.write_string(out_opt, json_str)
+            print("Wrote load test JSON summary to: " + out_opt)
+        else:
+            print(json_str)
+        return
+
     print("Completed Requests: " + str(summary.metrics.completed))
     print("Throughput: " + str(summary.metrics.throughput_rps(summary.total_duration_ms)) + " req/s")
     print("p50 Latency: " + str(summary.metrics.p50()) + " ms")
@@ -346,13 +385,20 @@ def cmd_test() -> None:
 
 def cmd_report() -> None:
     report_dir: str = "artifacts"
-    if nox.os.arg_count() >= 3:
+    if nox.os.arg_count() >= 3 and not nox.strings.starts_with(nox.os.arg(2), "-"):
         report_dir = nox.os.arg(2)
 
-    print("=== Quartz Test Artifacts & Report Summary ===")
-    print("Directory: " + report_dir)
+    format_opt: str = parse_flag_str("--format", "summary")
+    out_opt: str = parse_flag_str("--out", "")
+
     if not nox.fs.exists(report_dir):
-        print("Directory does not exist or has not generated artifacts yet.")
+        if format_opt == "json":
+            empty_json: str = "{\"artifacts_dir\":\"" + escape_json(report_dir) + "\",\"exists\":false,\"total_files\":0,\"json_count\":0,\"xml_count\":0}"
+            print(empty_json)
+        else:
+            print("=== Quartz Test Artifacts & Report Summary ===")
+            print("Directory: " + report_dir)
+            print("Directory does not exist or has not generated artifacts yet.")
         return
 
     files: list[str] = nox.fs.read_dir(report_dir)
@@ -362,12 +408,23 @@ def cmd_report() -> None:
     i: int = 0
     while i < total_files:
         fn: str = files[i]
-        if nox.strings.ends_with(fn, ".json"):
+        if nox.strings.ends_with(fn, ".json") or nox.strings.ends_with(fn, ".jsonl"):
             json_count = json_count + 1
         elif nox.strings.ends_with(fn, ".xml"):
             xml_count = xml_count + 1
         i = i + 1
 
+    if format_opt == "json":
+        rep_json: str = "{\"artifacts_dir\":\"" + escape_json(report_dir) + "\",\"exists\":true,\"total_files\":" + str(total_files) + ",\"json_count\":" + str(json_count) + ",\"xml_count\":" + str(xml_count) + "}"
+        if len(out_opt) > 0:
+            nox.fs.write_string(out_opt, rep_json)
+            print("Wrote report JSON summary to: " + out_opt)
+        else:
+            print(rep_json)
+        return
+
+    print("=== Quartz Test Artifacts & Report Summary ===")
+    print("Directory: " + report_dir)
     print("Total Artifact Files: " + str(total_files))
     print("JSON Summaries / Failures: " + str(json_count))
     print("JUnit XML Reports: " + str(xml_count))

@@ -453,6 +453,34 @@
 
 ---
 
+## Phase 9: v0.9.2 — Real-time Live Event Streaming (JSONL), SSE Event Stream Contracts & Extended CLI Formats
+*Objective: Implement atomic streaming JSONL event logging for tests and live load runs, Server-Sent Events (SSE) contract parser and schema validator, and rich CLI output formatting (--format json|junit|jsonl|summary).*
+
+- [x] **9.1 Real-Time Streaming JSONL Reporter (`core/report.nox`, `load/executor.nox`)**
+  - [x] Implement `format_jsonl_event` generating newline-delimited JSON objects.
+  - [x] Implement `JsonlStreamReporter` with atomic appends (`nox.fs.append_string`) for live progress capture.
+  - [x] Emit structured test and workload events: `case_start`, `case_result`, `metric_tick`, `threshold_breach`.
+- [x] **9.2 Server-Sent Events (SSE) Contract Testing (`contract/sse.nox`)**
+  - [x] Implement robust `parse_sse_events(raw_body: str) -> list[SseEvent]` parsing multi-line events, event types, IDs, and data fields.
+  - [x] Define `SseEventExpectation` binding expected event names to typed `SchemaDescriptor` definitions.
+  - [x] Implement `validate_sse_stream(raw_body: str, expectations: list[SseEventExpectation]) -> SseValidationResult`.
+  - [x] Validate both positive event streams and negative/corrupted streams (schema mismatch, missing events).
+- [x] **9.3 Rich CLI Output Formatting (`cli/main.nox`)**
+  - [x] Support `--format json|junit|jsonl|summary` and optional `--out <path>` across `quartz test`, `load`, `property`, and `report`.
+  - [x] Provide formatted machine-readable summary output directly to stdout or file targets for CI toolchain integration.
+- [x] **9.4 Phase 9 Verification & Dedicated Test Suites (`tests/streaming_test.nox`)**
+  - [x] Write `tests/streaming_test.nox` verifying JSONL event streaming and SSE contract validation.
+  - [x] Verify non-blocking append and parsing with Unicode payloads.
+  - [x] Run full test suite: 15/15 test suites passing cleanly via `noxc test`.
+  - [x] Update `docs/recipes.md`, `docs/api.md`, and `CHANGELOG.md`.
+- [x] **9.5 Release Packaging & Verification (v0.9.2)**
+  - [x] Update facade `quartz.nox` to `0.9.2`.
+  - [x] Tag `v0.9.2`, push to GitHub, verify CI green across all 4 platforms, and run `noxc publish`.
+
+*Phase 9 Exit Gate:* PASSED. Live JSONL streaming and SSE contract testing verified; 15/15 test suites passing; multi-format CLI output working.
+
+---
+
 ## Execution Log & Audit Trail
 
 | Date | Phase | Task | Action / Command | Result / Evidence | Status |
@@ -510,3 +538,5 @@
 | 2026-11-02 | Phase 8 | Release Packaging | `quartz.nox`, `CHANGELOG.md` | Version bumped to `0.9.0`, ready for v0.9.0 publish | [x] DONE |
 | 2026-11-02 | Phase 8.2 | Concurrency & CLI Fix | `load/`, `cli/`, `property/` | M:N task coroutines, Channel[int], two-stage CLI check, replay key parity | [x] DONE |
 | 2026-11-02 | Phase 8.2 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 14/14 tests pass, CLI tests verified, published v0.9.1 | [x] DONE |
+| 2026-11-02 | Phase 9 | Streaming & SSE Contracts | `core/report.nox`, `contract/sse.nox`, `cli/` | Live JSONL reporter, SSE event parser/validator, CLI --format flags | [x] DONE |
+| 2026-11-02 | Phase 9 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 15/15 tests pass, recipes 7 & 8 verified, published v0.9.2 | [x] DONE |

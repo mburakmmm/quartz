@@ -1,0 +1,152 @@
+# Quartz — Streaming Live Events (JSONL) & SSE Contract Test Suite
+import nox.fs
+import nox.json
+from nox.json import JsonValue
+from core.assert import assert_true, assert_false, assert_eq_int, assert_eq_str, assert_contains_str
+from core.report import JsonlStreamReporter, format_jsonl_event
+from contract.schema import schema_object, schema_string, schema_integer, PropertyRule, SchemaDescriptor, json_has_key, json_get_key
+from contract.sse import SseEvent, parse_sse_events, SseEventExpectation, SseValidationResult, validate_sse_stream
+from load.workload import closed_workload, WorkloadConfig
+from load.safety import default_safety_limits, SafetyLimits
+from load.thresholds import Threshold
+from load.executor import LoadTestSummary, run_task_workload_streaming
+
+def test_jsonl_event_formatting() -> None:
+    line: str = format_jsonl_event("metric_tick", "scenario_1", "RUNNING", 15, "{\"completed\":10}")
+    assert_contains_str(line, "\"type\":\"metric_tick\"", "type field formatted")
+    assert_contains_str(line, "\"test_id\":\"scenario_1\"", "test_id field formatted")
+    assert_contains_str(line, "\"status\":\"RUNNING\"", "status field formatted")
+    assert_contains_str(line, "\"duration_ms\":15", "duration_ms formatted")
+    assert_contains_str(line, "\"data\":{\"completed\":10}", "data payload formatted")
+    assert_true(line[len(line) - 1] == "\n", "ends with newline")
+
+def test_jsonl_stream_reporter_lifecycle() -> None:
+    test_path: str = "artifacts/probe_stream.jsonl"
+    if nox.fs.exists(test_path):
+        nox.fs.remove_file(test_path)
+
+    reporter: JsonlStreamReporter = JsonlStreamReporter(test_path)
+    reporter.emit_case_start("core_math", "test_addition")
+    reporter.emit_metric_tick("load_smoke", 50, 250.0, 4, 8)
+    reporter.emit_threshold_breach("load_smoke", "p95", 10.0, 15.5)
+    reporter.emit_case_result("core_math", "test_addition", "PASS", 2, "ok")
+
+    assert_eq_int(reporter.events_emitted, 4, "4 events emitted")
+    assert_true(nox.fs.exists(test_path), "stream file created")
+
+    content: str = nox.fs.read_to_string(test_path)
+    lines: list[str] = nox.strings.split(content, "\n")
+    # 4 lines plus trailing empty string
+    assert_true(len(lines) >= 4, "at least 4 lines recorded")
+
+    # Verify line 0 parses as valid JSON
+    e0: JsonValue = nox.json.parse(lines[0])
+    type_node: JsonValue = json_get_key(e0, "type")
+    assert_eq_str(type_node.s, "case_start", "event 0 is case_start")
+
+    # Verify line 1 (metric_tick)
+    e1: JsonValue = nox.json.parse(lines[1])
+    e1_type: JsonValue = json_get_key(e1, "type")
+    assert_eq_str(e1_type.s, "metric_tick", "event 1 is metric_tick")
+
+    # Clean up test artifact
+    nox.fs.remove_file(test_path)
+
+def test_workload_streaming_execution() -> None:
+    test_path: str = "artifacts/probe_load_stream.jsonl"
+    if nox.fs.exists(test_path):
+        nox.fs.remove_file(test_path)
+
+    reporter: JsonlStreamReporter = JsonlStreamReporter(test_path)
+    wl: WorkloadConfig = closed_workload("stream_workload", 2, 2, 10)
+    safety: SafetyLimits = default_safety_limits()
+    thresh: list[Threshold] = [
+        Threshold("error_rate", "<=", 0.0)
+    ]
+
+    def mock_task(case_idx: int) -> bool:
+        return True
+
+    summary: LoadTestSummary = run_task_workload_streaming(wl, mock_task, thresh, safety, reporter)
+    assert_true(summary.all_passed, "streaming load passed")
+    assert_eq_int(summary.metrics.completed, 10, "10 requests completed")
+    assert_true(reporter.events_emitted >= 3, "case_start, metric_tick, and case_result emitted")
+
+    if nox.fs.exists(test_path):
+        nox.fs.remove_file(test_path)
+
+def test_sse_event_parsing() -> None:
+    stream_payload: str = ": initial comment\n\nevent: user_signup\nid: evt-101\nretry: 5000\ndata: {\"user\":\"bob\"}\n\nevent: notification\ndata: first line\ndata: second line\n\n"
+    events: list[SseEvent] = parse_sse_events(stream_payload)
+    assert_eq_int(len(events), 2, "2 distinct SSE events parsed")
+
+    # Event 0
+    ev0: SseEvent = events[0]
+    assert_eq_str(ev0.event, "user_signup", "event 0 name")
+    assert_eq_str(ev0.id, "evt-101", "event 0 id")
+    assert_eq_int(ev0.retry, 5000, "event 0 retry")
+    assert_eq_str(ev0.data, "{\"user\":\"bob\"}", "event 0 data")
+    assert_true(ev0.is_json(), "event 0 is JSON")
+
+    # Event 1 (multiline data, default message event)
+    ev1: SseEvent = events[1]
+    assert_eq_str(ev1.event, "notification", "event 1 name")
+    assert_eq_str(ev1.data, "first line\nsecond line", "event 1 multiline data joined")
+    assert_false(ev1.is_json(), "event 1 is plaintext")
+
+def test_sse_schema_contract_validation() -> None:
+    user_schema: SchemaDescriptor = schema_object([
+        PropertyRule("user_id", schema_integer(1, 100000)),
+        PropertyRule("email", schema_string(3, 50))
+    ], ["user_id", "email"])
+
+    valid_stream: str = "event: user_created\nid: 1\ndata: {\"user_id\": 42, \"email\": \"alice@example.com\"}\n\nevent: ping\ndata: {}\n\n"
+
+    expectations: list[SseEventExpectation] = [
+        SseEventExpectation("user_created", user_schema, True, True),
+        SseEventExpectation("ping", schema_object([], []), True, False)
+    ]
+
+    res: SseValidationResult = validate_sse_stream(valid_stream, expectations)
+    assert_true(res.is_valid, "valid SSE stream passes schema validation")
+    assert_eq_int(res.total_events, 2, "2 events validated")
+    assert_eq_int(len(res.errors), 0, "0 errors recorded")
+
+def test_sse_negative_contract_violations() -> None:
+    user_schema: SchemaDescriptor = schema_object([
+        PropertyRule("user_id", schema_integer(1, 100, True, True)),
+        PropertyRule("email", schema_string(3, 50))
+    ], ["user_id", "email"])
+
+    # 1. Event count mismatch
+    too_short: str = "event: user_created\nid: 1\ndata: {\"user_id\": 1, \"email\": \"a@b.c\"}\n\n"
+    exp2: list[SseEventExpectation] = [
+        SseEventExpectation("user_created", user_schema, True, False),
+        SseEventExpectation("user_created", user_schema, True, False)
+    ]
+    res_short: SseValidationResult = validate_sse_stream(too_short, exp2)
+    assert_false(res_short.is_valid, "short stream fails count expectation")
+    assert_contains_str(res_short.error_summary(), "event count mismatch", "summary contains count mismatch")
+
+    # 2. Schema violation: user_id exceeds max (150 > 100)
+    bad_schema_stream: str = "event: user_created\nid: 1\ndata: {\"user_id\": 150, \"email\": \"a@b.c\"}\n\n"
+    res_bad: SseValidationResult = validate_sse_stream(bad_schema_stream, [SseEventExpectation("user_created", user_schema, True, False)])
+    assert_false(res_bad.is_valid, "schema mismatch caught")
+    assert_contains_str(res_bad.error_summary(), "schema violation", "summary contains schema violation")
+
+    # 3. Missing required ID
+    no_id_stream: str = "event: user_created\ndata: {\"user_id\": 10, \"email\": \"a@b.c\"}\n\n"
+    res_no_id: SseValidationResult = validate_sse_stream(no_id_stream, [SseEventExpectation("user_created", user_schema, True, True)])
+    assert_false(res_no_id.is_valid, "missing ID caught")
+    assert_contains_str(res_no_id.error_summary(), "missing required id field", "summary contains missing ID error")
+
+def run_all_streaming_tests() -> None:
+    test_jsonl_event_formatting()
+    test_jsonl_stream_reporter_lifecycle()
+    test_workload_streaming_execution()
+    test_sse_event_parsing()
+    test_sse_schema_contract_validation()
+    test_sse_negative_contract_violations()
+    print("quartz streaming & sse test: ALL PASS")
+
+run_all_streaming_tests()

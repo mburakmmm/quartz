@@ -3,6 +3,23 @@
 All notable changes to the Quartz test framework will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.2] - 2026-11-02 - Phase 9: Real-time Live Event Streaming (JSONL), SSE Event Stream Contracts & Extended CLI Formats
+
+### Added
+- **Real-Time Live Event Streaming (JSONL) (`core/report.nox`, `load/executor.nox`)**:
+  - Implemented `format_jsonl_event` producing newline-delimited JSON objects with timestamp, event type, test ID, status, and custom payload.
+  - Added `JsonlStreamReporter` using `nox.fs.append_string` for atomic live event logging (`case_start`, `case_result`, `metric_tick`, `threshold_breach`).
+  - Added `run_task_workload_streaming` to stream live performance ticks and threshold breach diagnostics during load runs.
+- **Server-Sent Events (SSE) Stream Contract Validation (`contract/sse.nox`)**:
+  - Implemented `parse_sse_events` supporting event types, IDs, reconnection intervals, multiline data buffers, and comment stripping according to the W3C EventSource specification.
+  - Implemented `validate_sse_stream` with typed `SseEventExpectation` descriptors, validating event stream count, event type ordering, required event IDs, and payload schema validation via `contract/schema.nox`.
+- **Extended CLI Output Formats (`cli/main.nox`)**:
+  - Added `--format json|summary` and `--out <path>` flags to `quartz load`, `quartz property`, and `quartz report`, enabling pipeline integration and automated JSON artifact generation.
+- **Dedicated Streaming & SSE Test Suite (`tests/streaming_test.nox`)**:
+  - Added full test coverage (6 test suites) verifying JSONL event formatting, reporter disk lifecycle, workload streaming, SSE event parsing, and positive/negative SSE schema validation.
+- **Documentation Updates (`docs/recipes.md`, `docs/api.md`)**:
+  - Added Recipe 7 (Server-Sent Events streaming contract testing) and Recipe 8 (real-time JSONL live logging) with automated parity verification in `tests/doc_examples_test.nox`.
+
 ## [0.9.1] - 2026-11-02 - Phase 8.2: Real M:N Concurrency Scheduler, Subprocess Path Isolation & Replay Compatibility Bugfix Release
 
 ### Fixed & Hardened

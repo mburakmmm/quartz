@@ -3,10 +3,12 @@
 
 import nox.http
 import nox.router
+import nox.fs
 from nox.http import HttpRequest, HttpResponse
 from nox.router import Router, Context
 from core.assert import assert_eq_int, assert_eq_str, assert_true, assert_eq_float
 from core.fixture import Fixture, SCOPE_CASE
+from core.report import JsonlStreamReporter
 from property.generator import IntGen
 from property.property import PropertyConfig, PropertyResult, run_int_property
 from property.shrink import shrink_int, ShrinkResultInt
@@ -16,6 +18,7 @@ from contract.http import build_request, empty_headers
 from contract.schema import schema_object, schema_string, schema_integer, PropertyRule, SchemaDescriptor
 from contract.runner import ContractTestCase
 from contract.types import ContractCheckResult
+from contract.sse import SseEvent, parse_sse_events, SseEventExpectation, SseValidationResult, validate_sse_stream
 from load.workload import closed_workload, WorkloadConfig
 from load.thresholds import Threshold
 from load.safety import default_safety_limits, SafetyLimits
@@ -149,6 +152,36 @@ def test_recipe_6_nyx_and_aether_adapters() -> None:
     res_ae: HttpResponse = ae_adapter.dispatch(build_request("GET", "/secure", "", empty_headers()))
     assert_eq_int(res_ae.status, 401, "aether unauthorized status 401")
 
+def test_recipe_7_sse_streaming_contract() -> None:
+    user_schema: SchemaDescriptor = schema_object([
+        PropertyRule("user_id", schema_integer(1, 1000, True, True)),
+        PropertyRule("email", schema_string(3, 50))
+    ], ["user_id", "email"])
+
+    raw_stream: str = "event: user_created\nid: 1\ndata: {\"user_id\": 42, \"email\": \"alice@example.com\"}\n\nevent: ping\ndata: {}\n\n"
+
+    expectations: list[SseEventExpectation] = [
+        SseEventExpectation("user_created", user_schema, True, True),
+        SseEventExpectation("ping", schema_object([], []), True, False)
+    ]
+
+    val_result: SseValidationResult = validate_sse_stream(raw_stream, expectations)
+    assert_true(val_result.is_valid, "recipe 7 sse contract valid")
+
+def test_recipe_8_jsonl_live_logging() -> None:
+    test_path: str = "artifacts/doc_live_telemetry.jsonl"
+    if nox.fs.exists(test_path):
+        nox.fs.remove_file(test_path)
+
+    reporter: JsonlStreamReporter = JsonlStreamReporter(test_path)
+    reporter.emit_case_start("api_suite", "test_user_profile")
+    reporter.emit_metric_tick("workload_api", 100, 2500.0, 2, 6)
+    reporter.emit_case_result("api_suite", "test_user_profile", "PASS", 4, "ok")
+    assert_true(reporter.events_emitted == 3, "recipe 8 emitted 3 events")
+
+    if nox.fs.exists(test_path):
+        nox.fs.remove_file(test_path)
+
 def run_all_doc_examples_tests() -> None:
     test_recipe_1_unit_and_fixtures()
     test_recipe_2_property_and_shrinking()
@@ -156,6 +189,8 @@ def run_all_doc_examples_tests() -> None:
     test_recipe_4_http_contract()
     test_recipe_5_load_testing()
     test_recipe_6_nyx_and_aether_adapters()
+    test_recipe_7_sse_streaming_contract()
+    test_recipe_8_jsonl_live_logging()
     print("quartz doc examples test: ALL PASS")
 
 run_all_doc_examples_tests()

@@ -8,7 +8,7 @@ from load.safety import SafetyLimits, CircuitBreaker, default_safety_limits, Cir
 from load.metrics import LoadMetrics
 from load.workload import WorkloadConfig, MODEL_CLOSED, MODEL_OPEN
 from load.thresholds import Threshold, ThresholdResult, evaluate_all_thresholds, all_thresholds_passed
-from core.report import escape_json
+from core.report import escape_json, JsonlStreamReporter
 
 def bool_to_json(b: bool) -> str:
     if b:
@@ -246,3 +246,21 @@ def run_network_load_test(workload: WorkloadConfig, req: HttpRequest, base_url: 
         return res.is_success and res.status_code < 400
 
     return run_task_workload(workload, network_task, thresholds, limits)
+
+def run_task_workload_streaming(workload: WorkloadConfig, task_func: (int) -> bool, thresholds: list[Threshold], limits: SafetyLimits, reporter: JsonlStreamReporter) -> LoadTestSummary:
+    reporter.emit_case_start(workload.name, "workload_execution")
+    summary: LoadTestSummary = run_task_workload(workload, task_func, thresholds, limits)
+
+    reporter.emit_metric_tick(workload.name, summary.metrics.completed, summary.metrics.throughput_rps(summary.total_duration_ms), summary.metrics.p50(), summary.metrics.p95())
+
+    t_i: int = 0
+    while t_i < len(summary.threshold_results):
+        tr: ThresholdResult = summary.threshold_results[t_i]
+        if not tr.passed:
+            reporter.emit_threshold_breach(workload.name, tr.metric_name, tr.target_value, tr.actual_value)
+        t_i = t_i + 1
+
+    status_str: str = "PASS" if summary.all_passed else "FAIL"
+    msg_str: str = summary.abort_reason if summary.aborted else ("completed in " + str(summary.total_duration_ms) + "ms")
+    reporter.emit_case_result(workload.name, "workload_execution", status_str, summary.total_duration_ms, msg_str)
+    return summary
