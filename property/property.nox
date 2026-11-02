@@ -1,6 +1,7 @@
 # Quartz Property — Property Runner
 from core.types import STATUS_PASS, STATUS_FAIL
 from core.prng import Prng, PRNG_VERSION, derive_case_seed
+from core.report import escape_json
 from property.generator import IntGen, StringGen, ListIntGen
 from property.shrink import shrink_int, shrink_str, shrink_list_int, ShrinkResultInt, ShrinkResultStr, ShrinkResultListInt
 import nox.strings
@@ -50,10 +51,10 @@ class PropertyResult:
         return self.status == STATUS_PASS
 
     def to_json(self: PropertyResult) -> str:
-        escaped_id: str = self.test_id
-        escaped_orig: str = self.original_counterexample
-        escaped_shrunk: str = self.shrunk_counterexample
-        escaped_msg: str = self.failure_message
+        escaped_id: str = escape_json(self.test_id)
+        escaped_orig: str = escape_json(self.original_counterexample)
+        escaped_shrunk: str = escape_json(self.shrunk_counterexample)
+        escaped_msg: str = escape_json(self.failure_message)
         
         return "{\"schema_version\":\"1\",\"engine\":\"quartz\",\"kind\":\"property\",\"test_id\":\"" + escaped_id + "\",\"status\":\"" + self.status + "\",\"seed\":" + str(self.seed) + ",\"cases_executed\":" + str(self.cases_executed) + ",\"discards\":" + str(self.discards) + ",\"failing_case\":" + str(self.failing_case_index) + ",\"original\":\"" + escaped_orig + "\",\"shrunk\":\"" + escaped_shrunk + "\",\"shrink_attempts\":" + str(self.shrink_attempts) + ",\"message\":\"" + escaped_msg + "\"}"
 

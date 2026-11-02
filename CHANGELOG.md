@@ -3,6 +3,21 @@
 All notable changes to the Quartz test framework will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.1] - 2026-11-02 - Phase 4.1: Reliability, Correctness & Hardening Bugfix Release
+
+### Fixed & Hardened
+- **Core Assertions (`core/assert.nox`)**: Added IEEE 754 NaN guard to `assert_eq_float` preventing false passes when comparing NaN values.
+- **Property JSON Diagnostics (`property/property.nox`)**: Sanitized counterexample strings and failure messages using `escape_json` in `PropertyResult.to_json()`.
+- **Shrinking Resilience (`property/shrink.nox`)**: Wrapped predicate evaluations in exception-safe handlers (`safe_eval_int`, `safe_eval_str`, `safe_eval_list_int`), preventing unexpected target crashes from interrupting candidate shrinking.
+- **Fuzz Exception Classification (`fuzz/harness.nox`)**: Replaced loose keyword checks with dedicated `HandledRejection` exception class and strict prefix matching (`reject:`, `validation_error:`, `bad_input:`) to eliminate false-negative crash classifications.
+- **Corpus Resource Limits (`fuzz/corpus.nox`)**: Enforced `max_files` and `max_total_bytes` in `CorpusManager.add_seed()`, added crash artifact limit enforcement in `save_crash_artifact()`, and escaped artifact JSON fields.
+- **Fuzz CI Gating & Session Timeout (`fuzz/fuzzer.nox`)**: Added `fail_on_bug: bool` parameter to `run_fuzz()` to fail test suites when bugs are found, and added `timeout_ms` session deadlines.
+- **OpenAPI Schema Constraints (`contract/openapi.nox`)**: Implemented parsing and propagation for `minLength`, `maxLength`, `minimum`, `maximum`, `minItems`, and `maxItems`. Unsupported keywords now raise explicit `UnsupportedContractFeature` errors instead of being silently skipped.
+- **OpenAPI Defaults (`contract/openapi.nox`)**: Aligned `additionalProperties` default with OpenAPI 3 spec (permissive by default; strict only when explicitly declared `additionalProperties: false`). Added support for `2XX`..`5XX` range codes and `default` response status.
+- **Integer Precision Guard (`contract/schema.nox`)**: Adjusted precision guard check to `>= SAFE_INT_MAX` and `<= SAFE_INT_MIN` ensuring rounded boundary numbers at $2^{53}$ are detected.
+- **Content-Type Normalization (`contract/compare.nox`)**: Normalized `Content-Type` media-type headers by stripping trailing parameters (e.g. `charset=utf-8`) before matching against expected media types.
+- **Test Suites (`tests/`)**: Added comprehensive regression tests in `core_test.nox`, `fuzz_test.nox`, and `contract_handler_test.nox`.
+
 ## [0.4.0] - 2026-11-02 - Phase 4: In-Process HTTP Contract Testing & Schema Validation
 
 ### Added

@@ -32,6 +32,8 @@ def assert_eq_bool(actual: bool, expected: bool, msg: str) -> None:
         raise AssertionError(msg + ": expected " + str(expected) + ", got " + str(actual))
 
 def assert_eq_float(actual: float, expected: float, abs_tol: float, rel_tol: float, msg: str) -> None:
+    if actual != actual or expected != expected:
+        raise AssertionError(msg + ": NaN encountered in float comparison (actual=" + str(actual) + ", expected=" + str(expected) + ")")
     diff: float = actual - expected
     if diff < 0.0:
         diff = -diff

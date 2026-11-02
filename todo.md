@@ -182,6 +182,34 @@
 
 ---
 
+## Phase 4.1: v0.4.1 — Reliability, Correctness & Hardening Bugfix Release
+*Objective: Resolve external audit findings across Core, Property, Fuzz, and Contract modules before advancing.*
+
+- [x] **4.1.1 Core & Property Hardening**
+  - [x] `core/assert.nox`: Add explicit IEEE 754 NaN handling in `assert_eq_float` (`actual != actual` or `expected != expected`).
+  - [x] `property/shrink.nox`: Exception-safe shrink evaluation (`safe_eval_int`, `safe_eval_str`, `safe_eval_list_int`).
+  - [x] `property/property.nox`: Escape special characters in `PropertyResult.to_json()` with `escape_json`.
+- [x] **4.1.2 Fuzzing Engine Hardening**
+  - [x] `fuzz/harness.nox`: Replace loose substring rejection heuristic with explicit `HandledRejection` exception class and strict prefix handling to prevent misclassifying real bugs as rejections.
+  - [x] `fuzz/corpus.nox`: Enforce `max_files` and `max_total_bytes` limits in `add_seed()` and `save_crash_artifact()`.
+  - [x] `fuzz/corpus.nox`: Escape fields in crash artifact JSON.
+  - [x] `fuzz/fuzzer.nox`: Add `fail_on_bug: bool` and `timeout_ms` overall session deadline to `run_fuzz()`.
+- [x] **4.1.3 OpenAPI Importer & Contract Hardening**
+  - [x] `contract/openapi.nox`: Implement validation constraints in `parse_schema_node()`: `minLength`, `maxLength`, `minimum`, `maximum`, `minItems`, `maxItems`.
+  - [x] `contract/openapi.nox`: Disallow silent keyword omissions; raise `UnsupportedContractFeature` for unsupported keywords (`discriminator`, `pattern`, etc.).
+  - [x] `contract/openapi.nox`: Respect OpenAPI `additionalProperties` default (`is_strict = False` unless `additionalProperties: false`).
+  - [x] `contract/openapi.nox`: Safely parse OpenAPI status codes including `"default"` and `"2XX"` wildcard patterns.
+  - [x] `contract/schema.nox`: Use `>= SAFE_INT_MAX` boundary guard for integer precision loss.
+  - [x] `contract/compare.nox`: Normalize Content-Type media types by trimming parameters before `;`.
+- [x] **4.1.4 Verification & Tests**
+  - [x] Add unit tests verifying each bugfix in existing and dedicated tests.
+  - [x] Update `CHANGELOG.md` and `docs/api.md` for v0.4.1.
+  - [x] Tag `v0.4.1`, push, verify CI green, and run `noxc publish`.
+
+*Phase 4.1 Exit Gate:* PASSED. Zero unhandled resource limits in corpus, no silent OpenAPI keyword omissions, strict fuzz rejection classification, all 7 test suites passing cleanly.
+
+---
+
 ## Phase 5: v0.5.0 & v0.6.0 — Authorized Local HTTP & Bounded Load Testing
 *Objective: Authorized loopback transport, bounded load workload models, latency percentiles, and safety gates.*
 

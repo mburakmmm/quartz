@@ -53,6 +53,10 @@ def parse_schema_node(node: JsonValue, path: str) -> SchemaDescriptor:
         raise UnsupportedContractFeature("unsupported OpenAPI keyword 'allOf' at " + path)
     if json_has_key(node, "not"):
         raise UnsupportedContractFeature("unsupported OpenAPI keyword 'not' at " + path)
+    if json_has_key(node, "discriminator"):
+        raise UnsupportedContractFeature("unsupported OpenAPI keyword 'discriminator' at " + path)
+    if json_has_key(node, "pattern"):
+        raise UnsupportedContractFeature("unsupported OpenAPI keyword 'pattern' at " + path)
 
     if not json_has_key(node, "type"):
         # Default to object if properties are present
@@ -64,6 +68,13 @@ def parse_schema_node(node: JsonValue, path: str) -> SchemaDescriptor:
     t_name: str = nox.json.as_string(type_val)
 
     if t_name == "string":
+        min_len: int = -1
+        max_len: int = -1
+        if json_has_key(node, "minLength"):
+            min_len = int(nox.json.as_number(json_get_key(node, "minLength")))
+        if json_has_key(node, "maxLength"):
+            max_len = int(nox.json.as_number(json_get_key(node, "maxLength")))
+
         if json_has_key(node, "enum"):
             enum_node: JsonValue = json_get_key(node, "enum")
             enum_vals: list[str] = []
@@ -72,14 +83,35 @@ def parse_schema_node(node: JsonValue, path: str) -> SchemaDescriptor:
             while ei < en_len:
                 enum_vals.append(nox.json.as_string(nox.json.array_get(enum_node, ei)))
                 ei = ei + 1
-            return schema_enum(enum_vals)
-        return schema_string()
+            desc: SchemaDescriptor = schema_enum(enum_vals)
+            desc.min_len = min_len
+            desc.max_len = max_len
+            return desc
+        return schema_string(min_len, max_len)
 
     if t_name == "integer":
-        return schema_integer()
+        min_val: int = 0
+        max_val: int = 0
+        has_bounds: bool = False
+        if json_has_key(node, "minimum"):
+            min_val = int(nox.json.as_number(json_get_key(node, "minimum")))
+            has_bounds = True
+        if json_has_key(node, "maximum"):
+            max_val = int(nox.json.as_number(json_get_key(node, "maximum")))
+            has_bounds = True
+        return schema_integer(min_val, max_val, has_bounds)
 
     if t_name == "number":
-        return schema_number()
+        min_f: float = 0.0
+        max_f: float = 0.0
+        has_f_bounds: bool = False
+        if json_has_key(node, "minimum"):
+            min_f = nox.json.as_number(json_get_key(node, "minimum"))
+            has_f_bounds = True
+        if json_has_key(node, "maximum"):
+            max_f = nox.json.as_number(json_get_key(node, "maximum"))
+            has_f_bounds = True
+        return schema_number(min_f, max_f, has_f_bounds)
 
     if t_name == "boolean":
         return schema_boolean()
@@ -92,7 +124,13 @@ def parse_schema_node(node: JsonValue, path: str) -> SchemaDescriptor:
             raise UnsupportedContractFeature("array schema missing 'items' at " + path)
         items_node: JsonValue = json_get_key(node, "items")
         item_desc: SchemaDescriptor = parse_schema_node(items_node, path + ".items")
-        return schema_array(item_desc)
+        arr_min: int = -1
+        arr_max: int = -1
+        if json_has_key(node, "minItems"):
+            arr_min = int(nox.json.as_number(json_get_key(node, "minItems")))
+        if json_has_key(node, "maxItems"):
+            arr_max = int(nox.json.as_number(json_get_key(node, "maxItems")))
+        return schema_array(item_desc, arr_min, arr_max)
 
     if t_name == "object":
         return parse_object_schema(node, path)
@@ -121,7 +159,16 @@ def parse_object_schema(node: JsonValue, path: str) -> SchemaDescriptor:
             req_keys.append(nox.json.as_string(nox.json.array_get(req_node, ri)))
             ri = ri + 1
 
-    return schema_object(props, req_keys, True)
+    # In OpenAPI standard: additionalProperties defaults to true (tolerant/non-strict)
+    # Only if explicitly set to false does it become strict
+    is_strict: bool = False
+    if json_has_key(node, "additionalProperties"):
+        ap_node: JsonValue = json_get_key(node, "additionalProperties")
+        if nox.json.is_bool(ap_node):
+            if not nox.json.as_bool(ap_node):
+                is_strict = True
+
+    return schema_object(props, req_keys, is_strict)
 
 def parse_openapi_json(doc_json_str: str) -> ParsedOpenApiDoc:
     root: JsonValue = nox.json.parse(doc_json_str)
@@ -170,7 +217,23 @@ def parse_openapi_json(doc_json_str: str) -> ParsedOpenApiDoc:
                     while r_i < resp_count:
                         status_str: str = nox.json.object_key(resp_node, r_i)
                         single_resp: JsonValue = nox.json.object_value(resp_node, r_i)
-                        status_code: int = int(status_str)
+
+                        status_code: int = 200
+                        if status_str == "default":
+                            status_code = 0
+                        elif status_str == "2XX" or status_str == "2xx":
+                            status_code = 200
+                        elif status_str == "3XX" or status_str == "3xx":
+                            status_code = 300
+                        elif status_str == "4XX" or status_str == "4xx":
+                            status_code = 400
+                        elif status_str == "5XX" or status_str == "5xx":
+                            status_code = 500
+                        else:
+                            try:
+                                status_code = int(status_str)
+                            except Exception as e:
+                                status_code = 0
 
                         schema_desc: SchemaDescriptor | None = None
                         content_type: str = "application/json"

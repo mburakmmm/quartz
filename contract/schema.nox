@@ -185,7 +185,7 @@ def validate_schema(schema: SchemaDescriptor, val: JsonValue, path: str) -> list
         if (int_cast * 1.0) != n_val:
             errors.append(path + ": expected integer but got float with fractional part (" + str(n_val) + ")")
             return errors
-        if n_val > SAFE_INT_MAX or n_val < SAFE_INT_MIN:
+        if n_val >= SAFE_INT_MAX or n_val <= SAFE_INT_MIN:
             errors.append(path + ": integer exceeds safe 2^53 precision limit (loss of precision)")
         if schema.has_min_val and n_val < schema.min_val:
             errors.append(path + ": integer " + str(int_cast) + " is less than minimum " + str(int(schema.min_val)))

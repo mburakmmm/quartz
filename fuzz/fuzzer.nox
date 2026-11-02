@@ -19,7 +19,7 @@ class FuzzSummary:
         self.unique_crashes = unique
         self.duration_ms = duration_ms
 
-def run_fuzz(target_name: str, target_func: (str) -> None, initial_seeds: list[str], iterations: int, seed: int, corpus: CorpusManager, max_len: int) -> FuzzSummary:
+def run_fuzz(target_name: str, target_func: (str) -> None, initial_seeds: list[str], iterations: int, seed: int, corpus: CorpusManager, max_len: int, timeout_ms: int = 0, fail_on_bug: bool = False) -> FuzzSummary:
     t0_ms: int = nox.time.now_ms()
     prng: Prng = Prng(seed)
 
@@ -38,6 +38,10 @@ def run_fuzz(target_name: str, target_func: (str) -> None, initial_seeds: list[s
     case_idx: int = 0
 
     while case_idx < iterations:
+        # Check overall session timeout
+        if timeout_ms > 0 and (nox.time.now_ms() - t0_ms >= timeout_ms):
+            break
+
         # Pick a base input from seeds
         base_input: str = current_seeds[prng.choose_index(len(current_seeds))]
         # Mutate
@@ -64,4 +68,8 @@ def run_fuzz(target_name: str, target_func: (str) -> None, initial_seeds: list[s
 
     t1_ms: int = nox.time.now_ms()
     elapsed: int = t1_ms - t0_ms
+
+    if fail_on_bug and unique_crashes > 0:
+        raise AssertionError("fuzzer target '" + target_name + "' discovered " + str(unique_crashes) + " crash signature(s)")
+
     return FuzzSummary(target_name, case_idx, crashes_total, unique_crashes, elapsed)

@@ -45,8 +45,12 @@ def validate_response(res: HttpResponse, expected_statuses: list[int], required_
         else:
             lower_actual: str = nox.strings.lower(actual_ct)
             lower_expected: str = nox.strings.lower(expected_content_type)
-            if not nox.strings.contains(lower_actual, lower_expected):
-                errors.append("Content-Type mismatch: got '" + actual_ct + "', expected to contain '" + expected_content_type + "'")
+            media_type: str = lower_actual
+            if nox.strings.contains(lower_actual, ";"):
+                parts: list[str] = nox.strings.split(lower_actual, ";")
+                media_type = nox.strings.trim(parts[0])
+            if media_type != lower_expected and not nox.strings.contains(lower_actual, lower_expected):
+                errors.append("Content-Type mismatch: got '" + actual_ct + "', expected to match '" + expected_content_type + "'")
 
     # 4. Body & Schema check
     if body_schema != None:

@@ -1,4 +1,4 @@
-# Quartz API Reference — v0.4.0
+# Quartz API Reference — v0.4.1
 
 ## 1. Core Types (`core/types.nox`)
 
@@ -134,6 +134,7 @@ Minimal counterexample extraction preserving invariant violation.
 - `OUTCOME_CRASH: str = "CRASH"`
 
 ### Classes & Functions
+- `HandledRejection(Exception)`: Distinct exception indicating input rejection without triggering crash classification.
 - `FuzzOutcome(status: str, message: str, signature: str, duration_ms: int)`
   - `.is_failure() -> bool`
   - `.is_bug() -> bool`
@@ -170,7 +171,7 @@ Bounded deterministic byte and structured mutations:
   - `.is_new_signature(signature: str) -> bool`
   - `.save_crash_artifact(input_data: str, outcome: FuzzOutcome, seed: int, case_index: int) -> str`
 - `minimize_crash(target_func: (str) -> None, failing_input: str, expected_signature: str, max_steps: int) -> MinimizationResult`
-- `run_fuzz(target_name: str, target_func: (str) -> None, initial_seeds: list[str], iterations: int, seed: int, corpus: CorpusManager, max_len: int) -> FuzzSummary`
+- `run_fuzz(target_name: str, target_func: (str) -> None, initial_seeds: list[str], iterations: int, seed: int, corpus: CorpusManager, max_len: int, timeout_ms: int = 0, fail_on_bug: bool = False) -> FuzzSummary`
 
 ---
 
@@ -222,5 +223,9 @@ Bounded deterministic byte and structured mutations:
   - `.title: str`
   - `.version: str`
   - `.operations: list[ParsedOperation]`
+  - Supports `minLength`, `maxLength`, `minimum`, `maximum`, `minItems`, `maxItems`.
+  - Supports `additionalProperties` (defaults to non-strict per OpenAPI 3 spec).
+  - Supports status codes and ranges (`2XX`..`5XX`, `default`).
+  - Rejects unsupported keywords (`$ref`, `oneOf`, `anyOf`, `allOf`, `not`, `pattern`, `discriminator`, etc.) by raising `UnsupportedContractFeature`.
 
 

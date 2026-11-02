@@ -24,9 +24,27 @@ class ShrinkResultListInt:
         self.value = value
         self.attempts = attempts
 
+def safe_eval_int(predicate: (int) -> bool, val: int) -> bool:
+    try:
+        return predicate(val)
+    except Exception as e:
+        return False
+
+def safe_eval_str(predicate: (str) -> bool, val: str) -> bool:
+    try:
+        return predicate(val)
+    except Exception as e:
+        return False
+
+def safe_eval_list_int(predicate: (list[int]) -> bool, val: list[int]) -> bool:
+    try:
+        return predicate(val)
+    except Exception as e:
+        return False
+
 def shrink_int(initial: int, predicate: (int) -> bool, max_attempts: int) -> ShrinkResultInt:
     # If initial doesn't fail, nothing to shrink
-    if predicate(initial):
+    if safe_eval_int(predicate, initial):
         return ShrinkResultInt(initial, 0)
 
     current: int = initial
@@ -35,7 +53,7 @@ def shrink_int(initial: int, predicate: (int) -> bool, max_attempts: int) -> Shr
     # 1. Try zero first
     if current != 0 and attempts < max_attempts:
         attempts = attempts + 1
-        if not predicate(0):
+        if not safe_eval_int(predicate, 0):
             current = 0
             return ShrinkResultInt(0, attempts)
 
@@ -43,7 +61,7 @@ def shrink_int(initial: int, predicate: (int) -> bool, max_attempts: int) -> Shr
     if current < 0 and attempts < max_attempts:
         attempts = attempts + 1
         flipped: int = -current
-        if not predicate(flipped):
+        if not safe_eval_int(predicate, flipped):
             current = flipped
 
     # 3. Halving / binary search towards zero
@@ -53,7 +71,7 @@ def shrink_int(initial: int, predicate: (int) -> bool, max_attempts: int) -> Shr
 
         half: int = current // 2
         attempts = attempts + 1
-        if not predicate(half):
+        if not safe_eval_int(predicate, half):
             current = half
         else:
             # Try decrementing magnitude by 1
@@ -61,7 +79,7 @@ def shrink_int(initial: int, predicate: (int) -> bool, max_attempts: int) -> Shr
             if current < 0:
                 step = current + 1
             attempts = attempts + 1
-            if not predicate(step):
+            if not safe_eval_int(predicate, step):
                 current = step
             else:
                 break
@@ -69,7 +87,7 @@ def shrink_int(initial: int, predicate: (int) -> bool, max_attempts: int) -> Shr
     return ShrinkResultInt(current, attempts)
 
 def shrink_str(initial: str, predicate: (str) -> bool, max_attempts: int) -> ShrinkResultStr:
-    if predicate(initial):
+    if safe_eval_str(predicate, initial):
         return ShrinkResultStr(initial, 0)
 
     current: str = initial
@@ -78,7 +96,7 @@ def shrink_str(initial: str, predicate: (str) -> bool, max_attempts: int) -> Shr
     # 1. Try empty string
     if len(current) > 0 and attempts < max_attempts:
         attempts = attempts + 1
-        if not predicate(""):
+        if not safe_eval_str(predicate, ""):
             return ShrinkResultStr("", attempts)
 
     # 2. Delta-debugging: try dropping chunks (first half, second half)
@@ -94,7 +112,7 @@ def shrink_str(initial: str, predicate: (str) -> bool, max_attempts: int) -> Shr
             i = i + 1
 
         attempts = attempts + 1
-        if not predicate(left):
+        if not safe_eval_str(predicate, left):
             current = left
         else:
             # Try second half
@@ -104,7 +122,7 @@ def shrink_str(initial: str, predicate: (str) -> bool, max_attempts: int) -> Shr
                 right = right + current[j]
                 j = j + 1
             attempts = attempts + 1
-            if not predicate(right):
+            if not safe_eval_str(predicate, right):
                 current = right
             else:
                 # Try dropping single character from end
@@ -114,7 +132,7 @@ def shrink_str(initial: str, predicate: (str) -> bool, max_attempts: int) -> Shr
                     shorter = shorter + current[k]
                     k = k + 1
                 attempts = attempts + 1
-                if not predicate(shorter):
+                if not safe_eval_str(predicate, shorter):
                     current = shorter
                 else:
                     break
@@ -122,7 +140,7 @@ def shrink_str(initial: str, predicate: (str) -> bool, max_attempts: int) -> Shr
     return ShrinkResultStr(current, attempts)
 
 def shrink_list_int(initial: list[int], predicate: (list[int]) -> bool, max_attempts: int) -> ShrinkResultListInt:
-    if predicate(initial):
+    if safe_eval_list_int(predicate, initial):
         return ShrinkResultListInt(initial, 0)
 
     current: list[int] = []
@@ -137,7 +155,7 @@ def shrink_list_int(initial: list[int], predicate: (list[int]) -> bool, max_atte
     if len(current) > 0 and attempts < max_attempts:
         attempts = attempts + 1
         empty_list: list[int] = []
-        if not predicate(empty_list):
+        if not safe_eval_list_int(predicate, empty_list):
             return ShrinkResultListInt(empty_list, attempts)
 
     # 2. Delta-debugging: delete halves
@@ -152,7 +170,7 @@ def shrink_list_int(initial: list[int], predicate: (list[int]) -> bool, max_atte
             li = li + 1
 
         attempts = attempts + 1
-        if not predicate(left_half):
+        if not safe_eval_list_int(predicate, left_half):
             current = left_half
         else:
             right_half: list[int] = []
@@ -162,7 +180,7 @@ def shrink_list_int(initial: list[int], predicate: (list[int]) -> bool, max_atte
                 ri = ri + 1
 
             attempts = attempts + 1
-            if not predicate(right_half):
+            if not safe_eval_list_int(predicate, right_half):
                 current = right_half
             else:
                 # Try removing single element from tail
@@ -172,7 +190,7 @@ def shrink_list_int(initial: list[int], predicate: (list[int]) -> bool, max_atte
                     shorter_list.append(current[si])
                     si = si + 1
                 attempts = attempts + 1
-                if not predicate(shorter_list):
+                if not safe_eval_list_int(predicate, shorter_list):
                     current = shorter_list
                 else:
                     break

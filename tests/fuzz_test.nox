@@ -3,7 +3,7 @@ import nox.fs
 import nox.strings
 from core.assert import assert_true, assert_false, assert_eq_int, assert_eq_str, assert_contains_str
 from core.prng import Prng
-from fuzz.harness import run_in_process, FuzzOutcome, OUTCOME_NORMAL, OUTCOME_HANDLED_REJECTION, OUTCOME_ASSERTION_VIOLATION, OUTCOME_CRASH
+from fuzz.harness import run_in_process, FuzzOutcome, HandledRejection, OUTCOME_NORMAL, OUTCOME_HANDLED_REJECTION, OUTCOME_ASSERTION_VIOLATION, OUTCOME_CRASH
 from fuzz.mutation import mutate, mutate_byte_flip, mutate_json, mutate_csv, mutate_boundary_number
 from fuzz.corpus import CorpusManager, CorpusConfig, default_corpus_config
 from fuzz.minimize import minimize_crash, MinimizationResult
@@ -14,7 +14,11 @@ def target_normal(s: str) -> None:
     pass
 
 def target_rejection(s: str) -> None:
-    raise Exception("invalid syntax in token: " + s)
+    raise HandledRejection("REJECT: bad token: " + s)
+
+def target_unexpected_error_with_word(s: str) -> None:
+    # A crash whose message contains 'expected' — must NOT be classified as HandledRejection!
+    raise Exception("IndexOutOfBounds: expected index < 10, got 50")
 
 def target_assertion(s: str) -> None:
     assert False, "in-process assertion failed"
@@ -30,6 +34,11 @@ def test_harness_classification() -> None:
     out_rej: FuzzOutcome = run_in_process(target_rejection, "bad token")
     assert_eq_str(out_rej.status, OUTCOME_HANDLED_REJECTION, "handled rejection classified")
     assert_false(out_rej.is_failure(), "handled rejection is not failure")
+
+    # Audit fix verification: unexpected exception containing 'expected' is CRASH
+    out_word: FuzzOutcome = run_in_process(target_unexpected_error_with_word, "trigger")
+    assert_eq_str(out_word.status, OUTCOME_CRASH, "unexpected exception with 'expected' must be CRASH")
+    assert_true(out_word.is_failure(), "crash is failure")
 
     out_assert: FuzzOutcome = run_in_process(target_assertion, "trigger")
     assert_eq_str(out_assert.status, OUTCOME_ASSERTION_VIOLATION, "assertion violation classified")
@@ -90,6 +99,20 @@ def test_corpus_management() -> None:
     assert_false(cm.is_new_signature("SIG_1"), "sig 1 is not new second time")
     assert_true(cm.is_new_signature("SIG_2"), "sig 2 is new")
 
+    # Audit fix: verify max_files and max_total_bytes enforcement
+    tiny_cfg: CorpusConfig = CorpusConfig(2, 50, 64)
+    tiny_cm: CorpusManager = CorpusManager("tiny_target", "fixtures/corpus", tiny_cfg)
+    tiny_cm.ensure_directories()
+    assert_true(tiny_cm.add_seed("seed_1"), "seed 1 under file cap")
+    assert_true(tiny_cm.add_seed("seed_2"), "seed 2 under file cap")
+    assert_false(tiny_cm.add_seed("seed_3"), "seed 3 rejected by max_files cap")
+
+    byte_cfg: CorpusConfig = CorpusConfig(10, 15, 64)
+    byte_cm: CorpusManager = CorpusManager("byte_target", "fixtures/corpus", byte_cfg)
+    byte_cm.ensure_directories()
+    assert_true(byte_cm.add_seed("1234567890"), "10 bytes seed under byte cap")
+    assert_false(byte_cm.add_seed("abcdef123456"), "12 bytes rejected by max_total_bytes cap")
+
 def target_parser_with_flaw(s: str) -> None:
     if nox.strings.contains(s, "MAGIC_CRASH"):
         assert False, "parser internal fault: unhandled MAGIC_CRASH token"
@@ -106,7 +129,7 @@ def test_crash_minimizer() -> None:
 def target_fuzz_parser(s: str) -> None:
     # A parser that expects KEY:<val> and crashes on unhandled escape / boundary tokens
     if not nox.strings.starts_with(s, "KEY:"):
-        raise Exception("invalid format: expected KEY: prefix")
+        raise HandledRejection("REJECT: invalid format: expected KEY: prefix")
     val: str = s[4:len(s)]
     if nox.strings.contains(val, "\"") or nox.strings.contains(val, "\x00") or nox.strings.contains(val, "-1"):
         raise Exception("internal parser fault: unhandled boundary token in value")
@@ -121,6 +144,15 @@ def test_fuzzer_session() -> None:
     assert_eq_int(summary.total_cases, 50, "50 total fuzz cases executed")
     assert_true(summary.crashes_found > 0, "fuzzer discovered parser bug")
     assert_true(summary.unique_crashes >= 1, "at least one unique crash signature recorded")
+
+    # Audit fix: fail_on_bug option raises AssertionError when bugs are discovered
+    fail_cm: CorpusManager = CorpusManager("fuzz_fail_test", "fixtures/corpus", cfg)
+    fail_on_bug_threw: bool = False
+    try:
+        run_fuzz("fuzz_fail_test", target_fuzz_parser, seeds, 50, 1337, fail_cm, 64, 0, True)
+    except AssertionError as e:
+        fail_on_bug_threw = True
+    assert_true(fail_on_bug_threw, "fail_on_bug=True must raise AssertionError when bugs are found")
 
 def cleanup_dir(path: str) -> None:
     if nox.fs.exists(path):

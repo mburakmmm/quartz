@@ -11,6 +11,9 @@ OUTCOME_ASSERTION_VIOLATION: str = "ASSERTION_VIOLATION"
 OUTCOME_TIMEOUT: str = "TIMEOUT"
 OUTCOME_CRASH: str = "CRASH"
 
+class HandledRejection(Exception):
+    pass
+
 class FuzzOutcome:
     status: str
     message: str
@@ -37,19 +40,9 @@ class FuzzOutcome:
 
 def is_expected_rejection(msg: str) -> bool:
     lower: str = nox.strings.lower(msg)
-    if nox.strings.contains(lower, "invalid"):
+    if nox.strings.starts_with(lower, "reject:") or nox.strings.starts_with(lower, "handled_rejection:"):
         return True
-    if nox.strings.contains(lower, "reject"):
-        return True
-    if nox.strings.contains(lower, "parse error"):
-        return True
-    if nox.strings.contains(lower, "bad format"):
-        return True
-    if nox.strings.contains(lower, "expected"):
-        return True
-    if nox.strings.contains(lower, "syntax"):
-        return True
-    if nox.strings.contains(lower, "malformed"):
+    if nox.strings.starts_with(lower, "validation_error:") or nox.strings.starts_with(lower, "bad_input:"):
         return True
     return False
 
@@ -59,6 +52,10 @@ def run_in_process(target_func: (str) -> None, input_data: str) -> FuzzOutcome:
         target_func(input_data)
         elapsed_ms: int = t0.elapsed_ms()
         return FuzzOutcome(OUTCOME_NORMAL, "success", "OK", elapsed_ms)
+    except HandledRejection as e:
+        elapsed_ms: int = t0.elapsed_ms()
+        msg: str = str(e)
+        return FuzzOutcome(OUTCOME_HANDLED_REJECTION, msg, "REJECT:" + msg, elapsed_ms)
     except AssertionError as e:
         elapsed_ms: int = t0.elapsed_ms()
         msg: str = str(e)

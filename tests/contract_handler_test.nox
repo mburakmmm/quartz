@@ -2,7 +2,7 @@
 import nox.http
 import nox.strings
 from nox.http import HttpRequest, HttpResponse
-from core.assert import assert_true, assert_false, assert_eq_int, assert_eq_str, assert_contains_str
+from core.assert import assert_true, assert_false, assert_eq_int, assert_eq_float, assert_eq_str, assert_contains_str
 from contract.types import ContractCheckResult, redact_header_value, get_header_ci, has_header_ci
 from contract.schema import SchemaDescriptor, PropertyRule, schema_string, schema_integer, schema_boolean, schema_array, schema_object, schema_enum
 from contract.http import build_request, build_response, execute_handler, empty_headers, HandlerExecutionResult
@@ -186,6 +186,56 @@ def test_openapi_subset_parser() -> None:
 
     assert_true(threw_unsupported, "unsupported keyword $ref must raise UnsupportedContractFeature")
 
+def test_openapi_constraints_and_additional_properties() -> None:
+    # Test minLength, maxLength, minimum, maximum, minItems, maxItems, additionalProperties
+    spec_json: str = "{\n"
+    spec_json = spec_json + "  \"openapi\": \"3.0.0\",\n"
+    spec_json = spec_json + "  \"paths\": {\n"
+    spec_json = spec_json + "    \"/items\": {\n"
+    spec_json = spec_json + "      \"get\": {\n"
+    spec_json = spec_json + "        \"responses\": {\n"
+    spec_json = spec_json + "          \"2XX\": {\n"
+    spec_json = spec_json + "            \"content\": {\n"
+    spec_json = spec_json + "              \"application/json\": {\n"
+    spec_json = spec_json + "                \"schema\": {\n"
+    spec_json = spec_json + "                  \"type\": \"object\",\n"
+    spec_json = spec_json + "                  \"properties\": {\n"
+    spec_json = spec_json + "                    \"name\": {\"type\": \"string\", \"minLength\": 3, \"maxLength\": 10},\n"
+    spec_json = spec_json + "                    \"count\": {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 100},\n"
+    spec_json = spec_json + "                    \"tags\": {\"type\": \"array\", \"minItems\": 1, \"maxItems\": 5, \"items\": {\"type\": \"string\"}}\n"
+    spec_json = spec_json + "                  },\n"
+    spec_json = spec_json + "                  \"additionalProperties\": false\n"
+    spec_json = spec_json + "                }\n"
+    spec_json = spec_json + "              }\n"
+    spec_json = spec_json + "            }\n"
+    spec_json = spec_json + "          }\n"
+    spec_json = spec_json + "        }\n"
+    spec_json = spec_json + "      }\n"
+    spec_json = spec_json + "    }\n"
+    spec_json = spec_json + "  }\n"
+    spec_json = spec_json + "}\n"
+
+    doc: ParsedOpenApiDoc = parse_openapi_json(spec_json)
+    assert_eq_int(len(doc.operations), 1, "1 operation parsed")
+    assert_eq_int(doc.operations[0].responses[0].status_code, 200, "2XX maps to 200")
+
+    schema: SchemaDescriptor | None = doc.operations[0].responses[0].schema
+    assert_true(schema is not None, "schema parsed")
+    if schema is not None:
+        assert_true(schema.is_strict, "additionalProperties: false sets is_strict=True")
+        # Check string constraint
+        name_rule: PropertyRule = schema.properties[0]
+        assert_eq_int(name_rule.schema.min_len, 3, "minLength parsed as 3")
+        assert_eq_int(name_rule.schema.max_len, 10, "maxLength parsed as 10")
+        # Check integer constraint
+        count_rule: PropertyRule = schema.properties[1]
+        assert_eq_float(count_rule.schema.min_val, 1.0, 0.001, 0.001, "minimum parsed as 1")
+        assert_eq_float(count_rule.schema.max_val, 100.0, 0.001, 0.001, "maximum parsed as 100")
+        # Check array constraint
+        tags_rule: PropertyRule = schema.properties[2]
+        assert_eq_int(tags_rule.schema.min_len, 1, "minItems parsed as 1")
+        assert_eq_int(tags_rule.schema.max_len, 5, "maxItems parsed as 5")
+
 def run_all_contract_tests() -> None:
     test_handler_positive_contract()
     test_handler_negative_status_code()
@@ -194,6 +244,7 @@ def run_all_contract_tests() -> None:
     test_integer_precision_guard()
     test_header_case_insensitivity_and_redaction()
     test_openapi_subset_parser()
+    test_openapi_constraints_and_additional_properties()
     print("quartz contract handler test: ALL PASS")
 
 run_all_contract_tests()

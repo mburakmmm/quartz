@@ -1,6 +1,7 @@
 import nox.fs
 import nox.strings
 from core.prng import hash_str_fnv
+from core.report import escape_json
 from fuzz.harness import FuzzOutcome
 
 def int_to_hex_8(n: int) -> str:
@@ -95,10 +96,57 @@ class CorpusManager:
         self.seen_signatures = sigs
         return True
 
+    def get_seed_count(self: CorpusManager) -> int:
+        if not nox.fs.exists(self.seeds_dir):
+            return 0
+        entries: list[str] = nox.fs.read_dir(self.seeds_dir)
+        count: int = 0
+        i: int = 0
+        while i < len(entries):
+            if nox.strings.ends_with(entries[i], ".bin"):
+                count = count + 1
+            i = i + 1
+        return count
+
+    def get_total_seed_bytes(self: CorpusManager) -> int:
+        if not nox.fs.exists(self.seeds_dir):
+            return 0
+        entries: list[str] = nox.fs.read_dir(self.seeds_dir)
+        total: int = 0
+        i: int = 0
+        while i < len(entries):
+            if nox.strings.ends_with(entries[i], ".bin"):
+                fpath: str = self.seeds_dir + "/" + entries[i]
+                try:
+                    meta: nox.fs.FileMetadata = nox.fs.metadata(fpath)
+                    total = total + meta.size
+                except Exception as e:
+                    pass
+            i = i + 1
+        return total
+
+    def get_crash_count(self: CorpusManager) -> int:
+        if not nox.fs.exists(self.crashes_dir):
+            return 0
+        entries: list[str] = nox.fs.read_dir(self.crashes_dir)
+        count: int = 0
+        i: int = 0
+        while i < len(entries):
+            if nox.strings.ends_with(entries[i], ".json"):
+                count = count + 1
+            i = i + 1
+        return count
+
     def add_seed(self: CorpusManager, content: str) -> bool:
         if len(content) > self.config.max_input_len:
             return False
         self.ensure_directories()
+
+        # Hard bounds: max file count and max total bytes
+        if self.get_seed_count() >= self.config.max_files:
+            return False
+        if self.get_total_seed_bytes() + len(content) > self.config.max_total_bytes:
+            return False
         
         file_id: str = int_to_hex_8(hash_str_fnv(content))
         path: str = self.seeds_dir + "/seed_" + file_id + ".bin"
@@ -128,6 +176,10 @@ class CorpusManager:
 
     def save_crash_artifact(self: CorpusManager, input_data: str, outcome: FuzzOutcome, seed: int, case_index: int) -> str:
         self.ensure_directories()
+        # Bound crash files to avoid disk exhaustion
+        if self.get_crash_count() >= self.config.max_files:
+            return ""
+
         file_id: str = int_to_hex_8(hash_str_fnv(input_data))
         raw_path: str = self.crashes_dir + "/crash_" + file_id + ".bin"
         json_path: str = self.crashes_dir + "/crash_" + file_id + ".json"
@@ -135,19 +187,19 @@ class CorpusManager:
         # Write raw binary/text payload
         nox.fs.write_string_atomic(raw_path, input_data)
 
-        # Write JSON artifact descriptor
+        # Write JSON artifact descriptor with proper escaping
         json_content: str = "{\n"
         json_content = json_content + "  \"schema_version\": \"1\",\n"
         json_content = json_content + "  \"engine\": \"quartz\",\n"
         json_content = json_content + "  \"kind\": \"fuzz_crash\",\n"
-        json_content = json_content + "  \"target\": \"" + self.target_name + "\",\n"
-        json_content = json_content + "  \"status\": \"" + outcome.status + "\",\n"
-        json_content = json_content + "  \"signature\": \"" + outcome.signature + "\",\n"
+        json_content = json_content + "  \"target\": \"" + escape_json(self.target_name) + "\",\n"
+        json_content = json_content + "  \"status\": \"" + escape_json(outcome.status) + "\",\n"
+        json_content = json_content + "  \"signature\": \"" + escape_json(outcome.signature) + "\",\n"
         json_content = json_content + "  \"seed\": " + str(seed) + ",\n"
         json_content = json_content + "  \"case_index\": " + str(case_index) + ",\n"
         json_content = json_content + "  \"duration_ms\": " + str(outcome.duration_ms) + ",\n"
-        json_content = json_content + "  \"input_bytes_file\": \"" + raw_path + "\",\n"
-        json_content = json_content + "  \"error_message\": \"" + outcome.message + "\"\n"
+        json_content = json_content + "  \"input_bytes_file\": \"" + escape_json(raw_path) + "\",\n"
+        json_content = json_content + "  \"error_message\": \"" + escape_json(outcome.message) + "\"\n"
         json_content = json_content + "}\n"
 
         nox.fs.write_string_atomic(json_path, json_content)
