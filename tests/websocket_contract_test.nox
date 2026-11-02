@@ -34,10 +34,34 @@ def test_handshake_request_missing_headers() -> None:
     assert_false(res.is_valid, "missing upgrade header fails")
     assert_contains_str(res.error_message, "Upgrade", "upgrade error diagnosed")
 
+def test_handshake_request_invalid_nonce() -> None:
+    headers: dict[str, str] = {}
+    headers["Host"] = "localhost"
+    headers["Upgrade"] = "websocket"
+    headers["Connection"] = "Upgrade"
+    headers["Sec-WebSocket-Key"] = "too_short"
+    headers["Sec-WebSocket-Version"] = "13"
+    req: HttpRequest = HttpRequest("GET", "/ws", "", headers)
+    res: WsValidationResult = validate_ws_handshake_request(req)
+    assert_false(res.is_valid, "too short nonce rejected")
+    assert_contains_str(res.error_message, "16-byte nonce", "nonce length error")
+
 def test_handshake_response_valid() -> None:
-    res: HttpResponse = mock_ws_server_handshake("chat.v1")
-    val_res: WsValidationResult = validate_ws_handshake_response(res, "chat.v1")
-    assert_true(val_res.is_valid, "valid 101 server response passes")
+    client_key: str = "dGhlIHNhbXBsZSBub25jZQ=="
+    res: HttpResponse = mock_ws_server_handshake("chat.v1", client_key)
+    val_res: WsValidationResult = validate_ws_handshake_response(res, client_key, "chat.v1")
+    assert_true(val_res.is_valid, "valid 101 server response passes with calculated accept key")
+
+def test_handshake_response_accept_mismatch() -> None:
+    client_key: str = "dGhlIHNhbXBsZSBub25jZQ=="
+    headers: dict[str, str] = {}
+    headers["Upgrade"] = "websocket"
+    headers["Connection"] = "Upgrade"
+    headers["Sec-WebSocket-Accept"] = "wrongAcceptKeyComputedHere12="
+    res: HttpResponse = HttpResponse(101, "", headers)
+    val_res: WsValidationResult = validate_ws_handshake_response(res, client_key)
+    assert_false(val_res.is_valid, "mismatched Sec-WebSocket-Accept rejected")
+    assert_contains_str(val_res.error_message, "Sec-WebSocket-Accept", "accept key mismatch error")
 
 def test_handshake_response_wrong_status() -> None:
     headers: dict[str, str] = {}
@@ -111,7 +135,9 @@ def test_conversation_step_count_mismatch() -> None:
 test_handshake_request_valid()
 test_handshake_request_invalid_method()
 test_handshake_request_missing_headers()
+test_handshake_request_invalid_nonce()
 test_handshake_response_valid()
+test_handshake_response_accept_mismatch()
 test_handshake_response_wrong_status()
 test_conversation_script_pass()
 test_conversation_script_schema_violation()

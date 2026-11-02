@@ -571,6 +571,39 @@
 
 ---
 
+## Phase 11.2: v0.9.6 — Bugfix Release & Pre-Release Hardening
+*Objective: Address audit findings from v0.9.5: RFC 6455 cryptographic verification, property combinator shrinking and bounds guards, staged workload safety caps, and CLI fail-closed test execution.*
+
+- [x] **11.2.1 RFC 6455 WebSocket Handshake Cryptographic Verification (`contract/websocket.nox`)**
+  - [x] Implement SHA-1 algorithm (`sha1_digest_20bytes`) and standard Base64 encoder (`base64_encode`) in pure NOX.
+  - [x] Implement `is_valid_ws_key_nonce` verifying 24-character Base64 16-byte nonce ending with `==`.
+  - [x] Implement `compute_ws_accept_key(client_key: str) -> str` using RFC 6455 GUID (`258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).
+  - [x] Verify `Sec-WebSocket-Accept` header during response validation.
+  - [x] Update `tests/websocket_contract_test.nox` with nonce and accept mismatch test cases.
+- [x] **11.2.2 Property Combinator Hardening & Shrinking (`property/combinators.nox`)**
+  - [x] Add overflow and non-positive weight guards (`tot <= 0` and `tot > 1,000,000,000,000`) in `WeightedChoiceIntGen` and `WeightedChoiceStringGen`.
+  - [x] Add constructor guard in `FilteredIntGen` requiring `max_discards > 0`.
+  - [x] Implement `shrink_candidates(base_val: int) -> list[int]` in `MappedIntGen`.
+  - [x] Implement `shrink_candidates(pair: IntPair) -> list[IntPair]` in `PairIntGen`.
+  - [x] Update `tests/generator_combinator_test.nox` with tests covering new shrinking and validation paths.
+- [x] **11.2.3 Staged Workload Safety Limit Enforcement (`load/stages.nox`)**
+  - [x] Default `max_vus` capped at 20 in `StagedWorkloadConfig`.
+  - [x] Clamp `effective_max_vus` and `target_vus` against `limits.virtual_users` (capped by `HARD_CAP_VIRTUAL_USERS = 20`).
+  - [x] Enforce global duration limit check (`t0_global.elapsed_ms() >= limits.duration_seconds * 1000`).
+  - [x] Update `tests/stage_workload_test.nox` to verify VU clamping.
+- [x] **11.2.4 CLI Fail-Closed Robustness (`cli/main.nox`)**
+  - [x] Ensure `cmd_test()` fails closed (exit code 1) on test failure or missing compiler binary.
+  - [x] Ensure `cmd_replay()` fails closed when artifact lacks required counterexample fields.
+- [x] **11.2.5 Release Packaging & Verification (v0.9.6)**
+  - [x] Update facade `quartz.nox` to version `0.9.6`.
+  - [x] Update `CHANGELOG.md` with complete Phase 11.2 bugfix notes.
+  - [x] Run full project test matrix: **20/20 test suites passing cleanly**.
+  - [x] Tag `v0.9.6`, push to GitHub, and publish to NOX package registry.
+
+*Phase 11.2 Exit Gate:* PASSED. Cryptographic handshake verification, combinator shrinking, staged safety caps, and CLI fail-closed behavior verified; 20/20 test suites passing cleanly; published as v0.9.6.
+
+---
+
 ## Execution Log & Audit Trail
 
 | Date | Phase | Task | Action / Command | Result / Evidence | Status |
@@ -638,3 +671,5 @@
 | 2026-11-02 | Phase 10.2 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 18/18 tests pass, tagged `v0.9.4`, published | [x] DONE |
 | 2026-11-02 | Phase 11 | Staged Workload & Combinators | `load/stages.nox`, `property/combinators.nox` | Dynamic ramp stages, OneOf/Weighted/Filtered generators | [x] DONE |
 | 2026-11-02 | Phase 11 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 20/20 tests pass, recipes 11 & 12 pass, tagged `v0.9.5`, published | [x] DONE |
+| 2026-11-02 | Phase 11.2 | Bugfixes & Hardening | `contract/`, `property/`, `load/`, `cli/` | RFC 6455 accept verification, combinator shrinking, staged caps, CLI fail-closed | [x] DONE |
+| 2026-11-02 | Phase 11.2 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 20/20 tests pass, tagged `v0.9.6`, ready for publish | [x] DONE |

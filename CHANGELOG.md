@@ -3,6 +3,27 @@
 All notable changes to the Quartz test framework will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.6] - 2026-11-02 - Bugfix Release: RFC 6455 Accept Verification, Combinator Shrinking, Staged Safety Caps & CLI Fail-Closed
+
+### Fixed
+- **RFC 6455 WebSocket Handshake Cryptographic Verification (`contract/websocket.nox`)**:
+  - Implemented pure NOX SHA-1 algorithm (`sha1_digest_20bytes`) and standard Base64 encoder (`base64_encode`) matching RFC 6455 test vectors.
+  - Implemented `is_valid_ws_key_nonce` strictly verifying 24-character Base64 16-byte nonce ending with `==`.
+  - Implemented `compute_ws_accept_key(client_key: str) -> str` using RFC 6455 GUID (`258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).
+  - Hardened `validate_ws_handshake_request` to reject malformed nonces.
+  - Hardened `validate_ws_handshake_response` to verify `Sec-WebSocket-Accept` header against client nonce calculation.
+- **Property Combinator Hardening & Shrinking (`property/combinators.nox`)**:
+  - Added overflow and non-positive weight guards (`tot <= 0` and `tot > 1,000,000,000,000`) in `WeightedChoiceIntGen` and `WeightedChoiceStringGen`.
+  - Added constructor validation in `FilteredIntGen` requiring `max_discards > 0`.
+  - Implemented `shrink_candidates(base_val: int) -> list[int]` in `MappedIntGen`, preserving domain transformations across shrunk integer candidates.
+  - Implemented `shrink_candidates(pair: IntPair) -> list[IntPair]` in `PairIntGen`, generating coordinated candidates (varying first, varying second, and varying both simultaneously).
+- **Staged Workload Safety Limit Enforcement (`load/stages.nox`)**:
+  - Enforced strict upper bound clamping on `config.max_vus` and per-stage `target_vus` against `limits.virtual_users` (capped by `HARD_CAP_VIRTUAL_USERS = 20`).
+  - Added global wall-clock duration limit enforcement (`t0_global.elapsed_ms() >= limits.duration_seconds * 1000`) preventing runaway execution across stages.
+- **CLI Robustness & Fail-Closed Behavior (`cli/main.nox`)**:
+  - Ensured `cmd_test()` fails closed (exit code 1) when child test execution fails or when compiler binaries cannot be located.
+  - Hardened `cmd_replay()` to fail closed when failure artifacts lack required counterexample fields.
+
 ## [0.9.5] - 2026-11-02 - Phase 11: Multi-Stage Ramp Workload Scheduler & Composable Property Generators
 
 ### Added

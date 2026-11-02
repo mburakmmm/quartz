@@ -145,6 +145,14 @@ def test_mapped_and_pair_gens() -> None:
         assert_true(val % 10 == 0, "mapped is multiple of 10")
         i = i + 1
 
+    # Shrink candidates for MappedIntGen
+    mapped_shrunk: list[int] = mapped.shrink_candidates(80)
+    assert_true(len(mapped_shrunk) > 0, "mapped has shrink candidates")
+    m_i: int = 0
+    while m_i < len(mapped_shrunk):
+        assert_true(mapped_shrunk[m_i] % 10 == 0, "mapped shrink candidates preserve transformation")
+        m_i = m_i + 1
+
     # PairIntGen
     gen_a: IntGen = IntGen(1, 5, False)
     gen_b: IntGen = IntGen(50, 100, False)
@@ -154,9 +162,36 @@ def test_mapped_and_pair_gens() -> None:
     assert_true(p.first >= 1 and p.first <= 5, "pair first in range")
     assert_true(p.second >= 50 and p.second <= 100, "pair second in range")
 
+    # Shrink candidates for PairIntGen
+    pair_shrunk: list[IntPair] = pair_gen.shrink_candidates(IntPair(4, 80))
+    assert_true(len(pair_shrunk) > 0, "pair has shrink candidates")
+    assert_eq_int(pair_shrunk[0].first, 0, "first shrunk towards zero")
+
+def test_combinator_guards() -> None:
+    # FilteredIntGen max_discards <= 0
+    base: IntGen = IntGen(1, 10, False)
+    def dummy_pred(n: int) -> bool:
+        return True
+
+    discards_caught: bool = False
+    try:
+        f_bad: FilteredIntGen = FilteredIntGen(base, dummy_pred, 0)
+    except AssertionError as e:
+        discards_caught = True
+    assert_true(discards_caught, "max_discards <= 0 rejected")
+
+    # WeightedChoiceOption weight <= 0
+    weight_caught: bool = False
+    try:
+        opt_bad: WeightedIntOption = WeightedIntOption(0, 42)
+    except AssertionError as e:
+        weight_caught = True
+    assert_true(weight_caught, "weight <= 0 rejected")
+
 test_one_of_generators()
 test_weighted_choice_generators()
 test_filtered_int_gen()
 test_filtered_int_gen_exhaustion()
 test_mapped_and_pair_gens()
+test_combinator_guards()
 print("quartz generator combinator test: ALL PASS")

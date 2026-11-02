@@ -25,7 +25,7 @@ class StagedWorkloadConfig:
     max_total_requests: int
     max_requests_per_stage: int
 
-    def __init__(self: StagedWorkloadConfig, name: str, stages: list[LoadStage], max_vus: int = 50, max_total_requests: int = 1000, max_requests_per_stage: int = 100) -> None:
+    def __init__(self: StagedWorkloadConfig, name: str, stages: list[LoadStage], max_vus: int = 20, max_total_requests: int = 1000, max_requests_per_stage: int = 100) -> None:
         self.name = name
         self.stages = stages
         self.max_vus = max_vus
@@ -131,6 +131,12 @@ def run_staged_task_workload_internal(config: StagedWorkloadConfig, task_func: (
     t0_global: Instant = nox.time.instant_now()
 
     cb: CircuitBreaker = CircuitBreaker(limits.max_consecutive_errors)
+    effective_max_vus: int = config.max_vus
+    if effective_max_vus > limits.virtual_users:
+        effective_max_vus = limits.virtual_users
+    if effective_max_vus < 1:
+        effective_max_vus = 1
+
     current_vus: int = 1
     if len(config.stages) > 0 and config.stages[0].target_vus > 0:
         current_vus = 1
@@ -139,11 +145,15 @@ def run_staged_task_workload_internal(config: StagedWorkloadConfig, task_func: (
     total_stages: int = len(config.stages)
 
     while stage_idx < total_stages:
+        if t0_global.elapsed_ms() >= limits.duration_seconds * 1000:
+            break
         stg: LoadStage = config.stages[stage_idx]
         start_vus: int = current_vus
+        if start_vus > effective_max_vus:
+            start_vus = effective_max_vus
         target_vus: int = stg.target_vus
-        if target_vus > config.max_vus:
-            target_vus = config.max_vus
+        if target_vus > effective_max_vus:
+            target_vus = effective_max_vus
         if target_vus < 1:
             target_vus = 1
 
@@ -168,6 +178,8 @@ def run_staged_task_workload_internal(config: StagedWorkloadConfig, task_func: (
 
         # Execute requests for the duration of this stage
         while t0_stage.elapsed_ms() < stage_duration_ms:
+            if t0_global.elapsed_ms() >= limits.duration_seconds * 1000:
+                break
             if global_case_idx >= config.max_total_requests:
                 break
             if stage_completed >= config.max_requests_per_stage:

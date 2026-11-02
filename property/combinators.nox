@@ -7,6 +7,21 @@ from property.generator import IntGen
 from property.shrink import shrink_int
 from nox.test import AssertionError
 
+def int_shrink_candidates(val: int) -> list[int]:
+    res: list[int] = []
+    if val != 0:
+        res.append(0)
+    if val < 0:
+        res.append(-val)
+    half: int = val // 2
+    if half != val and half != 0:
+        res.append(half)
+    if val > 0:
+        res.append(val - 1)
+    elif val < 0:
+        res.append(val + 1)
+    return res
+
 class OneOfIntGen:
     choices: list[int]
 
@@ -76,6 +91,10 @@ class WeightedChoiceIntGen:
         while i < len(options):
             tot = tot + options[i].weight
             i = i + 1
+        if tot <= 0:
+            raise AssertionError("WeightedChoiceIntGen: total weight must be > 0")
+        if tot > 1000000000000:
+            raise AssertionError("WeightedChoiceIntGen: total weight exceeds 1,000,000,000,000")
         self.total_weight = tot
 
     def generate(self: WeightedChoiceIntGen, prng: Prng) -> int:
@@ -112,6 +131,10 @@ class WeightedChoiceStringGen:
         while i < len(options):
             tot = tot + options[i].weight
             i = i + 1
+        if tot <= 0:
+            raise AssertionError("WeightedChoiceStringGen: total weight must be > 0")
+        if tot > 1000000000000:
+            raise AssertionError("WeightedChoiceStringGen: total weight exceeds 1,000,000,000,000")
         self.total_weight = tot
 
     def generate(self: WeightedChoiceStringGen, prng: Prng) -> str:
@@ -132,6 +155,8 @@ class FilteredIntGen:
     total_discards: int
 
     def __init__(self: FilteredIntGen, base_gen: IntGen, predicate: (int) -> bool, max_discards: int = 100) -> None:
+        if max_discards <= 0:
+            raise AssertionError("FilteredIntGen: max_discards must be > 0")
         self.base_gen = base_gen
         self.predicate = predicate
         self.max_discards = max_discards
@@ -149,18 +174,14 @@ class FilteredIntGen:
         raise AssertionError("FilteredIntGen: exceeded max_discards budget (" + str(self.max_discards) + ")")
 
     def shrink_candidates(self: FilteredIntGen, val: int) -> list[int]:
+        raw: list[int] = int_shrink_candidates(val)
         candidates: list[int] = []
-        if val != 0 and self.predicate(0):
-            candidates.append(0)
-        if val < 0 and self.predicate(-val):
-            candidates.append(-val)
-        half: int = val // 2
-        if half != val and self.predicate(half):
-            candidates.append(half)
-        if val > 0 and self.predicate(val - 1):
-            candidates.append(val - 1)
-        elif val < 0 and self.predicate(val + 1):
-            candidates.append(val + 1)
+        i: int = 0
+        while i < len(raw):
+            c: int = raw[i]
+            if self.predicate(c):
+                candidates.append(c)
+            i = i + 1
         return candidates
 
 class MappedIntGen:
@@ -173,6 +194,15 @@ class MappedIntGen:
 
     def generate(self: MappedIntGen, prng: Prng) -> int:
         return self.transform(self.base_gen.generate(prng))
+
+    def shrink_candidates(self: MappedIntGen, base_val: int) -> list[int]:
+        raw: list[int] = int_shrink_candidates(base_val)
+        res: list[int] = []
+        i: int = 0
+        while i < len(raw):
+            res.append(self.transform(raw[i]))
+            i = i + 1
+        return res
 
 class IntPair:
     first: int
@@ -194,3 +224,24 @@ class PairIntGen:
         val_a: int = self.gen_a.generate(prng)
         val_b: int = self.gen_b.generate(prng)
         return IntPair(val_a, val_b)
+
+    def shrink_candidates(self: PairIntGen, pair: IntPair) -> list[IntPair]:
+        res: list[IntPair] = []
+        c1: list[int] = int_shrink_candidates(pair.first)
+        c2: list[int] = int_shrink_candidates(pair.second)
+        i: int = 0
+        while i < len(c1):
+            res.append(IntPair(c1[i], pair.second))
+            i = i + 1
+        j: int = 0
+        while j < len(c2):
+            res.append(IntPair(pair.first, c2[j]))
+            j = j + 1
+        k: int = 0
+        min_len: int = len(c1)
+        if len(c2) < min_len:
+            min_len = len(c2)
+        while k < min_len:
+            res.append(IntPair(c1[k], c2[k]))
+            k = k + 1
+        return res

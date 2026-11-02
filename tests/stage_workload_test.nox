@@ -110,7 +110,22 @@ def test_staged_workload_threshold_failure() -> None:
     assert_false(summary.cumulative_summary.all_passed, "cumulative summary flagged as failed")
     assert_true(summary.stages[0].failed > 0, "stage 0 recorded failures")
 
+def test_staged_workload_safety_limits_clamping() -> None:
+    stages: list[LoadStage] = [
+        LoadStage(100, 1)
+    ]
+    cfg: StagedWorkloadConfig = StagedWorkloadConfig("clamp_test", stages, 50, 10, 5)
+    safety: SafetyLimits = SafetyLimits(4, 2)
+    thresholds: list[Threshold] = []
+
+    def dummy_task(idx: int) -> bool:
+        return True
+
+    summary: StagedLoadSummary = run_staged_task_workload(cfg, dummy_task, thresholds, safety)
+    assert_true(summary.stages[0].target_vus <= 4, "target_vus clamped to safety limits virtual_users")
+
 test_staged_workload_ramp_execution()
 test_staged_workload_streaming_telemetry()
 test_staged_workload_threshold_failure()
+test_staged_workload_safety_limits_clamping()
 print("quartz stage workload test: ALL PASS")

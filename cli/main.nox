@@ -255,14 +255,17 @@ def cmd_replay() -> None:
             sc_node2: JsonValue = json_get_key(artifact, "shrunk")
             print("  Shrunk counterexample: " + sc_node2.s)
 
+        if len(orig_str) == 0:
+            print("Error: failure artifact missing 'original' or 'original_counterexample' field.")
+            nox.os.exit(1)
+            return
+
         rep_gen: IntGen = IntGen(-100, 100, True)
 
         # Predicate reproduces failure if the generated candidate matches the failing counterexample
         def check_reproduced(val: int) -> bool:
-            if len(orig_str) > 0:
-                # If val matches the recorded failure counterexample, predicate returns False to trigger reproduction
-                return (str(val) != orig_str)
-            return False
+            # If val matches the recorded failure counterexample, predicate returns False to trigger reproduction
+            return (str(val) != orig_str)
 
         replayed_ok: bool = replay_int_case(test_id, seed_val, case_idx, rep_gen, check_reproduced)
         if replayed_ok:
@@ -405,12 +408,21 @@ def cmd_test() -> None:
                         print(out.stdout)
                     print("All test suites executed successfully.")
                     return
+                elif not is_binary_not_found(out.stderr, out.status):
+                    print("Test execution failed (exit code " + str(out.status) + "):")
+                    if len(out.stdout) > 0:
+                        print(out.stdout)
+                    if len(out.stderr) > 0:
+                        print(out.stderr)
+                    nox.os.exit(1)
+                    return
             except Exception as e:
                 pass
             t_i = t_i + 1
 
-        print("Note: Child process environment lacks backend compiler PATH; static check verified successfully.")
-        print("To run the test executable directly, execute 'noxc test " + target_path + "' in the host shell.")
+        print("Error: Could not locate a working 'noxc' compiler binary to run tests.")
+        print("Please ensure 'noxc' is in PATH or execute 'noxc test " + target_path + "' in the host shell.")
+        nox.os.exit(1)
     except Exception as e:
         print("Note: Process execution encountered: " + str(e))
         nox.os.exit(1)

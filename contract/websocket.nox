@@ -71,6 +71,167 @@ def ws_validation_pass() -> WsValidationResult:
 def ws_validation_fail(step_index: int, msg: str) -> WsValidationResult:
     return WsValidationResult(False, step_index, msg)
 
+def rotl32(x: int, n: int) -> int:
+    mask32: int = 4294967295
+    val: int = x & mask32
+    return ((val << n) | (val >> (32 - n))) & mask32
+
+def sha1_digest_20bytes(input_str: str) -> list[int]:
+    mask32: int = 4294967295
+    data: list[int] = []
+    i: int = 0
+    while i < len(input_str):
+        data.append(nox.strings.byte_at(input_str, i))
+        i = i + 1
+
+    orig_bit_len: int = len(data) * 8
+    data.append(128)
+
+    while (len(data) % 64) != 56:
+        data.append(0)
+
+    data.append(0)
+    data.append(0)
+    data.append(0)
+    data.append(0)
+    data.append((orig_bit_len >> 24) & 255)
+    data.append((orig_bit_len >> 16) & 255)
+    data.append((orig_bit_len >> 8) & 255)
+    data.append(orig_bit_len & 255)
+
+    h0: int = 1732584193
+    h1: int = 4023233417
+    h2: int = 2562383102
+    h3: int = 271733878
+    h4: int = 3285377520
+
+    chunk_idx: int = 0
+    total_chunks: int = len(data) // 64
+    while chunk_idx < total_chunks:
+        offset: int = chunk_idx * 64
+        w: list[int] = []
+        t: int = 0
+        while t < 16:
+            pos: int = offset + t * 4
+            word: int = (data[pos] << 24) | (data[pos + 1] << 16) | (data[pos + 2] << 8) | data[pos + 3]
+            w.append(word & mask32)
+            t = t + 1
+
+        while t < 80:
+            v: int = w[t - 3] ^ w[t - 8] ^ w[t - 14] ^ w[t - 16]
+            w.append(rotl32(v, 1))
+            t = t + 1
+
+        a: int = h0
+        b: int = h1
+        c: int = h2
+        d: int = h3
+        e: int = h4
+
+        round_i: int = 0
+        while round_i < 80:
+            f: int = 0
+            k: int = 0
+            if round_i < 20:
+                f = (b & c) | ((~b) & d)
+                k = 1518500249
+            elif round_i < 40:
+                f = b ^ c ^ d
+                k = 1859775393
+            elif round_i < 60:
+                f = (b & c) | (b & d) | (c & d)
+                k = 2400959708
+            else:
+                f = b ^ c ^ d
+                k = 3395469782
+
+            temp: int = (rotl32(a, 5) + f + e + k + w[round_i]) & mask32
+            e = d
+            d = c
+            c = rotl32(b, 30)
+            b = a
+            a = temp
+            round_i = round_i + 1
+
+        h0 = (h0 + a) & mask32
+        h1 = (h1 + b) & mask32
+        h2 = (h2 + c) & mask32
+        h3 = (h3 + d) & mask32
+        h4 = (h4 + e) & mask32
+        chunk_idx = chunk_idx + 1
+
+    out_bytes: list[int] = []
+    hs: list[int] = [h0, h1, h2, h3, h4]
+    hi: int = 0
+    while hi < 5:
+        hw: int = hs[hi]
+        out_bytes.append((hw >> 24) & 255)
+        out_bytes.append((hw >> 16) & 255)
+        out_bytes.append((hw >> 8) & 255)
+        out_bytes.append(hw & 255)
+        hi = hi + 1
+
+    return out_bytes
+
+B64_CHARS: str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+def base64_encode(bytes_in: list[int]) -> str:
+    res: str = ""
+    i: int = 0
+    n: int = len(bytes_in)
+    while i < n:
+        b0: int = bytes_in[i]
+        b1: int = 0
+        b2: int = 0
+        if i + 1 < n:
+            b1 = bytes_in[i + 1]
+        if i + 2 < n:
+            b2 = bytes_in[i + 2]
+
+        triple: int = (b0 << 16) | (b1 << 8) | b2
+
+        c0: int = (triple >> 18) & 63
+        c1: int = (triple >> 12) & 63
+        c2: int = (triple >> 6) & 63
+        c3: int = triple & 63
+
+        res = res + B64_CHARS[c0]
+        res = res + B64_CHARS[c1]
+
+        if i + 1 < n:
+            res = res + B64_CHARS[c2]
+        else:
+            res = res + "="
+
+        if i + 2 < n:
+            res = res + B64_CHARS[c3]
+        else:
+            res = res + "="
+
+        i = i + 3
+    return res
+
+WS_GUID: str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+def compute_ws_accept_key(client_key: str) -> str:
+    combined: str = client_key + WS_GUID
+    digest: list[int] = sha1_digest_20bytes(combined)
+    return base64_encode(digest)
+
+def is_valid_ws_key_nonce(key: str) -> bool:
+    if len(key) != 24:
+        return False
+    if not nox.strings.ends_with(key, "=="):
+        return False
+    b64_alphabet: str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
+    i: int = 0
+    while i < 24:
+        ch: str = key[i]
+        if not nox.strings.contains(b64_alphabet, ch):
+            return False
+        i = i + 1
+    return True
+
 def mock_ws_client_handshake(target: str = "/ws", key: str = "dGhlIHNhbXBsZSBub25jZQ==", subprotocol: str = "") -> HttpRequest:
     headers: dict[str, str] = {}
     headers["Host"] = "localhost"
@@ -82,11 +243,11 @@ def mock_ws_client_handshake(target: str = "/ws", key: str = "dGhlIHNhbXBsZSBub2
         headers["Sec-WebSocket-Protocol"] = subprotocol
     return HttpRequest("GET", target, "", headers)
 
-def mock_ws_server_handshake(subprotocol: str = "") -> HttpResponse:
+def mock_ws_server_handshake(subprotocol: str = "", client_key: str = "dGhlIHNhbXBsZSBub25jZQ==") -> HttpResponse:
     headers: dict[str, str] = {}
     headers["Upgrade"] = "websocket"
     headers["Connection"] = "Upgrade"
-    headers["Sec-WebSocket-Accept"] = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+    headers["Sec-WebSocket-Accept"] = compute_ws_accept_key(client_key)
     if len(subprotocol) > 0:
         headers["Sec-WebSocket-Protocol"] = subprotocol
     return HttpResponse(101, "", headers)
@@ -110,6 +271,8 @@ def validate_ws_handshake_request(req: HttpRequest, required_subprotocol: str = 
     ws_key: str = get_header_ci(req.headers, "Sec-WebSocket-Key")
     if len(ws_key) == 0:
         return ws_validation_fail(-1, "missing required 'Sec-WebSocket-Key' header")
+    if not is_valid_ws_key_nonce(ws_key):
+        return ws_validation_fail(-1, "invalid 'Sec-WebSocket-Key'; must be a valid 24-character Base64 16-byte nonce ending with '=='")
 
     if len(required_subprotocol) > 0:
         proto_val: str = get_header_ci(req.headers, "Sec-WebSocket-Protocol")
@@ -118,7 +281,7 @@ def validate_ws_handshake_request(req: HttpRequest, required_subprotocol: str = 
 
     return ws_validation_pass()
 
-def validate_ws_handshake_response(res: HttpResponse, expected_subprotocol: str = "") -> WsValidationResult:
+def validate_ws_handshake_response(res: HttpResponse, client_key: str = "", expected_subprotocol: str = "") -> WsValidationResult:
     if res.status != 101:
         return ws_validation_fail(-1, "WebSocket handshake response status must be 101 Switching Protocols; received " + str(res.status))
 
@@ -129,6 +292,15 @@ def validate_ws_handshake_response(res: HttpResponse, expected_subprotocol: str 
     conn_val: str = get_header_ci(res.headers, "Connection")
     if not nox.strings.contains(nox.strings.lower(conn_val), "upgrade"):
         return ws_validation_fail(-1, "missing or invalid response 'Connection: Upgrade' header; received '" + conn_val + "'")
+
+    accept_val: str = get_header_ci(res.headers, "Sec-WebSocket-Accept")
+    if len(accept_val) == 0:
+        return ws_validation_fail(-1, "missing required response 'Sec-WebSocket-Accept' header")
+
+    if len(client_key) > 0:
+        expected_accept: str = compute_ws_accept_key(client_key)
+        if accept_val != expected_accept:
+            return ws_validation_fail(-1, "invalid 'Sec-WebSocket-Accept'; expected '" + expected_accept + "', received '" + accept_val + "'")
 
     if len(expected_subprotocol) > 0:
         proto_val: str = get_header_ci(res.headers, "Sec-WebSocket-Protocol")
