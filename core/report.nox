@@ -120,24 +120,26 @@ class JsonlStreamReporter:
     def __init__(self: JsonlStreamReporter, path: str) -> None:
         self.path = path
         self.events_emitted = 0
-        if nox.strings.contains(path, "/"):
-            parts: list[str] = nox.strings.split(path, "/")
-            if len(parts) > 1 and len(parts[0]) > 0:
-                parent_dir: str = parts[0]
-                if not nox.fs.exists(parent_dir):
-                    nox.fs.create_dir(parent_dir)
-        elif nox.strings.contains(path, "\\"):
-            parts2: list[str] = nox.strings.split(path, "\\")
-            if len(parts2) > 1 and len(parts2[0]) > 0:
-                parent_dir2: str = parts2[0]
-                if not nox.fs.exists(parent_dir2):
-                    nox.fs.create_dir(parent_dir2)
-        if not nox.fs.exists(path):
-            nox.fs.write_string(path, "")
+        if len(path) > 0:
+            if nox.strings.contains(path, "/"):
+                parts: list[str] = nox.strings.split(path, "/")
+                if len(parts) > 1 and len(parts[0]) > 0:
+                    parent_dir: str = parts[0]
+                    if not nox.fs.exists(parent_dir):
+                        nox.fs.create_dir(parent_dir)
+            elif nox.strings.contains(path, "\\"):
+                parts2: list[str] = nox.strings.split(path, "\\")
+                if len(parts2) > 1 and len(parts2[0]) > 0:
+                    parent_dir2: str = parts2[0]
+                    if not nox.fs.exists(parent_dir2):
+                        nox.fs.create_dir(parent_dir2)
+            if not nox.fs.exists(path):
+                nox.fs.write_string(path, "")
 
     def emit(self: JsonlStreamReporter, event_type: str, test_id: str, status: str, duration_ms: int, payload_json: str) -> None:
-        line: str = format_jsonl_event(event_type, test_id, status, duration_ms, payload_json)
-        nox.fs.append_string(self.path, line)
+        if len(self.path) > 0:
+            line: str = format_jsonl_event(event_type, test_id, status, duration_ms, payload_json)
+            nox.fs.append_string(self.path, line)
         self.events_emitted = self.events_emitted + 1
 
     def emit_case_start(self: JsonlStreamReporter, test_id: str, case_name: str) -> None:

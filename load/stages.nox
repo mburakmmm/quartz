@@ -1,0 +1,291 @@
+# Quartz Load — Multi-Stage Ramp Workload Scheduler
+# Implements staged ramp-up, steady plateau, and ramp-down execution models
+# with dynamic virtual user scaling, per-stage latency histograms, and live stage telemetry.
+
+import nox.time
+from nox.time import Instant
+from load.safety import SafetyLimits, CircuitBreaker, default_safety_limits, CircuitBreakerTrippedError
+from load.metrics import LoadMetrics
+from load.thresholds import Threshold, ThresholdResult, evaluate_all_thresholds, all_thresholds_passed
+from load.executor import VirtualUserState, LoadTestSummary
+from core.report import escape_json, JsonlStreamReporter
+
+class LoadStage:
+    target_vus: int
+    duration_s: int
+
+    def __init__(self: LoadStage, target_vus: int, duration_s: int) -> None:
+        self.target_vus = target_vus
+        self.duration_s = duration_s
+
+class StagedWorkloadConfig:
+    name: str
+    stages: list[LoadStage]
+    max_vus: int
+    max_total_requests: int
+    max_requests_per_stage: int
+
+    def __init__(self: StagedWorkloadConfig, name: str, stages: list[LoadStage], max_vus: int = 50, max_total_requests: int = 1000, max_requests_per_stage: int = 100) -> None:
+        self.name = name
+        self.stages = stages
+        self.max_vus = max_vus
+        self.max_total_requests = max_total_requests
+        self.max_requests_per_stage = max_requests_per_stage
+
+    def total_duration_s(self: StagedWorkloadConfig) -> int:
+        total: int = 0
+        i: int = 0
+        while i < len(self.stages):
+            total = total + self.stages[i].duration_s
+            i = i + 1
+        return total
+
+class StageMetrics:
+    stage_index: int
+    start_vus: int
+    target_vus: int
+    duration_ms: int
+    completed: int
+    successful: int
+    failed: int
+    throughput_rps: float
+    p50_latency_ms: int
+    p90_latency_ms: int
+    p95_latency_ms: int
+    p99_latency_ms: int
+    all_passed: bool
+
+    def __init__(self: StageMetrics, stage_index: int, start_vus: int, target_vus: int, duration_ms: int, completed: int, successful: int, failed: int, throughput_rps: float, p50: int, p90: int, p95: int, p99: int, all_passed: bool) -> None:
+        self.stage_index = stage_index
+        self.start_vus = start_vus
+        self.target_vus = target_vus
+        self.duration_ms = duration_ms
+        self.completed = completed
+        self.successful = successful
+        self.failed = failed
+        self.throughput_rps = throughput_rps
+        self.p50_latency_ms = p50
+        self.p90_latency_ms = p90
+        self.p95_latency_ms = p95
+        self.p99_latency_ms = p99
+        self.all_passed = all_passed
+
+    def to_json(self: StageMetrics) -> str:
+        s: str = "{"
+        s = s + "\"stage_index\": " + str(self.stage_index) + ", "
+        s = s + "\"start_vus\": " + str(self.start_vus) + ", "
+        s = s + "\"target_vus\": " + str(self.target_vus) + ", "
+        s = s + "\"duration_ms\": " + str(self.duration_ms) + ", "
+        s = s + "\"completed\": " + str(self.completed) + ", "
+        s = s + "\"successful\": " + str(self.successful) + ", "
+        s = s + "\"failed\": " + str(self.failed) + ", "
+        s = s + "\"throughput_rps\": " + str(self.throughput_rps) + ", "
+        s = s + "\"p50_latency_ms\": " + str(self.p50_latency_ms) + ", "
+        s = s + "\"p90_latency_ms\": " + str(self.p90_latency_ms) + ", "
+        s = s + "\"p95_latency_ms\": " + str(self.p95_latency_ms) + ", "
+        s = s + "\"p99_latency_ms\": " + str(self.p99_latency_ms) + ", "
+        s = s + "\"all_passed\": " + ("true" if self.all_passed else "false")
+        s = s + "}"
+        return s
+
+class StagedLoadSummary:
+    workload_name: str
+    stages: list[StageMetrics]
+    cumulative_summary: LoadTestSummary
+    all_stages_passed: bool
+    total_stages: int
+
+    def __init__(self: StagedLoadSummary, workload_name: str, stages: list[StageMetrics], cumulative_summary: LoadTestSummary, all_stages_passed: bool) -> None:
+        self.workload_name = workload_name
+        self.stages = stages
+        self.cumulative_summary = cumulative_summary
+        self.all_stages_passed = all_stages_passed
+        self.total_stages = len(stages)
+
+    def to_json(self: StagedLoadSummary) -> str:
+        s: str = "{\n"
+        s = s + "  \"schema_version\": \"1\",\n"
+        s = s + "  \"engine\": \"quartz\",\n"
+        s = s + "  \"kind\": \"staged_load_test\",\n"
+        s = s + "  \"workload_name\": \"" + escape_json(self.workload_name) + "\",\n"
+        s = s + "  \"all_stages_passed\": " + ("true" if self.all_stages_passed else "false") + ",\n"
+        s = s + "  \"total_stages\": " + str(self.total_stages) + ",\n"
+        s = s + "  \"stages\": [\n"
+        i: int = 0
+        while i < len(self.stages):
+            s = s + "    " + self.stages[i].to_json()
+            if i + 1 < len(self.stages):
+                s = s + ","
+            s = s + "\n"
+            i = i + 1
+        s = s + "  ],\n"
+        s = s + "  \"cumulative_metrics\": " + self.cumulative_summary.metrics.to_json(self.cumulative_summary.total_duration_ms) + "\n"
+        s = s + "}\n"
+        return s
+
+def run_staged_task_workload_internal(config: StagedWorkloadConfig, task_func: (int) -> bool, thresholds: list[Threshold], limits: SafetyLimits, reporter: JsonlStreamReporter, has_reporter: bool) -> StagedLoadSummary:
+    stage_metrics_list: list[StageMetrics] = []
+    cumulative_metrics: LoadMetrics = LoadMetrics()
+    all_stages_passed: bool = True
+    global_case_idx: int = 0
+    t0_global: Instant = nox.time.instant_now()
+
+    cb: CircuitBreaker = CircuitBreaker(limits.max_consecutive_errors)
+    current_vus: int = 1
+    if len(config.stages) > 0 and config.stages[0].target_vus > 0:
+        current_vus = 1
+
+    stage_idx: int = 0
+    total_stages: int = len(config.stages)
+
+    while stage_idx < total_stages:
+        stg: LoadStage = config.stages[stage_idx]
+        start_vus: int = current_vus
+        target_vus: int = stg.target_vus
+        if target_vus > config.max_vus:
+            target_vus = config.max_vus
+        if target_vus < 1:
+            target_vus = 1
+
+        stage_duration_ms: int = stg.duration_s * 1000
+        t0_stage: Instant = nox.time.instant_now()
+        stage_metrics: LoadMetrics = LoadMetrics()
+
+        if has_reporter:
+            payload_start: str = "{\"start_vus\":" + str(start_vus) + ",\"target_vus\":" + str(target_vus) + ",\"duration_s\":" + str(stg.duration_s) + "}"
+            reporter.emit("stage_start", "stage_" + str(stage_idx), "PASS", 0, payload_start)
+
+        # Allocate virtual users for this stage
+        vu_states: list[VirtualUserState] = []
+        v_i: int = 0
+        while v_i < target_vus:
+            vu_states.append(VirtualUserState(v_i))
+            v_i = v_i + 1
+
+        stage_completed: int = 0
+        stage_successful: int = 0
+        stage_failed: int = 0
+
+        # Execute requests for the duration of this stage
+        while t0_stage.elapsed_ms() < stage_duration_ms:
+            if global_case_idx >= config.max_total_requests:
+                break
+            if stage_completed >= config.max_requests_per_stage:
+                break
+
+            # Dynamic ramp calculation: interpolate current VUs linearly across stage duration
+            elapsed_stage: int = t0_stage.elapsed_ms()
+            active_vus: int = start_vus
+            if stage_duration_ms > 0:
+                delta: int = target_vus - start_vus
+                active_vus = start_vus + int((delta * elapsed_stage) / stage_duration_ms)
+            if active_vus < 1:
+                active_vus = 1
+            if active_vus > len(vu_states):
+                active_vus = len(vu_states)
+
+            # Round-robin distribution across active VUs
+            vu_assigned: int = stage_completed % active_vus
+
+            # Circuit breaker check
+            try:
+                cb.check_healthy()
+            except CircuitBreakerTrippedError as e:
+                all_stages_passed = False
+                break
+
+            task_t0: Instant = nox.time.instant_now()
+            success: bool = False
+            try:
+                success = task_func(global_case_idx)
+            except Exception as e:
+                success = False
+
+            task_duration: int = task_t0.elapsed_ms()
+            is_timeout: bool = (task_duration > limits.timeout_ms)
+
+            status: int = 200
+            if is_timeout:
+                status = 504
+                success = False
+                cb.record_failure("timeout")
+            elif not success:
+                status = 500
+                cb.record_failure("failure")
+            else:
+                cb.record_success()
+
+            # Record into stage metrics and cumulative metrics
+            stage_metrics.record_result(status, task_duration, is_timeout, success)
+            cumulative_metrics.record_result(status, task_duration, is_timeout, success)
+            vu_states[vu_assigned].record(task_duration, success and (not is_timeout))
+
+            stage_completed = stage_completed + 1
+            if success and (not is_timeout):
+                stage_successful = stage_successful + 1
+            else:
+                stage_failed = stage_failed + 1
+
+            global_case_idx = global_case_idx + 1
+
+            # Emit periodic metric ticks
+            if has_reporter and (stage_completed % 10 == 0):
+                reporter.emit_metric_tick("stage_" + str(stage_idx), stage_metrics.completed, stage_metrics.throughput_rps(t0_stage.elapsed_ms()), stage_metrics.p50(), stage_metrics.p95())
+
+        actual_stage_duration: int = t0_stage.elapsed_ms()
+        if actual_stage_duration <= 0:
+            actual_stage_duration = 1
+
+        stage_passed: bool = (stage_failed == 0)
+        if not stage_passed:
+            all_stages_passed = False
+
+        sm: StageMetrics = StageMetrics(
+            stage_idx,
+            start_vus,
+            target_vus,
+            actual_stage_duration,
+            stage_completed,
+            stage_successful,
+            stage_failed,
+            stage_metrics.throughput_rps(actual_stage_duration),
+            stage_metrics.p50(),
+            stage_metrics.p90(),
+            stage_metrics.p95(),
+            stage_metrics.p99(),
+            stage_passed
+        )
+        stage_metrics_list.append(sm)
+
+        if has_reporter:
+            payload_end: str = "{\"completed\":" + str(stage_completed) + ",\"throughput_rps\":" + str(stage_metrics.throughput_rps(actual_stage_duration)) + ",\"p95_ms\":" + str(stage_metrics.p95()) + ",\"passed\":" + ("true" if stage_passed else "false") + "}"
+            reporter.emit("stage_complete", "stage_" + str(stage_idx), ("PASS" if stage_passed else "FAIL"), actual_stage_duration, payload_end)
+
+        # Carry target VUs as starting point for next stage
+        current_vus = target_vus
+        stage_idx = stage_idx + 1
+
+    total_global_duration: int = t0_global.elapsed_ms()
+    thresh_results: list[ThresholdResult] = evaluate_all_thresholds(thresholds, cumulative_metrics, total_global_duration)
+    cumulative_passed: bool = all_stages_passed and all_thresholds_passed(thresh_results)
+
+    cumulative_vu_states: list[VirtualUserState] = [VirtualUserState(0)]
+    cum_summary: LoadTestSummary = LoadTestSummary(
+        config.name,
+        cumulative_metrics,
+        thresh_results,
+        total_global_duration,
+        cumulative_passed,
+        (not cumulative_passed),
+        ("" if cumulative_passed else "threshold or circuit breaker tripped during staged run"),
+        cumulative_vu_states
+    )
+
+    return StagedLoadSummary(config.name, stage_metrics_list, cum_summary, cumulative_passed)
+
+def run_staged_task_workload(config: StagedWorkloadConfig, task_func: (int) -> bool, thresholds: list[Threshold], limits: SafetyLimits) -> StagedLoadSummary:
+    dummy_reporter: JsonlStreamReporter = JsonlStreamReporter("")
+    return run_staged_task_workload_internal(config, task_func, thresholds, limits, dummy_reporter, False)
+
+def run_staged_task_workload_streaming(config: StagedWorkloadConfig, task_func: (int) -> bool, thresholds: list[Threshold], limits: SafetyLimits, reporter: JsonlStreamReporter) -> StagedLoadSummary:
+    return run_staged_task_workload_internal(config, task_func, thresholds, limits, reporter, True)

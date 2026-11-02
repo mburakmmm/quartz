@@ -457,5 +457,48 @@ Published as the `quartz` binary via `nox.json` and runnable via `noxc run cli/m
   - `.to_summary() -> RunSummary`: Converts suite results into standard `RunSummary` for unified JUnit XML, summary JSON, and HTML report export.
   - `.to_json() -> str`: Serializes comprehensive suite statistics and counterexample details to JSON.
 
+---
+
+## 29. Multi-Stage Ramp Workload Scheduler (`load/stages.nox`)
+
+- `LoadStage(target_vus: int, duration_s: int)`: Defines a workload phase with target concurrency and duration.
+- `StagedWorkloadConfig(name: str, stages: list[LoadStage], max_vus: int = 50, max_total_requests: int = 1000, max_requests_per_stage: int = 100)`: Workload configuration with multiple sequential stages.
+  - `.total_duration_s() -> int`: Returns cumulative planned duration across all stages.
+- `StageMetrics`: Detailed performance and percentile record for an individual stage.
+  - `stage_index: int`, `start_vus: int`, `target_vus: int`, `duration_ms: int`, `completed: int`, `successful: int`, `failed: int`
+  - `throughput_rps: float`, `p50_latency_ms: int`, `p90_latency_ms: int`, `p95_latency_ms: int`, `p99_latency_ms: int`
+  - `all_passed: bool`
+  - `.to_json() -> str`: Serializes stage metrics to a JSON object.
+- `StagedLoadSummary`: Cumulative and per-stage load testing summary.
+  - `workload_name: str`, `stages: list[StageMetrics]`, `cumulative_summary: LoadTestSummary`, `all_stages_passed: bool`, `total_stages: int`
+  - `.to_json() -> str`: Serializes staged workload results and percentiles to JSON.
+- `run_staged_task_workload(config: StagedWorkloadConfig, task_func: (int) -> bool, thresholds: list[Threshold], limits: SafetyLimits) -> StagedLoadSummary`: Executes staged workload with dynamic VU scaling and per-stage metrics.
+- `run_staged_task_workload_streaming(config: StagedWorkloadConfig, task_func: (int) -> bool, thresholds: list[Threshold], limits: SafetyLimits, reporter: JsonlStreamReporter) -> StagedLoadSummary`: Executes staged workload with live JSONL telemetry events (`stage_start`, `stage_complete`).
+
+---
+
+## 30. Composable Generator Combinators (`property/combinators.nox`)
+
+- `OneOfIntGen(choices: list[int])`: Generates integers uniformly from a fixed collection.
+  - `.generate(prng: Prng) -> int`
+  - `.shrink(val: int) -> list[int]`
+- `OneOfStringGen(choices: list[str])`: Generates strings uniformly from a fixed collection.
+  - `.generate(prng: Prng) -> str`
+  - `.shrink(val: str) -> list[str]`
+- `WeightedIntOption(weight: int, value: int)`: Pair representing integer option with relative probability weight.
+- `WeightedChoiceIntGen(options: list[WeightedIntOption])`: Generates integers following a weighted distribution.
+  - `.generate(prng: Prng) -> int`
+- `WeightedStringOption(weight: int, value: str)`: Pair representing string option with relative probability weight.
+- `WeightedChoiceStringGen(options: list[WeightedStringOption])`: Generates strings following a weighted distribution.
+  - `.generate(prng: Prng) -> str`
+- `FilteredIntGen(base_gen: IntGen, predicate: (int) -> bool, max_discards: int = 100)`: Generates filtered values matching a predicate with a bounded discard budget.
+  - `.generate(prng: Prng) -> int`: Raises `AssertionError` if discard budget is exhausted.
+  - `.shrink_candidates(val: int) -> list[int]`: Shrinks values while strictly preserving the predicate invariant.
+- `MappedIntGen(base_gen: IntGen, transform: (int) -> int)`: Transforms generated integers with a deterministic mapping function.
+  - `.generate(prng: Prng) -> int`
+- `IntPair(first: int, second: int)`
+- `PairIntGen(gen_a: IntGen, gen_b: IntGen)`: Generates correlated integer pairs for multi-variable property invariants.
+  - `.generate(prng: Prng) -> IntPair`
+
 
 

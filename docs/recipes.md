@@ -340,3 +340,69 @@ html_content: str = format_html_test_report("Core API Suite", summary, "run-2026
 write_html_report("artifacts/test_report.html", html_content)
 ```
 
+---
+
+## 11. Multi-Stage Ramp Workload Testing
+
+Execute dynamic staged load profiles with ramp-up, steady plateau, and ramp-down phases, collecting per-stage latency histograms and transition telemetry.
+
+```nox
+from load.stages import LoadStage, StagedWorkloadConfig, StagedLoadSummary, run_staged_task_workload
+from load.safety import SafetyLimits, default_safety_limits
+from load.thresholds import Threshold
+
+stages: list[LoadStage] = [
+    LoadStage(5, 2),    # Ramp up to 5 VUs over 2s
+    LoadStage(20, 5),   # Ramp up to 20 VUs over 5s (plateau)
+    LoadStage(0, 2)     # Ramp down to 0 VUs over 2s
+]
+cfg: StagedWorkloadConfig = StagedWorkloadConfig("api_ramp_profile", stages, 50, 1000)
+thresholds: list[Threshold] = [
+    Threshold("error_rate", "<=", 0.01),
+    Threshold("p95_latency", "<=", 150.0)
+]
+safety: SafetyLimits = default_safety_limits()
+
+def task(idx: int) -> bool:
+    # Execute request / handler
+    return True
+
+summary: StagedLoadSummary = run_staged_task_workload(cfg, task, thresholds, safety)
+assert summary.all_stages_passed
+```
+
+---
+
+## 12. Property Generator Combinators & Weighted Distributions
+
+Synthesize rich domain test data using one_of choices, weighted probability distributions, and invariant-preserving filtered generators.
+
+```nox
+from core.prng import Prng
+from property.generator import IntGen
+from property.combinators import (
+    OneOfIntGen, OneOfStringGen,
+    WeightedStringOption, WeightedChoiceStringGen,
+    FilteredIntGen, MappedIntGen
+)
+
+prng: Prng = Prng(42)
+
+# 1. Weighted choice generator (e.g., 80% GET, 15% POST, 5% DELETE)
+methods: list[WeightedStringOption] = [
+    WeightedStringOption(80, "GET"),
+    WeightedStringOption(15, "POST"),
+    WeightedStringOption(5, "DELETE")
+]
+gen_method: WeightedChoiceStringGen = WeightedChoiceStringGen(methods)
+req_method: str = gen_method.generate(prng)
+
+# 2. Filtered generator with discard budget
+def is_even(n: int) -> bool:
+    return (n % 2 == 0)
+
+even_gen: FilteredIntGen = FilteredIntGen(IntGen(1, 100, False), is_even)
+val: int = even_gen.generate(prng)
+assert (val % 2 == 0)
+```
+

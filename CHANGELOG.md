@@ -3,6 +3,27 @@
 All notable changes to the Quartz test framework will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.5] - 2026-11-02 - Phase 11: Multi-Stage Ramp Workload Scheduler & Composable Property Generators
+
+### Added
+- **Multi-Stage Ramp Workload Scheduler (`load/stages.nox`)**:
+  - Implemented k6-style staged load profiles with `LoadStage(target_vus, duration_s)` and `StagedWorkloadConfig`.
+  - Dynamic virtual user scaling: linear interpolation between stages (ramp-up, steady plateau, ramp-down) with round-robin request dispatching.
+  - Per-stage latency metrics and percentiles (`StageMetrics`), cumulative summary (`StagedLoadSummary`), and JSON report serialization.
+  - Real-time streaming JSONL telemetry: automatic emission of `stage_start`, `stage_transition`, and `stage_complete` events with timestamps.
+- **Composable Property Generator Combinators (`property/combinators.nox`)**:
+  - Implemented `OneOfIntGen` and `OneOfStringGen` for uniform selection among discrete sets with deterministic shrinking.
+  - Implemented `WeightedChoiceIntGen` and `WeightedChoiceStringGen` with `WeightedIntOption` and `WeightedStringOption` for skewed probabilistic distributions.
+  - Implemented `FilteredIntGen` with predicate validation, bounded discard budget (`max_discards`), and invariant-preserving shrink candidates.
+  - Implemented `MappedIntGen` for pure transformations and `PairIntGen` for multi-variable property verification.
+- **Dedicated Test Suites (`tests/stage_workload_test.nox`, `tests/generator_combinator_test.nox`)**:
+  - 2 new test suites covering staged workload ramps, threshold breaches, telemetry streams, weighted distributions, and generator discard budgets.
+  - Total test suites increased from 18 to **20/20 passing cleanly** with zero failures.
+- **Documentation & Recipes (`docs/recipes.md`, `docs/api.md`, `docs/architecture.md`)**:
+  - Added Recipe 11 (Multi-Stage Ramp Workload Testing) and Recipe 12 (Property Generator Combinators) with automated verification in `tests/doc_examples_test.nox`.
+  - Added Sections 29 & 30 in `docs/api.md`.
+  - Added ADR-015 in `docs/architecture.md`.
+
 ## [0.9.4] - 2026-11-02 - Bugfix Release: WHATWG SSE Compliance, Live Telemetry & CLI Exit Codes
 
 ### Fixed

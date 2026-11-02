@@ -1,0 +1,162 @@
+# Quartz Property — Generator Combinators Test Suite
+# Tests OneOf, WeightedChoice, Filtered with discard budget, Mapped, and Pair generators.
+
+from core.prng import Prng
+from core.assert import assert_eq_int, assert_eq_str, assert_true, assert_false
+from property.generator import IntGen
+from property.combinators import OneOfIntGen, OneOfStringGen, WeightedIntOption, WeightedChoiceIntGen
+from property.combinators import WeightedStringOption, WeightedChoiceStringGen, FilteredIntGen, MappedIntGen, IntPair, PairIntGen
+from nox.test import AssertionError
+
+def test_one_of_generators() -> None:
+    prng: Prng = Prng(12345)
+    int_choices: list[int] = [10, 20, 30, 40, 50]
+    gen_int: OneOfIntGen = OneOfIntGen(int_choices)
+
+    i: int = 0
+    seen_10: bool = False
+    seen_50: bool = False
+    while i < 100:
+        val: int = gen_int.generate(prng)
+        assert_true(val == 10 or val == 20 or val == 30 or val == 40 or val == 50, "val is in choices")
+        if val == 10:
+            seen_10 = True
+        if val == 50:
+            seen_50 = True
+        i = i + 1
+
+    assert_true(seen_10, "saw choice 10")
+    assert_true(seen_50, "saw choice 50")
+
+    # Shrinking
+    shrunk: list[int] = gen_int.shrink(50)
+    assert_true(len(shrunk) > 0, "one_of shrunk yields candidate")
+    assert_eq_int(shrunk[0], 10, "shrunk to first available alternative")
+
+    # OneOfStringGen
+    str_choices: list[str] = ["GET", "POST", "DELETE"]
+    gen_str: OneOfStringGen = OneOfStringGen(str_choices)
+    j: int = 0
+    while j < 50:
+        method: str = gen_str.generate(prng)
+        assert_true(method == "GET" or method == "POST" or method == "DELETE", "method in choices")
+        j = j + 1
+
+    str_shrunk: list[str] = gen_str.shrink("DELETE")
+    assert_true(len(str_shrunk) > 0, "string shrunk yields candidate")
+    assert_eq_str(str_shrunk[0], "GET", "shrunk to first method")
+
+def test_weighted_choice_generators() -> None:
+    prng: Prng = Prng(99999)
+    # 80% GET, 20% POST
+    options: list[WeightedStringOption] = [
+        WeightedStringOption(80, "GET"),
+        WeightedStringOption(20, "POST")
+    ]
+    gen_w: WeightedChoiceStringGen = WeightedChoiceStringGen(options)
+
+    get_count: int = 0
+    post_count: int = 0
+    i: int = 0
+    while i < 500:
+        m: str = gen_w.generate(prng)
+        if m == "GET":
+            get_count = get_count + 1
+        elif m == "POST":
+            post_count = post_count + 1
+        i = i + 1
+
+    assert_eq_int(get_count + post_count, 500, "all 500 accounted for")
+    # 80% expectation with statistical margin
+    assert_true(get_count >= 320 and get_count <= 480, "GET ratio roughly 80%")
+    assert_true(post_count >= 40 and post_count <= 180, "POST ratio roughly 20%")
+
+    # WeightedChoiceIntGen
+    int_options: list[WeightedIntOption] = [
+        WeightedIntOption(10, 1),
+        WeightedIntOption(90, 2)
+    ]
+    gen_w_int: WeightedChoiceIntGen = WeightedChoiceIntGen(int_options)
+    c1: int = 0
+    c2: int = 0
+    k: int = 0
+    while k < 500:
+        v: int = gen_w_int.generate(prng)
+        if v == 1:
+            c1 = c1 + 1
+        elif v == 2:
+            c2 = c2 + 1
+        k = k + 1
+
+    assert_true(c2 >= 380, "option 2 selected ~90% of the time")
+
+def test_filtered_int_gen() -> None:
+    prng: Prng = Prng(4242)
+    base: IntGen = IntGen(1, 100, False)
+
+    def is_even(n: int) -> bool:
+        return (n % 2 == 0)
+
+    filtered: FilteredIntGen = FilteredIntGen(base, is_even, 50)
+    i: int = 0
+    while i < 100:
+        num: int = filtered.generate(prng)
+        assert_true(num >= 2 and num <= 100, "num in range")
+        assert_true(num % 2 == 0, "num is strictly even")
+        i = i + 1
+
+    # Invariant-preserving shrink candidates
+    candidates: list[int] = filtered.shrink_candidates(88)
+    assert_true(len(candidates) > 0, "shrink candidates generated")
+    c_i: int = 0
+    while c_i < len(candidates):
+        assert_true(candidates[c_i] % 2 == 0, "all candidates preserve even invariant")
+        c_i = c_i + 1
+
+def test_filtered_int_gen_exhaustion() -> None:
+    prng: Prng = Prng(777)
+    base: IntGen = IntGen(1, 10, False)
+
+    # Impossible predicate
+    def impossible(n: int) -> bool:
+        return (n > 500)
+
+    filtered: FilteredIntGen = FilteredIntGen(base, impossible, 25)
+    exhausted: bool = False
+    try:
+        filtered.generate(prng)
+    except AssertionError as e:
+        exhausted = True
+
+    assert_true(exhausted, "exceeded max_discards raises AssertionError")
+
+def test_mapped_and_pair_gens() -> None:
+    prng: Prng = Prng(55555)
+    base: IntGen = IntGen(1, 10, False)
+
+    def multiply_ten(n: int) -> int:
+        return n * 10
+
+    mapped: MappedIntGen = MappedIntGen(base, multiply_ten)
+    i: int = 0
+    while i < 50:
+        val: int = mapped.generate(prng)
+        assert_true(val >= 10 and val <= 100, "mapped in range")
+        assert_true(val % 10 == 0, "mapped is multiple of 10")
+        i = i + 1
+
+    # PairIntGen
+    gen_a: IntGen = IntGen(1, 5, False)
+    gen_b: IntGen = IntGen(50, 100, False)
+    pair_gen: PairIntGen = PairIntGen(gen_a, gen_b)
+
+    p: IntPair = pair_gen.generate(prng)
+    assert_true(p.first >= 1 and p.first <= 5, "pair first in range")
+    assert_true(p.second >= 50 and p.second <= 100, "pair second in range")
+
+test_one_of_generators()
+test_weighted_choice_generators()
+test_filtered_int_gen()
+test_filtered_int_gen_exhaustion()
+test_mapped_and_pair_gens()
+print("quartz generator combinator test: ALL PASS")

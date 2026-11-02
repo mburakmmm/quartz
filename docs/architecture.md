@@ -130,3 +130,9 @@ Quartz is designed as a standalone, zero-dependency testing framework for the NO
 - **Context:** CI systems and developers need rich visual reports (percentile latency curves, distribution charts) without depending on external JavaScript libraries, CDNs, or rendering engines.
 - **Decision:** Implement `core/report_html.nox` with zero third-party dependencies, generating clean HTML5 documents with embedded inline SVG vector graphics (`<polyline>`, `<svg width="100%" height="220">`, `<circle>`). Reports open offline in any browser and format properly across light and dark modes.
 
+### ADR-015: Multi-Stage Ramp Workload Scheduling & Composable Generators
+- **Context:** Real-world traffic does not jump instantaneously to maximum concurrency; production systems experience traffic ramp-up, steady plateau, and ramp-down. Furthermore, property testing requires skewed probabilistic input distributions (e.g., 80% GET vs 20% POST).
+- **Decision:**
+  1. Implement `load/stages.nox` with `StagedWorkloadConfig` and `LoadStage(target_vus, duration_s)`. Dynamically interpolate active virtual user count across each stage duration while maintaining O(1) memory metrics and streaming JSONL telemetry (`stage_start`, `stage_complete`).
+  2. Implement `property/combinators.nox` providing `OneOfIntGen`, `OneOfStringGen`, `WeightedChoiceIntGen`, `WeightedChoiceStringGen`, and `FilteredIntGen` with bounded discard budgets and invariant-preserving shrink candidates.
+

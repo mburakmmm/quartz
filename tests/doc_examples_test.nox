@@ -25,6 +25,9 @@ from contract.websocket import validate_ws_handshake_request, validate_ws_handsh
 from core.types import RunSummary, TestResult, STATUS_PASS
 from core.report_html import format_html_test_report, format_html_load_report
 from property.suite import PropertySuite
+from property.combinators import OneOfIntGen, WeightedStringOption, WeightedChoiceStringGen, FilteredIntGen
+from core.prng import Prng
+from load.stages import LoadStage, StagedWorkloadConfig, StagedLoadSummary, run_staged_task_workload
 from load.workload import closed_workload, WorkloadConfig
 from load.thresholds import Threshold
 from load.safety import default_safety_limits, SafetyLimits
@@ -224,6 +227,40 @@ def test_recipe_10_html_reports() -> None:
     html_out: str = format_html_test_report("Recipe 10 Summary", summary, "run-rec10", "noxc", "llvm")
     assert_true(len(html_out) > 100, "recipe 10 html report formatted")
 
+def test_recipe_11_staged_workloads() -> None:
+    stages: list[LoadStage] = [
+        LoadStage(2, 1),
+        LoadStage(4, 1),
+        LoadStage(1, 1)
+    ]
+    cfg: StagedWorkloadConfig = StagedWorkloadConfig("recipe_11_stages", stages, 10, 50, 10)
+    safety: SafetyLimits = default_safety_limits()
+    thresholds: list[Threshold] = [Threshold("error_rate", "<=", 0.0)]
+
+    def sample_task(idx: int) -> bool:
+        return True
+
+    summary: StagedLoadSummary = run_staged_task_workload(cfg, sample_task, thresholds, safety)
+    assert_true(summary.all_stages_passed, "recipe 11 staged workload passes")
+    assert_eq_int(summary.total_stages, 3, "recipe 11 stage count")
+
+def test_recipe_12_generator_combinators() -> None:
+    prng: Prng = Prng(42)
+    options: list[WeightedStringOption] = [
+        WeightedStringOption(75, "GET"),
+        WeightedStringOption(25, "POST")
+    ]
+    gen_w: WeightedChoiceStringGen = WeightedChoiceStringGen(options)
+    val: str = gen_w.generate(prng)
+    assert_true(val == "GET" or val == "POST", "recipe 12 weighted string choice")
+
+    def is_even(n: int) -> bool:
+        return (n % 2 == 0)
+
+    even_gen: FilteredIntGen = FilteredIntGen(IntGen(1, 100, False), is_even)
+    even_val: int = even_gen.generate(prng)
+    assert_true(even_val % 2 == 0, "recipe 12 filtered even generator")
+
 def run_all_doc_examples_tests() -> None:
     test_recipe_1_unit_and_fixtures()
     test_recipe_2_property_and_shrinking()
@@ -235,6 +272,8 @@ def run_all_doc_examples_tests() -> None:
     test_recipe_8_jsonl_live_logging()
     test_recipe_9_websocket_contract()
     test_recipe_10_html_reports()
+    test_recipe_11_staged_workloads()
+    test_recipe_12_generator_combinators()
     print("quartz doc examples test: ALL PASS")
 
 run_all_doc_examples_tests()

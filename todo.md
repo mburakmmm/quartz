@@ -538,6 +538,39 @@
 
 ---
 
+## Phase 11: v0.9.5 — Multi-Stage Ramp Workloads & Composable Property Generators
+*Objective: Build k6-style dynamic staged load scheduler with ramp-up/plateau/ramp-down profiles, per-stage latency percentiles, and composable property generator combinators.*
+
+- [x] **11.1 Multi-Stage Ramp Workload Scheduler (`load/stages.nox`)**
+  - [x] Model `LoadStage(target_vus, duration_s)` and `StagedWorkloadConfig(name, stages, max_vus, max_total_requests, max_requests_per_stage)`.
+  - [x] Dynamic virtual user interpolation: smooth linear transitions across stage duration.
+  - [x] Per-stage performance tracking (`StageMetrics`): throughput, p50, p90, p95, p99, and completion status.
+  - [x] Cumulative execution summary (`StagedLoadSummary`) with complete JSON serialization.
+  - [x] Real-time streaming JSONL telemetry (`stage_start`, `stage_complete`).
+- [x] **11.2 Composable Property Generator Combinators (`property/combinators.nox`)**
+  - [x] Implement `OneOfIntGen` and `OneOfStringGen` with deterministic choice and shrinking.
+  - [x] Implement `WeightedChoiceIntGen` and `WeightedChoiceStringGen` with `WeightedIntOption` and `WeightedStringOption` for skewed probabilistic distributions.
+  - [x] Implement `FilteredIntGen` with predicate validation, bounded discard budget (`max_discards`), and invariant-preserving shrink candidate generation.
+  - [x] Implement `MappedIntGen` for deterministic value transformations.
+  - [x] Implement `PairIntGen` for multi-variable property invariant evaluation.
+- [x] **11.3 Dedicated Test Suites (`tests/stage_workload_test.nox`, `tests/generator_combinator_test.nox`)**
+  - [x] Write `tests/stage_workload_test.nox` testing 3-stage ramp execution, streaming events, and threshold failure handling.
+  - [x] Write `tests/generator_combinator_test.nox` testing OneOf distributions, weighted ratios, filtered predicates, discard exhaustion, and mapped pairs.
+  - [x] Update `tests/doc_examples_test.nox` with Recipes 11 and 12 (all 12 recipes passing).
+  - [x] Run full project test matrix: **20/20 test suites passing cleanly**.
+- [x] **11.4 Documentation Updates (`docs/recipes.md`, `docs/api.md`, `docs/architecture.md`)**
+  - [x] Add Recipe 11 (Multi-Stage Ramp Workload Testing) and Recipe 12 (Property Generator Combinators).
+  - [x] Add Sections 29 & 30 in `docs/api.md`.
+  - [x] Add ADR-015 in `docs/architecture.md`.
+- [x] **11.5 Release Packaging & Verification (v0.9.5)**
+  - [x] Update facade `quartz.nox` to version `0.9.5`.
+  - [x] Update `CHANGELOG.md` with complete Phase 11 release notes.
+  - [x] Tag `v0.9.5`, push to GitHub, and publish to NOX package registry.
+
+*Phase 11 Exit Gate:* PASSED. Multi-stage ramp load testing and composable generators verified; 20/20 test suites passing cleanly; published as v0.9.5.
+
+---
+
 ## Execution Log & Audit Trail
 
 | Date | Phase | Task | Action / Command | Result / Evidence | Status |
@@ -603,3 +636,5 @@
 | 2026-11-02 | Phase 10 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 18/18 tests pass, recipes 9 & 10 verified, published v0.9.3 | [x] DONE |
 | 2026-11-02 | Phase 10.2 | Bugfixes & Hardening | `contract/`, `core/`, `load/`, `cli/` | WHATWG SSE compliance, live JSONL timestamps/ticks, CLI exit codes | [x] DONE |
 | 2026-11-02 | Phase 10.2 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 18/18 tests pass, tagged `v0.9.4`, published | [x] DONE |
+| 2026-11-02 | Phase 11 | Staged Workload & Combinators | `load/stages.nox`, `property/combinators.nox` | Dynamic ramp stages, OneOf/Weighted/Filtered generators | [x] DONE |
+| 2026-11-02 | Phase 11 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 20/20 tests pass, recipes 11 & 12 pass, tagged `v0.9.5`, published | [x] DONE |

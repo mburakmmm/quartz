@@ -1,0 +1,116 @@
+# Quartz Load — Multi-Stage Workload Test Suite
+# Tests ramp-up, plateau, ramp-down stages, dynamic VU scaling, and streaming telemetry.
+
+import nox.time
+import nox.fs
+import nox.strings
+import nox.json
+from nox.json import JsonValue
+from core.assert import assert_eq_int, assert_eq_str, assert_true, assert_false
+from core.report import JsonlStreamReporter
+from load.safety import SafetyLimits, default_safety_limits
+from load.thresholds import Threshold
+from load.stages import LoadStage, StagedWorkloadConfig, StageMetrics, StagedLoadSummary
+from load.stages import run_staged_task_workload, run_staged_task_workload_streaming
+
+def test_staged_workload_ramp_execution() -> None:
+    stages: list[LoadStage] = [
+        LoadStage(2, 1),
+        LoadStage(4, 1),
+        LoadStage(1, 1)
+    ]
+    cfg: StagedWorkloadConfig = StagedWorkloadConfig("three_stage_ramp", stages, 10, 100, 20)
+    assert_eq_int(cfg.total_duration_s(), 3, "total staged duration is 3s")
+
+    def sample_task(idx: int) -> bool:
+        return True
+
+    safety: SafetyLimits = default_safety_limits()
+    thresholds: list[Threshold] = [
+        Threshold("error_rate", "<=", 0.0)
+    ]
+
+    summary: StagedLoadSummary = run_staged_task_workload(cfg, sample_task, thresholds, safety)
+    assert_true(summary.all_stages_passed, "all 3 stages passed cleanly")
+    assert_eq_int(summary.total_stages, 3, "total stages recorded")
+    assert_eq_int(len(summary.stages), 3, "3 stage metrics recorded")
+
+    # Stage 0: Ramp to 2 VUs
+    s0: StageMetrics = summary.stages[0]
+    assert_eq_int(s0.stage_index, 0, "stage 0 index")
+    assert_eq_int(s0.target_vus, 2, "stage 0 target VUs")
+    assert_true(s0.completed > 0, "stage 0 completed requests")
+    assert_true(s0.all_passed, "stage 0 passed")
+
+    # Stage 1: Ramp to 4 VUs
+    s1: StageMetrics = summary.stages[1]
+    assert_eq_int(s1.stage_index, 1, "stage 1 index")
+    assert_eq_int(s1.target_vus, 4, "stage 1 target VUs")
+    assert_true(s1.completed > 0, "stage 1 completed requests")
+
+    # Stage 2: Ramp down to 1 VU
+    s2: StageMetrics = summary.stages[2]
+    assert_eq_int(s2.stage_index, 2, "stage 2 index")
+    assert_eq_int(s2.target_vus, 1, "stage 2 target VUs")
+    assert_true(s2.completed > 0, "stage 2 completed requests")
+
+    # Verify cumulative summary & JSON serialization
+    assert_true(summary.cumulative_summary.all_passed, "cumulative load passed")
+    json_repr: str = summary.to_json()
+    assert_true(nox.strings.contains(json_repr, "\"kind\": \"staged_load_test\""), "json kind is staged_load_test")
+    assert_true(nox.strings.contains(json_repr, "\"three_stage_ramp\""), "json contains workload name")
+    assert_true(nox.strings.contains(json_repr, "\"stages\":"), "json contains stages array")
+
+def test_staged_workload_streaming_telemetry() -> None:
+    test_path: str = "artifacts/probe_stages_stream.jsonl"
+    if nox.fs.exists(test_path):
+        nox.fs.remove_file(test_path)
+
+    reporter: JsonlStreamReporter = JsonlStreamReporter(test_path)
+    stages: list[LoadStage] = [
+        LoadStage(2, 1),
+        LoadStage(1, 1)
+    ]
+    cfg: StagedWorkloadConfig = StagedWorkloadConfig("stream_stages", stages, 5, 50)
+    safety: SafetyLimits = default_safety_limits()
+    thresholds: list[Threshold] = []
+
+    def mock_task(idx: int) -> bool:
+        return True
+
+    summary: StagedLoadSummary = run_staged_task_workload_streaming(cfg, mock_task, thresholds, safety, reporter)
+    assert_true(summary.all_stages_passed, "streaming stages passed")
+    assert_true(reporter.events_emitted >= 4, "emitted stage_start and stage_complete for both stages")
+
+    # Verify file content
+    content: str = nox.fs.read_to_string(test_path)
+    assert_true(nox.strings.contains(content, "\"type\":\"stage_start\""), "file contains stage_start event")
+    assert_true(nox.strings.contains(content, "\"type\":\"stage_complete\""), "file contains stage_complete event")
+    assert_true(nox.strings.contains(content, "\"timestamp_ms\":"), "events have wall-clock timestamps")
+
+    if nox.fs.exists(test_path):
+        nox.fs.remove_file(test_path)
+
+def test_staged_workload_threshold_failure() -> None:
+    stages: list[LoadStage] = [
+        LoadStage(2, 1)
+    ]
+    cfg: StagedWorkloadConfig = StagedWorkloadConfig("failing_staged_run", stages, 5, 20)
+    safety: SafetyLimits = default_safety_limits()
+    thresholds: list[Threshold] = [
+        Threshold("error_rate", "<=", 0.0)
+    ]
+
+    # Deliberate failure on even case indexes
+    def failing_task(idx: int) -> bool:
+        return (idx % 2 == 1)
+
+    summary: StagedLoadSummary = run_staged_task_workload(cfg, failing_task, thresholds, safety)
+    assert_false(summary.all_stages_passed, "staged run failed due to task failures")
+    assert_false(summary.cumulative_summary.all_passed, "cumulative summary flagged as failed")
+    assert_true(summary.stages[0].failed > 0, "stage 0 recorded failures")
+
+test_staged_workload_ramp_execution()
+test_staged_workload_streaming_telemetry()
+test_staged_workload_threshold_failure()
+print("quartz stage workload test: ALL PASS")

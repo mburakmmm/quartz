@@ -1,0 +1,196 @@
+# Quartz Property — Composable Generator Combinators
+# Implements one_of, weighted frequency distributions, filtered generation with discard budgets,
+# and deterministic mapping combinators for rich domain model synthesis.
+
+from core.prng import Prng
+from property.generator import IntGen
+from property.shrink import shrink_int
+from nox.test import AssertionError
+
+class OneOfIntGen:
+    choices: list[int]
+
+    def __init__(self: OneOfIntGen, choices: list[int]) -> None:
+        if len(choices) == 0:
+            raise AssertionError("OneOfIntGen requires at least one choice")
+        self.choices = choices
+
+    def generate(self: OneOfIntGen, prng: Prng) -> int:
+        idx: int = prng.choose_index(len(self.choices))
+        return self.choices[idx]
+
+    def shrink(self: OneOfIntGen, val: int) -> list[int]:
+        res: list[int] = []
+        i: int = 0
+        while i < len(self.choices):
+            c: int = self.choices[i]
+            if c != val:
+                res.append(c)
+                break
+            i = i + 1
+        return res
+
+class OneOfStringGen:
+    choices: list[str]
+
+    def __init__(self: OneOfStringGen, choices: list[str]) -> None:
+        if len(choices) == 0:
+            raise AssertionError("OneOfStringGen requires at least one choice")
+        self.choices = choices
+
+    def generate(self: OneOfStringGen, prng: Prng) -> str:
+        idx: int = prng.choose_index(len(self.choices))
+        return self.choices[idx]
+
+    def shrink(self: OneOfStringGen, val: str) -> list[str]:
+        res: list[str] = []
+        i: int = 0
+        while i < len(self.choices):
+            c: str = self.choices[i]
+            if c != val:
+                res.append(c)
+                break
+            i = i + 1
+        return res
+
+class WeightedIntOption:
+    weight: int
+    value: int
+
+    def __init__(self: WeightedIntOption, weight: int, value: int) -> None:
+        if weight <= 0:
+            raise AssertionError("WeightedIntOption requires weight > 0")
+        self.weight = weight
+        self.value = value
+
+class WeightedChoiceIntGen:
+    options: list[WeightedIntOption]
+    total_weight: int
+
+    def __init__(self: WeightedChoiceIntGen, options: list[WeightedIntOption]) -> None:
+        if len(options) == 0:
+            raise AssertionError("WeightedChoiceIntGen requires at least one option")
+        self.options = options
+        tot: int = 0
+        i: int = 0
+        while i < len(options):
+            tot = tot + options[i].weight
+            i = i + 1
+        self.total_weight = tot
+
+    def generate(self: WeightedChoiceIntGen, prng: Prng) -> int:
+        pick: int = prng.next_int_range(0, self.total_weight - 1)
+        accum: int = 0
+        i: int = 0
+        while i < len(self.options):
+            accum = accum + self.options[i].weight
+            if pick < accum:
+                return self.options[i].value
+            i = i + 1
+        return self.options[0].value
+
+class WeightedStringOption:
+    weight: int
+    value: str
+
+    def __init__(self: WeightedStringOption, weight: int, value: str) -> None:
+        if weight <= 0:
+            raise AssertionError("WeightedStringOption requires weight > 0")
+        self.weight = weight
+        self.value = value
+
+class WeightedChoiceStringGen:
+    options: list[WeightedStringOption]
+    total_weight: int
+
+    def __init__(self: WeightedChoiceStringGen, options: list[WeightedStringOption]) -> None:
+        if len(options) == 0:
+            raise AssertionError("WeightedChoiceStringGen requires at least one option")
+        self.options = options
+        tot: int = 0
+        i: int = 0
+        while i < len(options):
+            tot = tot + options[i].weight
+            i = i + 1
+        self.total_weight = tot
+
+    def generate(self: WeightedChoiceStringGen, prng: Prng) -> str:
+        pick: int = prng.next_int_range(0, self.total_weight - 1)
+        accum: int = 0
+        i: int = 0
+        while i < len(self.options):
+            accum = accum + self.options[i].weight
+            if pick < accum:
+                return self.options[i].value
+            i = i + 1
+        return self.options[0].value
+
+class FilteredIntGen:
+    base_gen: IntGen
+    predicate: (int) -> bool
+    max_discards: int
+    total_discards: int
+
+    def __init__(self: FilteredIntGen, base_gen: IntGen, predicate: (int) -> bool, max_discards: int = 100) -> None:
+        self.base_gen = base_gen
+        self.predicate = predicate
+        self.max_discards = max_discards
+        self.total_discards = 0
+
+    def generate(self: FilteredIntGen, prng: Prng) -> int:
+        discards_in_attempt: int = 0
+        while discards_in_attempt < self.max_discards:
+            cand: int = self.base_gen.generate(prng)
+            if self.predicate(cand):
+                return cand
+            discards_in_attempt = discards_in_attempt + 1
+            self.total_discards = self.total_discards + 1
+
+        raise AssertionError("FilteredIntGen: exceeded max_discards budget (" + str(self.max_discards) + ")")
+
+    def shrink_candidates(self: FilteredIntGen, val: int) -> list[int]:
+        candidates: list[int] = []
+        if val != 0 and self.predicate(0):
+            candidates.append(0)
+        if val < 0 and self.predicate(-val):
+            candidates.append(-val)
+        half: int = val // 2
+        if half != val and self.predicate(half):
+            candidates.append(half)
+        if val > 0 and self.predicate(val - 1):
+            candidates.append(val - 1)
+        elif val < 0 and self.predicate(val + 1):
+            candidates.append(val + 1)
+        return candidates
+
+class MappedIntGen:
+    base_gen: IntGen
+    transform: (int) -> int
+
+    def __init__(self: MappedIntGen, base_gen: IntGen, transform: (int) -> int) -> None:
+        self.base_gen = base_gen
+        self.transform = transform
+
+    def generate(self: MappedIntGen, prng: Prng) -> int:
+        return self.transform(self.base_gen.generate(prng))
+
+class IntPair:
+    first: int
+    second: int
+
+    def __init__(self: IntPair, first: int, second: int) -> None:
+        self.first = first
+        self.second = second
+
+class PairIntGen:
+    gen_a: IntGen
+    gen_b: IntGen
+
+    def __init__(self: PairIntGen, gen_a: IntGen, gen_b: IntGen) -> None:
+        self.gen_a = gen_a
+        self.gen_b = gen_b
+
+    def generate(self: PairIntGen, prng: Prng) -> IntPair:
+        val_a: int = self.gen_a.generate(prng)
+        val_b: int = self.gen_b.generate(prng)
+        return IntPair(val_a, val_b)
