@@ -3,6 +3,14 @@
 All notable changes to the Quartz test framework will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.0] - 2026-11-02 - Phase 8: Framework-Native Adapters, Doc Verification & Reference Percentiles
+
+### Added
+- **Framework-Native Integration Test Suite (`tests/framework_native_test.nox`)**: Comprehensive multi-route tests for Nyx (`Router.get`, `post`, `delete`) and multi-stage middleware pipelines for Aether (before/after chains, CORS, security headers, token auth guard), fully validating contract tests and load testing across native ecosystem adapters.
+- **Documentation Examples Verification (`tests/doc_examples_test.nox`)**: Standalone automated compiling test executing all code recipes from `docs/recipes.md`, ensuring zero code or signature drift across the documentation.
+- **Reference Percentile & Error Rate Verification (`tests/load_metrics_test.nox`)**: Added reference distribution test validating mathematical accuracy of p50, p90, and p99 against a 1,000-request benchmark.
+- **Clean Artifacts & Corpus Exclusion (`.gitignore`)**: Added `corpus/` to `.gitignore` to prevent generated fuzz test corpora from polluting the source tree.
+
 ## [0.8.1] - 2026-11-02 - Phase 7.2: Reliability, Generator Invariants, CLI & Error Accounting Bugfix Release
 
 ### Fixed & Hardened

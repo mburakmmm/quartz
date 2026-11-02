@@ -165,12 +165,44 @@ def test_exact_error_rate_calculation() -> None:
     assert_eq_int(m.successful, 1, "1 successful")
     assert_eq_float(m.error_rate(), 0.5, 0.0001, 0.0001, "error rate must be exactly 50%")
 
+def test_reference_distribution_percentiles() -> None:
+    m: LoadMetrics = LoadMetrics()
+    # 500 requests at 10ms (bucket 5)
+    i: int = 0
+    while i < 500:
+        m.record_scheduled()
+        m.record_result(200, 10, False, True)
+        i = i + 1
+
+    # 400 requests at 50ms (bucket 25)
+    j: int = 0
+    while j < 400:
+        m.record_scheduled()
+        m.record_result(200, 50, False, True)
+        j = j + 1
+
+    # 100 requests at 100ms (bucket 50)
+    k: int = 0
+    while k < 100:
+        m.record_scheduled()
+        m.record_result(200, 100, False, True)
+        k = k + 1
+
+    # In 1000 total items:
+    # 1..500 are 10ms -> p50 is 10ms
+    # 501..900 are 50ms -> p90 is 50ms
+    # 901..1000 are 100ms -> p99 is 100ms
+    assert_true(m.p50() >= 9 and m.p50() <= 12, "p50 matches reference distribution (bucket [10, 12))")
+    assert_true(m.p90() >= 49 and m.p90() <= 52, "p90 matches reference distribution (bucket [50, 52))")
+    assert_true(m.p99() >= 100 and m.p99() <= 120, "p99 matches reference distribution (bucket [100, 120))")
+
 def run_all_load_metrics_tests() -> None:
     test_histogram_bucketing()
     test_percentile_calculations_and_monotonicity()
     test_threshold_evaluations()
     test_high_latency_overflow()
     test_exact_error_rate_calculation()
+    test_reference_distribution_percentiles()
     print("quartz load metrics test: ALL PASS")
 
 run_all_load_metrics_tests()

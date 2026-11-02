@@ -1,0 +1,180 @@
+# Quartz Framework-Native Integration Test Suite
+# Tests deep multi-route and middleware pipelines for Nyx and Aether adapters under real contract and load conditions.
+
+import nox.http
+import nox.router
+import nox.json
+from nox.json import JsonValue
+from nox.http import HttpRequest, HttpResponse
+from nox.router import Router, Context
+from core.assert import assert_eq_int, assert_eq_str, assert_true, assert_false
+from contract.http import build_request, build_response, empty_headers
+from contract.schema import schema_object, schema_string, schema_integer, PropertyRule, SchemaDescriptor
+from contract.runner import ContractTestCase
+from contract.types import ContractCheckResult
+from load.workload import closed_workload, WorkloadConfig
+from load.thresholds import Threshold
+from load.safety import default_safety_limits, SafetyLimits
+from load.executor import LoadTestSummary
+from adapters.nyx import create_nyx_adapter, NyxAdapter
+from adapters.aether import create_aether_adapter, AetherAdapter
+
+def test_nyx_deep_routing() -> None:
+    router: Router = Router()
+
+    def handle_health(ctx: Context) -> HttpResponse:
+        h: dict[str, str] = {"Content-Type": "application/json"}
+        return build_response(200, "{\"status\": \"healthy\", \"version\": \"1.0\"}", h)
+
+    def handle_create_item(ctx: Context) -> HttpResponse:
+        h: dict[str, str] = {"Content-Type": "application/json"}
+        return build_response(201, "{\"id\": 100, \"name\": \"widget\"}", h)
+
+    def handle_get_item(ctx: Context) -> HttpResponse:
+        h: dict[str, str] = {"Content-Type": "application/json"}
+        return build_response(200, "{\"id\": 42, \"name\": \"gizmo\"}", h)
+
+    def handle_delete_item(ctx: Context) -> HttpResponse:
+        h: dict[str, str] = {"Content-Type": "application/json"}
+        return build_response(204, "", h)
+
+    router.get("/api/v1/health", handle_health)
+    router.post("/api/v1/items", handle_create_item)
+    router.get("/api/v1/items/42", handle_get_item)
+    router.delete("/api/v1/items/42", handle_delete_item)
+
+    adapter: NyxAdapter = create_nyx_adapter(router)
+
+    # 1. Dispatch checks
+    res_health: HttpResponse = adapter.dispatch(build_request("GET", "/api/v1/health", "", empty_headers()))
+    assert_eq_int(res_health.status, 200, "health returned 200")
+
+    res_create: HttpResponse = adapter.dispatch(build_request("POST", "/api/v1/items", "{\"name\": \"widget\"}", empty_headers()))
+    assert_eq_int(res_create.status, 201, "create returned 201")
+
+    res_get: HttpResponse = adapter.dispatch(build_request("GET", "/api/v1/items/42", "", empty_headers()))
+    assert_eq_int(res_get.status, 200, "get item returned 200")
+
+    res_del: HttpResponse = adapter.dispatch(build_request("DELETE", "/api/v1/items/42", "", empty_headers()))
+    assert_eq_int(res_del.status, 204, "delete returned 204")
+
+    # 2. Contract validation check on NyxAdapter
+    health_schema: SchemaDescriptor = schema_object([
+        PropertyRule("status", schema_string(2, 20)),
+        PropertyRule("version", schema_string(1, 10))
+    ], ["status", "version"], True)
+
+    tc: ContractTestCase = ContractTestCase(
+        "nyx_health_contract",
+        build_request("GET", "/api/v1/health", "", empty_headers()),
+        [200],
+        ["Content-Type"],
+        "application/json",
+        health_schema
+    )
+    contract_res: ContractCheckResult = adapter.test_contract(tc)
+    assert_true(contract_res.is_valid, "nyx health contract matches schema")
+
+    # 3. Load test check on NyxAdapter
+    workload: WorkloadConfig = closed_workload("nyx_load", 3, 2, 30)
+    thresholds: list[Threshold] = [
+        Threshold("p95", "<=", 50.0),
+        Threshold("error_rate", "<=", 0.0)
+    ]
+    load_res: LoadTestSummary = adapter.run_load_test(
+        build_request("GET", "/api/v1/health", "", empty_headers()),
+        workload,
+        thresholds,
+        default_safety_limits()
+    )
+    assert_true(load_res.all_passed, "nyx load test passed all thresholds")
+    assert_eq_int(load_res.metrics.completed, 30, "30 requests completed")
+
+def test_aether_middleware_pipeline() -> None:
+    router: Router = Router()
+
+    def handle_secure_data(ctx: Context) -> HttpResponse:
+        h: dict[str, str] = {"Content-Type": "application/json"}
+        return build_response(200, "{\"secret_data\": 12345}", h)
+
+    router.get("/api/v1/secure", handle_secure_data)
+    adapter: AetherAdapter = create_aether_adapter(router)
+
+    # Before-middleware 1: Correlation ID check/injection
+    def correlation_mw(req: HttpRequest) -> HttpResponse | None:
+        # Pass through without early return
+        return None
+
+    # Before-middleware 2: Auth token guard
+    def auth_mw(req: HttpRequest) -> HttpResponse | None:
+        auth: str = ""
+        if "Authorization" in req.headers:
+            auth = req.headers["Authorization"]
+        if auth != "Bearer token_secret_123":
+            h_err: dict[str, str] = {"Content-Type": "application/json"}
+            return build_response(401, "{\"error\": \"unauthorized\"}", h_err)
+        return None
+
+    # After-middleware 1: Security headers
+    def security_headers_mw(req: HttpRequest, resp: HttpResponse) -> HttpResponse:
+        headers: dict[str, str] = resp.headers
+        headers["X-Content-Type-Options"] = "nosniff"
+        headers["X-Frame-Options"] = "DENY"
+        return HttpResponse(resp.status, resp.body, headers)
+
+    adapter.use_before(correlation_mw)
+    adapter.use_before(auth_mw)
+    adapter.use_after(security_headers_mw)
+
+    # 1. Unauthorized request: should trigger early return 401 and still include after-middleware headers
+    req_unauth: HttpRequest = build_request("GET", "/api/v1/secure", "", empty_headers())
+    res_unauth: HttpResponse = adapter.dispatch(req_unauth)
+    assert_eq_int(res_unauth.status, 401, "unauthorized returns 401")
+    assert_true("X-Content-Type-Options" in res_unauth.headers, "security header present on early return")
+    assert_eq_str(res_unauth.headers["X-Content-Type-Options"], "nosniff", "nosniff header value matches")
+
+    # 2. Authorized request: should pass both before middlewares and return 200 with security headers
+    auth_headers: dict[str, str] = {"Authorization": "Bearer token_secret_123"}
+    req_auth: HttpRequest = build_request("GET", "/api/v1/secure", "", auth_headers)
+    res_auth: HttpResponse = adapter.dispatch(req_auth)
+    assert_eq_int(res_auth.status, 200, "authorized returns 200")
+    assert_eq_str(res_auth.headers["X-Frame-Options"], "DENY", "frame options header present")
+    assert_true("secret_data" in res_auth.body, "secret payload received")
+
+    # 3. Contract test on AetherAdapter
+    secure_schema: SchemaDescriptor = schema_object([
+        PropertyRule("secret_data", schema_integer(1, 999999, True, True))
+    ], ["secret_data"], True)
+
+    tc_auth: ContractTestCase = ContractTestCase(
+        "aether_auth_contract",
+        req_auth,
+        [200],
+        ["Content-Type", "X-Content-Type-Options"],
+        "application/json",
+        secure_schema
+    )
+    contract_res: ContractCheckResult = adapter.test_contract(tc_auth)
+    assert_true(contract_res.is_valid, "aether authorized contract test passed")
+
+    # 4. Load test on AetherAdapter
+    workload: WorkloadConfig = closed_workload("aether_load", 3, 2, 25)
+    thresholds: list[Threshold] = [
+        Threshold("p95", "<=", 50.0),
+        Threshold("error_rate", "<=", 0.0)
+    ]
+    load_res: LoadTestSummary = adapter.run_load_test(
+        req_auth,
+        workload,
+        thresholds,
+        default_safety_limits()
+    )
+    assert_true(load_res.all_passed, "aether load test passed all thresholds")
+    assert_eq_int(load_res.metrics.completed, 25, "25 requests completed")
+
+def run_all_framework_native_tests() -> None:
+    test_nyx_deep_routing()
+    test_aether_middleware_pipeline()
+    print("quartz framework native test: ALL PASS")
+
+run_all_framework_native_tests()

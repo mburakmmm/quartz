@@ -1,0 +1,161 @@
+# Quartz Documentation Examples Verification Test Suite
+# Verifies that every code snippet in docs/recipes.md compiles and executes with zero errors.
+
+import nox.http
+import nox.router
+from nox.http import HttpRequest, HttpResponse
+from nox.router import Router, Context
+from core.assert import assert_eq_int, assert_eq_str, assert_true, assert_eq_float
+from core.fixture import Fixture, SCOPE_CASE
+from property.generator import IntGen
+from property.property import PropertyConfig, PropertyResult, run_int_property
+from property.shrink import shrink_int, ShrinkResultInt
+from fuzz.fuzzer import run_fuzz, FuzzSummary
+from fuzz.corpus import CorpusManager, default_corpus_config
+from contract.http import build_request, empty_headers
+from contract.schema import schema_object, schema_string, schema_integer, PropertyRule, SchemaDescriptor
+from contract.runner import ContractTestCase
+from contract.types import ContractCheckResult
+from load.workload import closed_workload, WorkloadConfig
+from load.thresholds import Threshold
+from load.safety import default_safety_limits, SafetyLimits
+from load.executor import run_handler_load_test, LoadTestSummary
+from adapters.nyx import create_nyx_adapter, NyxAdapter
+from adapters.aether import create_aether_adapter, AetherAdapter
+
+def test_recipe_1_unit_and_fixtures() -> None:
+    # Basic assertions
+    assert_eq_int(2 + 2, 4, "addition works")
+    assert_eq_str("hello " + "world", "hello world", "string concatenation")
+    assert_true(len("nox") == 3, "string length")
+    assert_eq_float(3.14159, 3.14150, 0.001, 0.001, "float within tolerance")
+
+    # Fixture lifecycle
+    fixture: Fixture = Fixture("db_connection", SCOPE_CASE)
+    fixture.setup()
+    try:
+        assert_true(fixture.is_active, "database query verified")
+    finally:
+        fixture.teardown()
+    assert_true(not fixture.is_active, "fixture inactive after teardown")
+
+def test_recipe_2_property_and_shrinking() -> None:
+    gen: IntGen = IntGen(-1000, 1000, True)
+    config: PropertyConfig = PropertyConfig(100, 5, 42, 5000)
+
+    def prop_commutative(x: int) -> bool:
+        return (x * 2) == (2 * x)
+
+    res: PropertyResult = run_int_property("int_commutative", config, gen, prop_commutative)
+    assert_true(res.status == "PASS", "property passed")
+
+    # Shrink test
+    def prop_under_50(x: int) -> bool:
+        return x < 50
+
+    shrunk: ShrinkResultInt = shrink_int(100, prop_under_50, 50)
+    assert_eq_int(shrunk.value, 50, "minimal counterexample is 50")
+
+def test_recipe_3_fuzzing() -> None:
+    def parse_csv(data: str) -> None:
+        if "TRIGGER_BUG" in data:
+            raise Exception("Deliberate parser crash")
+
+    corpus: CorpusManager = CorpusManager("doc_csv_target", "corpus", default_corpus_config())
+    summary: FuzzSummary = run_fuzz(
+        "doc_csv_target",
+        parse_csv,
+        ["name,age\nalice,30\n"],
+        50,
+        42,
+        corpus,
+        1024
+    )
+    assert_eq_int(summary.crashes_found, 0, "no crashes in benign seed fuzzing")
+    assert_eq_int(summary.total_cases, 50, "50 fuzz cases executed")
+
+def test_recipe_4_http_contract() -> None:
+    def my_api_handler(req: HttpRequest) -> HttpResponse:
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        return HttpResponse(200, "{\"id\": 101, \"username\": \"admin\"}", headers)
+
+    fields: list[PropertyRule] = [
+        PropertyRule("id", schema_integer(1, 999999, True, True)),
+        PropertyRule("username", schema_string(3, 50))
+    ]
+    expected_schema: SchemaDescriptor = schema_object(fields, ["id", "username"], True)
+
+    req: HttpRequest = build_request("GET", "/users/101", "", empty_headers())
+    tc: ContractTestCase = ContractTestCase(
+        "users_api_check",
+        req,
+        [200],
+        ["Content-Type"],
+        "application/json",
+        expected_schema
+    )
+
+    result: ContractCheckResult = tc.run_on_handler(my_api_handler)
+    assert_true(result.is_valid, "contract check is valid")
+    assert_eq_int(result.status_code, 200, "status code 200")
+
+def test_recipe_5_load_testing() -> None:
+    workload: WorkloadConfig = closed_workload("api_benchmark", 3, 2, 30)
+    thresholds: list[Threshold] = [
+        Threshold("p95", "<=", 50.0),
+        Threshold("error_rate", "<=", 0.0)
+    ]
+
+    def my_api_handler(req: HttpRequest) -> HttpResponse:
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        return HttpResponse(200, "{\"status\": \"ok\"}", headers)
+
+    summary: LoadTestSummary = run_handler_load_test(
+        workload,
+        my_api_handler,
+        build_request("GET", "/ping", "", empty_headers()),
+        thresholds,
+        default_safety_limits()
+    )
+
+    assert_true(summary.all_passed, "all load thresholds passed")
+    assert_eq_int(summary.metrics.completed, 30, "30 requests completed")
+
+def test_recipe_6_nyx_and_aether_adapters() -> None:
+    # Nyx adapter
+    router_nyx: Router = Router()
+    def health_handler(ctx: Context) -> HttpResponse:
+        return HttpResponse(200, "{\"status\":\"ok\"}", {})
+    router_nyx.get("/health", health_handler)
+
+    nyx_adapter: NyxAdapter = create_nyx_adapter(router_nyx)
+    res_nyx: HttpResponse = nyx_adapter.dispatch(build_request("GET", "/health", "", empty_headers()))
+    assert_eq_int(res_nyx.status, 200, "nyx status 200")
+
+    # Aether adapter
+    router_ae: Router = Router()
+    def secure_handler(ctx: Context) -> HttpResponse:
+        return HttpResponse(200, "{\"secret\":42}", {})
+    router_ae.get("/secure", secure_handler)
+
+    ae_adapter: AetherAdapter = create_aether_adapter(router_ae)
+
+    def auth_middleware(req: HttpRequest) -> HttpResponse | None:
+        if "Authorization" not in req.headers:
+            return HttpResponse(401, "{\"error\":\"unauthorized\"}", {})
+        return None
+
+    ae_adapter.use_before(auth_middleware)
+    res_ae: HttpResponse = ae_adapter.dispatch(build_request("GET", "/secure", "", empty_headers()))
+    assert_eq_int(res_ae.status, 401, "aether unauthorized status 401")
+
+def run_all_doc_examples_tests() -> None:
+    test_recipe_1_unit_and_fixtures()
+    test_recipe_2_property_and_shrinking()
+    test_recipe_3_fuzzing()
+    test_recipe_4_http_contract()
+    test_recipe_5_load_testing()
+    test_recipe_6_nyx_and_aether_adapters()
+    print("quartz doc examples test: ALL PASS")
+
+run_all_doc_examples_tests()

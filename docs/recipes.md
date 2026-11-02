@@ -94,7 +94,7 @@ def parse_csv(data: str) -> None:
     if "TRIGGER_BUG" in data:
         raise Exception("Deliberate parser crash")
 
-corpus: CorpusManager = CorpusManager(default_corpus_config("csv_target"))
+corpus: CorpusManager = CorpusManager("csv_target", "corpus", default_corpus_config())
 summary: FuzzSummary = run_fuzz(
     "csv_target",
     parse_csv,

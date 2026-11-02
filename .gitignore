@@ -21,6 +21,7 @@ fixtures/*.json
 fixtures/*.xml
 fixtures/corpus/*/
 artifacts/
+corpus/
 
 # OS / Editor
 .DS_Store
