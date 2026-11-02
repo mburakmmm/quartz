@@ -1,4 +1,4 @@
-# Quartz API Reference — v0.6.1
+# Quartz API Reference — v0.7.0
 
 ## 1. Core Types (`core/types.nox`)
 
@@ -327,5 +327,59 @@ Bounded deterministic byte and structured mutations:
 - `run_task_workload(workload: WorkloadConfig, task_func: (int) -> bool, thresholds: list[Threshold], limits: SafetyLimits) -> LoadTestSummary`
 - `run_handler_load_test(workload: WorkloadConfig, handler: (HttpRequest) -> HttpResponse, req: HttpRequest, thresholds: list[Threshold], limits: SafetyLimits) -> LoadTestSummary`
 - `run_network_load_test(workload: WorkloadConfig, req: HttpRequest, base_url: str, policy: NetworkPolicy, thresholds: list[Threshold], limits: SafetyLimits) -> LoadTestSummary`
+
+---
+
+## 21. Property-Driven Contract Testing (`contract/property_contract.nox`)
+
+- `PropertyContractResult`
+  - `.total_cases: int`
+  - `.passed_cases: int`
+  - `.failed_cases: int`
+  - `.counterexample_input: str`
+  - `.counterexample_error: str`
+  - `.seed: int`
+  - `.is_success() -> bool`
+  - `.to_json() -> str`
+- `generate_valid_json_payload(rng: Prng, schema: SchemaDescriptor) -> str`: Synthesizes JSON string conforming to schema.
+- `generate_invalid_json_payload(rng: Prng, schema: SchemaDescriptor) -> str`: Synthesizes JSON string violating schema boundaries/types.
+- `run_property_contract_test(handler: (HttpRequest) -> HttpResponse, method: str, path: str, request_schema: SchemaDescriptor | None, expected_status_codes: list[int], response_schema: SchemaDescriptor | None, seed: int, cases: int) -> PropertyContractResult`
+- `run_negative_property_contract_test(handler: (HttpRequest) -> HttpResponse, method: str, path: str, request_schema: SchemaDescriptor, expected_error_status: int, seed: int, cases: int) -> PropertyContractResult`
+
+---
+
+## 22. Ecosystem Adapters (`adapters/nyx.nox`, `adapters/aether.nox`)
+
+Optional bridges connecting NOX web frameworks to Quartz Contract and Load testing. Core does not depend on adapters.
+
+### Nyx Adapter (`adapters/nyx.nox`)
+- `create_nyx_adapter(router: Router) -> NyxAdapter`
+- `NyxAdapter`
+  - `.dispatch(req: HttpRequest) -> HttpResponse`
+  - `.test_contract(test_case: ContractTestCase) -> ContractCheckResult`
+  - `.run_load_test(req: HttpRequest, workload: WorkloadConfig, thresholds: list[Threshold], safety: SafetyLimits) -> LoadTestSummary`
+
+### Aether Adapter (`adapters/aether.nox`)
+- `create_aether_adapter(router: Router) -> AetherAdapter`
+- `AetherAdapter`
+  - `.use_before(mw: (HttpRequest) -> HttpResponse | None) -> None`
+  - `.use_after(mw: (HttpRequest, HttpResponse) -> HttpResponse) -> None`
+  - `.dispatch(req: HttpRequest) -> HttpResponse`
+  - `.test_contract(test_case: ContractTestCase) -> ContractCheckResult`
+  - `.run_load_test(req: HttpRequest, workload: WorkloadConfig, thresholds: list[Threshold], safety: SafetyLimits) -> LoadTestSummary`
+
+---
+
+## 23. CLI Entry Point (`cli/main.nox`)
+
+Published as the `quartz` binary via `nox.json` and runnable via `noxc run cli/main.nox -- <command>`:
+- `quartz version`: Prints framework identity and version.
+- `quartz help`: Displays formatted command usage and flags.
+- `quartz property [--seed <int>] [--cases <int>]`: Executes property-based invariant check.
+- `quartz fuzz [--seed <int>] [--max-cases <int>]`: Executes mutation fuzzer against target.
+- `quartz load [--vus <int>] [--duration <int>] [--requests <int>]`: Runs bounded local load test scenario.
+- `quartz replay <file.json>`: Inspects and replays saved failure artifact.
+- `quartz contract`: Displays contract testing status and examples.
+- `quartz test`: Runs test suite execution instructions.
 
 

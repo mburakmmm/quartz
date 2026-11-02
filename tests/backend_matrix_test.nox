@@ -1,0 +1,150 @@
+# Quartz Tests — Backend Compatibility Matrix
+# Validates platform, runtime, and compiler backend capabilities across LLVM and QBE.
+
+import nox.time
+import nox.json
+import nox.os
+from nox.json import JsonValue
+from nox.http import HttpRequest, HttpResponse
+from nox.time import Instant
+from nox.router import Router, Context
+from core.prng import Prng, derive_case_seed, PRNG_VERSION
+from core.assert import assert_eq_int, assert_eq_str, assert_true, assert_false, assert_eq_float
+from contract.http import build_request, build_response, execute_handler, HandlerExecutionResult
+from contract.schema import schema_object, schema_string, schema_integer, PropertyRule, validate_schema, SchemaDescriptor, json_get_key
+from contract.property_contract import run_property_contract_test, run_negative_property_contract_test, PropertyContractResult
+from adapters.nyx import create_nyx_adapter, NyxAdapter
+from adapters.aether import create_aether_adapter, AetherAdapter
+
+def test_prng_golden_determinism() -> None:
+    rng: Prng = Prng(42)
+    v1: int = rng.next_int()
+    v2: int = rng.next_int()
+    v3: int = rng.next_int()
+    assert_eq_int(v1, 5240999705260273496, "prng golden vector v1")
+    assert_eq_int(v2, 2079533085890083510, "prng golden vector v2")
+    assert_eq_int(v3, 3807761405634256037, "prng golden vector v3")
+
+def test_monotonic_clock_progress() -> None:
+    t0: Instant = nox.time.instant_now()
+    acc: int = 0
+    i: int = 0
+    while i < 100000:
+        acc = acc + i
+        i = i + 1
+    assert_true(acc > 0, "loop executed")
+    elapsed: int = t0.elapsed_ms()
+    assert_true(elapsed >= 0, "monotonic clock elapsed is non-negative")
+
+def test_json_and_schema_validation() -> None:
+    user_schema: SchemaDescriptor = schema_object(
+        [
+            PropertyRule("username", schema_string(3, 20)),
+            PropertyRule("age", schema_integer(18, 120, True, True))
+        ],
+        ["username", "age"],
+        True
+    )
+    valid_json: str = "{\"username\": \"alice\", \"age\": 30}"
+    parsed: JsonValue = nox.json.parse(valid_json)
+    errors: list[str] = validate_schema(user_schema, parsed, "$")
+    assert_eq_int(len(errors), 0, "valid json has zero schema errors")
+
+    invalid_json: str = "{\"username\": \"a\", \"age\": 15}"
+    parsed_inv: JsonValue = nox.json.parse(invalid_json)
+    errors_inv: list[str] = validate_schema(user_schema, parsed_inv, "$")
+    assert_true(len(errors_inv) > 0, "invalid json has schema errors")
+
+def test_property_driven_contract_execution() -> None:
+    req_schema: SchemaDescriptor = schema_object(
+        [PropertyRule("val", schema_integer(10, 50, True, True))],
+        ["val"],
+        True
+    )
+    resp_schema: SchemaDescriptor = schema_object(
+        [PropertyRule("result", schema_integer(20, 100, True, True))],
+        ["result"],
+        True
+    )
+
+    def math_handler(req: HttpRequest) -> HttpResponse:
+        try:
+            body_json: JsonValue = nox.json.parse(req.body)
+            val_node: JsonValue = json_get_key(body_json, "val")
+            v: int = int(val_node.n)
+            if v < 10 or v > 50:
+                h_err: dict[str, str] = {}
+                return build_response(400, "{\"error\": \"out of range\"}", h_err)
+            resp_body: str = "{\"result\": " + str(v * 2) + "}"
+            h_ok: dict[str, str] = {"Content-Type": "application/json"}
+            return build_response(200, resp_body, h_ok)
+        except Exception as e:
+            h_fail: dict[str, str] = {}
+            return build_response(400, "{\"error\": \"bad json\"}", h_fail)
+
+    # 1. Positive property test: 20 cases of generated valid payloads
+    res_pos: PropertyContractResult = run_property_contract_test(
+        math_handler,
+        "POST",
+        "/double",
+        req_schema,
+        [200],
+        resp_schema,
+        12345,
+        20
+    )
+    assert_true(res_pos.is_success(), "property contract positive test success")
+    assert_eq_int(res_pos.passed_cases, 20, "20 cases passed")
+    assert_eq_int(res_pos.failed_cases, 0, "0 cases failed")
+
+    # 2. Negative property test: 15 cases of invalid payloads must return 400
+    res_neg: PropertyContractResult = run_negative_property_contract_test(
+        math_handler,
+        "POST",
+        "/double",
+        req_schema,
+        400,
+        54321,
+        15
+    )
+    assert_true(res_neg.is_success(), "negative property contract test success")
+    assert_eq_int(res_neg.passed_cases, 15, "15 negative cases passed")
+    assert_eq_int(res_neg.failed_cases, 0, "0 negative cases failed")
+
+def test_nyx_and_aether_adapters() -> None:
+    router: Router = Router()
+
+    def handle_hello(ctx: Context) -> HttpResponse:
+        h: dict[str, str] = {"Content-Type": "application/json"}
+        return build_response(200, "{\"message\": \"hello adapter\"}", h)
+
+    router.get("/api/hello", handle_hello)
+
+    # Test Nyx Adapter
+    nyx_ad: NyxAdapter = create_nyx_adapter(router)
+    h_req: dict[str, str] = {}
+    req_nyx: HttpRequest = build_request("GET", "/api/hello", "", h_req)
+    resp_nyx: HttpResponse = nyx_ad.dispatch(req_nyx)
+    assert_eq_int(resp_nyx.status, 200, "nyx adapter returned 200")
+    assert_eq_str(resp_nyx.body, "{\"message\": \"hello adapter\"}", "nyx adapter body matches")
+
+    # Test Aether Adapter with middleware
+    aether_ad: AetherAdapter = create_aether_adapter(router)
+
+    def trace_middleware(req: HttpRequest, resp: HttpResponse) -> HttpResponse:
+        headers: dict[str, str] = resp.headers
+        headers["X-Trace-Id"] = "trace-12345"
+        return HttpResponse(resp.status, resp.body, headers)
+
+    aether_ad.use_after(trace_middleware)
+    req_aether: HttpRequest = build_request("GET", "/api/hello", "", h_req)
+    resp_aether: HttpResponse = aether_ad.dispatch(req_aether)
+    assert_eq_int(resp_aether.status, 200, "aether adapter returned 200")
+    assert_eq_str(resp_aether.headers["X-Trace-Id"], "trace-12345", "aether middleware injected header")
+
+test_prng_golden_determinism()
+test_monotonic_clock_progress()
+test_json_and_schema_validation()
+test_property_driven_contract_execution()
+test_nyx_and_aether_adapters()
+print("quartz backend matrix test: ALL PASS")

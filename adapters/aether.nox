@@ -1,0 +1,72 @@
+# Quartz Adapters — Aether Web Framework Adapter
+# Optional bridge connecting Aether middleware pipelines and routers to Quartz Contract and Load testing.
+# Quartz Core and Contract never depend on this adapter.
+
+from nox.router import Router, Context
+from nox.http import HttpRequest, HttpResponse
+from contract.http import build_request, build_response, execute_handler
+from contract.runner import ContractTestCase
+from contract.types import ContractCheckResult
+from load.workload import WorkloadConfig
+from load.safety import SafetyLimits
+from load.thresholds import Threshold
+from load.executor import run_handler_load_test, LoadTestSummary
+
+class AetherAdapter:
+    router: Router
+    before_middlewares: list[(HttpRequest) -> HttpResponse | None]
+    after_middlewares: list[(HttpRequest, HttpResponse) -> HttpResponse]
+
+    def __init__(self: AetherAdapter, router: Router) -> None:
+        self.router = router
+        self.before_middlewares = []
+        self.after_middlewares = []
+
+    def use_before(self: AetherAdapter, mw: (HttpRequest) -> HttpResponse | None) -> None:
+        mws: list[(HttpRequest) -> HttpResponse | None] = self.before_middlewares
+        mws.append(mw)
+        self.before_middlewares = mws
+
+    def use_after(self: AetherAdapter, mw: (HttpRequest, HttpResponse) -> HttpResponse) -> None:
+        mws: list[(HttpRequest, HttpResponse) -> HttpResponse] = self.after_middlewares
+        mws.append(mw)
+        self.after_middlewares = mws
+
+    def dispatch(self: AetherAdapter, req: HttpRequest) -> HttpResponse:
+        # Run before middlewares
+        i: int = 0
+        while i < len(self.before_middlewares):
+            early: HttpResponse | None = self.before_middlewares[i](req)
+            if early != None:
+                return early
+            i = i + 1
+
+        # Dispatch through router
+        resp: HttpResponse = self.router.dispatch(req)
+
+        # Run after middlewares
+        j: int = 0
+        while j < len(self.after_middlewares):
+            resp = self.after_middlewares[j](req, resp)
+            j = j + 1
+
+        return resp
+
+    def test_contract(self: AetherAdapter, test_case: ContractTestCase) -> ContractCheckResult:
+        def handler(req: HttpRequest) -> HttpResponse:
+            return self.dispatch(req)
+        return test_case.run_on_handler(handler)
+
+    def run_load_test(
+        self: AetherAdapter,
+        req: HttpRequest,
+        workload: WorkloadConfig,
+        thresholds: list[Threshold],
+        safety: SafetyLimits
+    ) -> LoadTestSummary:
+        def handler(r: HttpRequest) -> HttpResponse:
+            return self.dispatch(r)
+        return run_handler_load_test(workload, handler, req, thresholds, safety)
+
+def create_aether_adapter(router: Router) -> AetherAdapter:
+    return AetherAdapter(router)

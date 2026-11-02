@@ -1,0 +1,248 @@
+# Quartz Contract — Property-Driven Contract Testing
+# Generates valid and invalid contract payloads using Quartz PRNG to verify API handlers under load/property invariants.
+
+import nox.json
+from nox.json import JsonValue
+from nox.http import HttpRequest, HttpResponse
+from core.prng import Prng, PRNG_VERSION, derive_case_seed
+from core.report import escape_json
+from contract.schema import SchemaDescriptor, PropertyRule, validate_schema
+from contract.schema import SCHEMA_INTEGER, SCHEMA_NUMBER, SCHEMA_STRING, SCHEMA_BOOLEAN, SCHEMA_NULL, SCHEMA_OBJECT, SCHEMA_ARRAY
+from contract.http import build_request, execute_handler, HandlerExecutionResult
+
+class PropertyContractResult:
+    total_cases: int
+    passed_cases: int
+    failed_cases: int
+    counterexample_input: str
+    counterexample_error: str
+    seed: int
+
+    def __init__(
+        self: PropertyContractResult,
+        total_cases: int,
+        passed_cases: int,
+        failed_cases: int,
+        counterexample_input: str,
+        counterexample_error: str,
+        seed: int
+    ) -> None:
+        self.total_cases = total_cases
+        self.passed_cases = passed_cases
+        self.failed_cases = failed_cases
+        self.counterexample_input = counterexample_input
+        self.counterexample_error = counterexample_error
+        self.seed = seed
+
+    def is_success(self: PropertyContractResult) -> bool:
+        return self.failed_cases == 0
+
+    def to_json(self: PropertyContractResult) -> str:
+        s: str = "{"
+        s = s + "\"total_cases\":" + str(self.total_cases) + ","
+        s = s + "\"passed_cases\":" + str(self.passed_cases) + ","
+        s = s + "\"failed_cases\":" + str(self.failed_cases) + ","
+        s = s + "\"is_success\":" + ( "true" if self.is_success() else "false" ) + ","
+        s = s + "\"seed\":" + str(self.seed) + ","
+        s = s + "\"counterexample_input\":\"" + escape_json(self.counterexample_input) + "\","
+        s = s + "\"counterexample_error\":\"" + escape_json(self.counterexample_error) + "\""
+        s = s + "}"
+        return s
+
+def _gen_valid_string(rng: Prng, min_l: int, max_l: int) -> str:
+    target_len: int = min_l
+    if max_l > min_l:
+        target_len = rng.next_int_range(min_l, max_l)
+    chars: str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
+    out: str = ""
+    i: int = 0
+    while i < target_len:
+        idx: int = rng.choose_index(len(chars))
+        out = out + chars[idx]
+        i = i + 1
+    return out
+
+def generate_valid_json_payload(rng: Prng, schema: SchemaDescriptor) -> str:
+    t: str = schema.type_name
+    if t == SCHEMA_INTEGER:
+        min_v: int = int(schema.min_val) if schema.has_min_val else -100
+        max_v: int = int(schema.max_val) if schema.has_max_val else 100
+        if max_v < min_v:
+            max_v = min_v
+        val: int = rng.next_int_range(min_v, max_v)
+        return str(val)
+    elif t == SCHEMA_NUMBER:
+        min_f: float = schema.min_val if schema.has_min_val else 0.0
+        max_f: float = schema.max_val if schema.has_max_val else 100.0
+        r: float = rng.next_float()
+        return str(min_f + r * (max_f - min_f))
+    elif t == SCHEMA_STRING:
+        if len(schema.enum_values) > 0:
+            idx: int = rng.choose_index(len(schema.enum_values))
+            return "\"" + schema.enum_values[idx] + "\""
+        min_l: int = schema.min_len if schema.min_len > 0 else 1
+        max_l: int = schema.max_len if schema.max_len > 0 else 16
+        s_val: str = _gen_valid_string(rng, min_l, max_l)
+        return "\"" + s_val + "\""
+    elif t == SCHEMA_BOOLEAN:
+        return "true" if rng.next_bool() else "false"
+    elif t == SCHEMA_NULL:
+        return "null"
+    elif t == SCHEMA_OBJECT:
+        out: str = "{"
+        first: bool = True
+        for prop in schema.properties:
+            if not first:
+                out = out + ","
+            first = False
+            prop_val: str = generate_valid_json_payload(rng, prop.schema)
+            out = out + "\"" + prop.name + "\":" + prop_val
+        out = out + "}"
+        return out
+    elif t == SCHEMA_ARRAY:
+        if len(schema.item_schemas) > 0:
+            item_schema: SchemaDescriptor = schema.item_schemas[0]
+            count: int = rng.next_int_range(1, 3)
+            out: str = "["
+            c: int = 0
+            while c < count:
+                if c > 0:
+                    out = out + ","
+                out = out + generate_valid_json_payload(rng, item_schema)
+                c = c + 1
+            out = out + "]"
+            return out
+        return "[]"
+    return "{}"
+
+def generate_invalid_json_payload(rng: Prng, schema: SchemaDescriptor) -> str:
+    t: str = schema.type_name
+    if t == SCHEMA_INTEGER:
+        mode: int = rng.choose_index(3)
+        if mode == 0 and schema.has_min_val:
+            return str(int(schema.min_val) - 10)
+        elif mode == 1 and schema.has_max_val:
+            return str(int(schema.max_val) + 10)
+        else:
+            return "\"invalid_string_instead_of_int\""
+    elif t == SCHEMA_NUMBER:
+        return "\"not_a_number\""
+    elif t == SCHEMA_STRING:
+        if schema.max_len > 0:
+            return "\"" + _gen_valid_string(rng, schema.max_len + 5, schema.max_len + 20) + "\""
+        elif len(schema.enum_values) > 0:
+            return "\"unknown_enum_choice_999\""
+        else:
+            return "123456"
+    elif t == SCHEMA_BOOLEAN:
+        return "\"true\""
+    elif t == SCHEMA_OBJECT:
+        if len(schema.properties) > 0:
+            mode: int = rng.choose_index(2)
+            if mode == 0:
+                return "{}"
+            else:
+                first_prop: PropertyRule = schema.properties[0]
+                corrupted: str = generate_invalid_json_payload(rng, first_prop.schema)
+                return "{\"" + first_prop.name + "\":" + corrupted + "}"
+        return "[]"
+    elif t == SCHEMA_ARRAY:
+        return "{\"not\": \"an array\"}"
+    return "null"
+
+def run_property_contract_test(
+    handler: (HttpRequest) -> HttpResponse,
+    method: str,
+    path: str,
+    request_schema: SchemaDescriptor | None,
+    expected_status_codes: list[int],
+    response_schema: SchemaDescriptor | None,
+    seed: int,
+    cases: int
+) -> PropertyContractResult:
+    passed: int = 0
+    failed: int = 0
+    counterexample_in: str = ""
+    counterexample_err: str = ""
+
+    c: int = 0
+    while c < cases:
+        case_seed: int = derive_case_seed(seed, "prop_contract", c, PRNG_VERSION)
+        rng: Prng = Prng(case_seed)
+
+        body: str = ""
+        req_headers: dict[str, str] = {}
+        if request_schema != None:
+            body = generate_valid_json_payload(rng, request_schema)
+            req_headers["Content-Type"] = "application/json"
+
+        req: HttpRequest = build_request(method, path, body, req_headers)
+        exec_res: HandlerExecutionResult = execute_handler(handler, req)
+        resp: HttpResponse = exec_res.response
+
+        status_ok: bool = False
+        for s in expected_status_codes:
+            if resp.status == s:
+                status_ok = True
+
+        if not status_ok:
+            failed = failed + 1
+            counterexample_in = body
+            counterexample_err = "unexpected status " + str(resp.status) + ", expected one of: " + str(expected_status_codes)
+            return PropertyContractResult(c + 1, passed, failed, counterexample_in, counterexample_err, seed)
+
+        if response_schema != None and len(resp.body) > 0:
+            try:
+                parsed_json: JsonValue = nox.json.parse(resp.body)
+                errors: list[str] = validate_schema(response_schema, parsed_json, "$")
+                if len(errors) > 0:
+                    failed = failed + 1
+                    counterexample_in = body
+                    counterexample_err = "response schema error: " + errors[0]
+                    return PropertyContractResult(c + 1, passed, failed, counterexample_in, counterexample_err, seed)
+            except Exception as e:
+                failed = failed + 1
+                counterexample_in = body
+                counterexample_err = "response is not valid JSON: " + str(e)
+                return PropertyContractResult(c + 1, passed, failed, counterexample_in, counterexample_err, seed)
+
+        passed = passed + 1
+        c = c + 1
+
+    return PropertyContractResult(cases, passed, 0, "", "", seed)
+
+def run_negative_property_contract_test(
+    handler: (HttpRequest) -> HttpResponse,
+    method: str,
+    path: str,
+    request_schema: SchemaDescriptor,
+    expected_error_status: int,
+    seed: int,
+    cases: int
+) -> PropertyContractResult:
+    passed: int = 0
+    failed: int = 0
+    counterexample_in: str = ""
+    counterexample_err: str = ""
+
+    c: int = 0
+    while c < cases:
+        case_seed: int = derive_case_seed(seed, "neg_contract", c, PRNG_VERSION)
+        rng: Prng = Prng(case_seed)
+
+        invalid_body: str = generate_invalid_json_payload(rng, request_schema)
+        req_headers: dict[str, str] = {"Content-Type": "application/json"}
+        req: HttpRequest = build_request(method, path, invalid_body, req_headers)
+        exec_res: HandlerExecutionResult = execute_handler(handler, req)
+        resp: HttpResponse = exec_res.response
+
+        if resp.status != expected_error_status:
+            failed = failed + 1
+            counterexample_in = invalid_body
+            counterexample_err = "handler accepted invalid payload or returned " + str(resp.status) + " instead of expected error " + str(expected_error_status)
+            return PropertyContractResult(c + 1, passed, failed, counterexample_in, counterexample_err, seed)
+
+        passed = passed + 1
+        c = c + 1
+
+    return PropertyContractResult(cases, passed, 0, "", "", seed)

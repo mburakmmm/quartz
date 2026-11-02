@@ -3,6 +3,19 @@
 All notable changes to the Quartz test framework will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] - 2026-11-02 - Phase 6: Cross-Module Hardening, Adapters & CLI Entry Point
+
+### Added
+- **Property-Driven Contract Testing (`contract/property_contract.nox`)**: Generator-backed payload synthesizer generating valid and deliberately invalid JSON documents conforming to `SchemaDescriptor` using Quartz PRNG. `run_property_contract_test` executes API handlers under hundreds of randomized property payloads; `run_negative_property_contract_test` validates that handlers reject non-conforming inputs with expected error status codes.
+- **Ecosystem Adapters (`adapters/`)**:
+  - `adapters/nyx.nox`: Optional Nyx web framework bridge (`NyxAdapter`, `create_nyx_adapter`) connecting Nyx `Router` instances to Quartz Contract tests (`test_contract`) and Load scenarios (`run_load_test`) with zero network overhead.
+  - `adapters/aether.nox`: Optional Aether middleware pipeline bridge (`AetherAdapter`, `create_aether_adapter`) supporting before/after middleware chains (`use_before`, `use_after`), contract testing, and load testing.
+  - Strict architectural decoupling: Quartz Core, Contract, and Load maintain zero dependencies on `adapters.*`.
+- **Backend Compatibility Matrix (`tests/backend_matrix_test.nox`)**: Cross-backend test suite validating golden PRNG determinism, monotonic clock, JSON/schema validation, property-driven contract execution, and Nyx/Aether adapters.
+- **CLI Dispatcher (`cli/main.nox`)**: Full command-line interface supporting `version`, `test`, `property`, `fuzz`, `replay`, `contract`, `load`, and `help` subcommands with robust flag parsing (`--seed`, `--cases`, `--vus`, `--duration`, `--requests`).
+- **Examples (`examples/`)**: Added `examples/property_example.nox` demonstrating list reversing invariants and verified all 4 examples (`property_example.nox`, `fuzz_csv_example.nox`, `contract_example.nox`, `load_local_example.nox`).
+- **Facade (`quartz.nox`)**: Added `contract.property_contract` export and bumped version to `0.7.0`.
+
 ## [0.6.1] - 2026-11-02 - Phase 5.3: Concurrency, OpenAPI Boundaries & Load Engine Hardening
 
 ### Fixed & Hardened
