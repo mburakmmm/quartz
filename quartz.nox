@@ -31,7 +31,7 @@ import adapters.nyx
 import adapters.aether
 
 def version() -> str:
-    return "0.9.0"
+    return "0.9.1"
 
 def framework_info() -> str:
     return "Quartz Test Framework v" + version() + " for NOX Ecosystem"

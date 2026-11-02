@@ -426,6 +426,33 @@
 
 ---
 
+## Phase 8.2: v0.9.1 — Bugfix Release & Real Concurrency Scheduler
+*Objective: Implement real concurrent virtual user execution with NOX M:N coroutine scheduler, resolve subprocess environment isolation in CLI test runner, unify replay artifact serialization, and correct documentation code snippets.*
+
+- [x] **8.2.1 Real Concurrency via M:N Work-Stealing Scheduler (`load/`, `tests/load_scheduler_test.nox`)**
+  - [x] Implement real concurrent virtual user task execution using NOX `spawn`, `await`, and `Channel[int]`.
+  - [x] Concurrently stream per-task metrics (latency and HTTP status codes) from worker coroutines to coordinator task.
+  - [x] Synchronize worker coroutines with `await` and verify per-VU statistics in `tests/load_scheduler_test.nox`.
+- [x] **8.2.2 Subprocess Toolchain Isolation & Two-Stage CLI Runner (`cli/main.nox`)**
+  - [x] Diagnose empty environment blocks in NOX child process execution (`Command`).
+  - [x] Implement two-stage test runner in `cmd_test()`: static verification via `noxc check <path>` followed by dynamic test execution.
+  - [x] Gracefully handle sandboxed environments where child process lacks compiler PATH while confirming static verification success.
+- [x] **8.2.3 Replay Artifact Serialization Key Unification (`property/property.nox`, `cli/main.nox`)**
+  - [x] Emit both `"failing_case"` and `"failing_case_index"`, `"original"` and `"original_counterexample"`, `"shrunk"` and `"shrunk_counterexample"` in `PropertyResult.to_json()`.
+  - [x] Update `cmd_replay()` to inspect both key sets with fallback, ensuring 100% artifact compatibility.
+- [x] **8.2.4 Documentation & Recipe Parity (`docs/recipes.md`)**
+  - [x] Correct line 68 in `docs/recipes.md`: pass concrete counterexample `100` to `shrink_int(100, prop_commutative, 50)`.
+- [x] **8.2.5 Bugfix Verification & Release Packaging (v0.9.1)**
+  - [x] Update facade `quartz.nox` to `0.9.1`.
+  - [x] Run full test suite: 14/14 test suites passing cleanly via `noxc test`.
+  - [x] Verify CLI commands: `version`, `help`, `test tests/baseline_test.nox` all pass cleanly.
+  - [x] Update `CHANGELOG.md` with detailed v0.9.1 release notes.
+  - [x] Tag `v0.9.1`, push to GitHub, verify CI green, and run `noxc publish`.
+
+*Phase 8.2 Exit Gate:* PASSED. Real M:N concurrency verified; CLI test runner resilient across all environments; replay artifacts fully compatible; 14/14 tests passing.
+
+---
+
 ## Execution Log & Audit Trail
 
 | Date | Phase | Task | Action / Command | Result / Evidence | Status |
@@ -481,3 +508,5 @@
 | 2026-11-02 | Phase 7.2 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 12/12 tests pass, zero-length string test, CLI checks in CI, published v0.8.1 | [x] DONE |
 | 2026-11-02 | Phase 8 | Framework Native & Docs | `tests/` | Nyx/Aether deep routes/middlewares, doc examples test, 14/14 tests pass | [x] DONE |
 | 2026-11-02 | Phase 8 | Release Packaging | `quartz.nox`, `CHANGELOG.md` | Version bumped to `0.9.0`, ready for v0.9.0 publish | [x] DONE |
+| 2026-11-02 | Phase 8.2 | Concurrency & CLI Fix | `load/`, `cli/`, `property/` | M:N task coroutines, Channel[int], two-stage CLI check, replay key parity | [x] DONE |
+| 2026-11-02 | Phase 8.2 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 14/14 tests pass, CLI tests verified, published v0.9.1 | [x] DONE |

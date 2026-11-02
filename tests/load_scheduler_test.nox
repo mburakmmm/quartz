@@ -158,6 +158,55 @@ def test_task_timeout_guard() -> None:
     summary: LoadTestSummary = run_task_workload(wl, mock_fast_task, [], limits)
     assert_false(summary.aborted, "fast task stays within timeout")
 
+async def concurrent_worker(vu_id: int, cases: int, ch: Channel[int]) -> None:
+    i: int = 0
+    while i < cases:
+        t0: nox.time.Instant = nox.time.instant_now()
+        ok: bool = mock_fast_task(i)
+        dur: int = t0.elapsed_ms()
+        status: int = 200 if ok else 500
+        await ch.send(vu_id)
+        await ch.send(dur)
+        await ch.send(status)
+        i = i + 1
+    # Termination sentinel: -1 - vu_id
+    await ch.send(-1 - vu_id)
+
+async def test_concurrent_scheduler() -> None:
+    vu_count: int = 3
+    cases_per_vu: int = 10
+    ch: Channel[int] = Channel[int](64)
+
+    # Spawn 3 concurrent virtual users on NOX M:N work-stealing scheduler
+    t0: Task[None] = spawn concurrent_worker(0, cases_per_vu, ch)
+    t1: Task[None] = spawn concurrent_worker(1, cases_per_vu, ch)
+    t2: Task[None] = spawn concurrent_worker(2, cases_per_vu, ch)
+
+    vu_completed: list[int] = [0, 0, 0]
+    active_vus: int = vu_count
+    total_completed: int = 0
+
+    while active_vus > 0:
+        val: int = await ch.recv()
+        if val < 0:
+            active_vus = active_vus - 1
+        else:
+            vu_id: int = val
+            dur: int = await ch.recv()
+            status: int = await ch.recv()
+            total_completed = total_completed + 1
+            if vu_id < len(vu_completed):
+                vu_completed[vu_id] = vu_completed[vu_id] + 1
+
+    await t0
+    await t1
+    await t2
+
+    assert_eq_int(total_completed, 30, "30 total requests completed concurrently")
+    assert_eq_int(vu_completed[0], 10, "VU 0 completed 10 requests")
+    assert_eq_int(vu_completed[1], 10, "VU 1 completed 10 requests")
+    assert_eq_int(vu_completed[2], 10, "VU 2 completed 10 requests")
+
 def run_all_load_scheduler_tests() -> None:
     test_safety_limits_clamping()
     test_load_target_validation()
@@ -168,6 +217,9 @@ def run_all_load_scheduler_tests() -> None:
     test_handler_load_runner()
     test_load_json_compliance_and_escaping()
     test_task_timeout_guard()
-    print("quartz load scheduler test: ALL PASS")
 
 run_all_load_scheduler_tests()
+
+conc_task: Task[None] = spawn test_concurrent_scheduler()
+await conc_task
+print("quartz load scheduler test: ALL PASS")

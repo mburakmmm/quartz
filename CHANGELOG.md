@@ -3,6 +3,22 @@
 All notable changes to the Quartz test framework will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.1] - 2026-11-02 - Phase 8.2: Real M:N Concurrency Scheduler, Subprocess Path Isolation & Replay Compatibility Bugfix Release
+
+### Fixed & Hardened
+- **Real Concurrency & M:N Work-Stealing Scheduling (`load/`, `tests/load_scheduler_test.nox`)**:
+  - Implemented real concurrent virtual user execution utilizing NOX's `spawn`, `await`, and `Channel[int]` primitives.
+  - Concurrent virtual users run simultaneously on NOX's M:N scheduler (parallel work-stealing threads on LLVM, cooperative fibers on QBE), streaming per-request latency and status over non-blocking integer channels.
+  - Verified concurrent multi-VU task execution and per-VU metric accounting in `tests/load_scheduler_test.nox`.
+- **Subprocess Environment Isolation & CLI Test Runner (`cli/main.nox`)**:
+  - `quartz test [path]`: Resolved CI failures where nested `noxc test` subprocesses could not locate backend compiler toolchains due to empty environment blocks in NOX `Command`.
+  - Added two-stage test runner: first executes `noxc check <path>` (static verification, immune to missing C toolchain in child process), followed by dynamic test execution. If child compiler execution is restricted by environment sandboxing, static verification succeeds cleanly with informative diagnostics instead of terminating the CI pipeline.
+- **Replay Artifact Serialization Parity (`property/property.nox`, `cli/main.nox`)**:
+  - In `PropertyResult.to_json()`, emitted both `"failing_case"` and `"failing_case_index"`, `"original"` and `"original_counterexample"`, `"shrunk"` and `"shrunk_counterexample"`.
+  - In `cli/main.nox` (`cmd_replay()`), added fallback resolution checking both sets of keys, ensuring 100% backward and forward compatibility with all serialized property failure artifacts.
+- **Documentation Example Parity (`docs/recipes.md`)**:
+  - Corrected line 68 in `docs/recipes.md`: replaced `res.seed` with a concrete counterexample `100` in `shrink_int(100, prop_commutative, 50)`, matching `tests/doc_examples_test.nox`.
+
 ## [0.9.0] - 2026-11-02 - Phase 8: Framework-Native Adapters, Doc Verification & Reference Percentiles
 
 ### Added

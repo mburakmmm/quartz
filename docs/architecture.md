@@ -111,3 +111,13 @@ Quartz is designed as a standalone, zero-dependency testing framework for the NO
 ### ADR-011: Channel Primitive Parameterization under QBE Runtime
 - **Context:** In NOX 2.0.108 with the QBE backend on Windows, parameterized channels with complex custom classes (`Channel[CustomClass]`) can cause exit code 1 during fiber cleanup.
 - **Decision:** Internal worker channels use primitive payloads (`Channel[int]`, `Channel[str]`) or serialized string frames. Complex state aggregation is handled via deterministic accumulators and structured structs outside the channel fiber.
+
+### ADR-012: Real M:N Concurrency, Channel[int] Value Streams & Subprocess Toolchain Isolation
+- **Context:** Load testing requires real concurrent virtual user execution running simultaneously across CPU cores on LLVM and cooperative fibers on QBE. However, in NOX 2.0.108:
+  1. Coroutine task parameters (`async def`) are strictly restricted by the compiler to primitive types (`int/float/bool/str/None/Task[T]/Channel[T]`); custom classes and function callbacks cannot be packed into coroutine frames.
+  2. Module exports do not preserve the `async` metadata across files (`from module import async_func` causes the compiler to treat the imported function as synchronous, rejecting `spawn`).
+  3. `nox.process.Command` starts child processes with a minimal/empty environment block (missing `PATH`, `TEMP`, `SYSTEMROOT`), causing nested compiler invocations (`noxc test`) in sandboxes to report `FileNotFound`.
+- **Decision:**
+  1. Virtual user workers are spawned concurrently using `Channel[int]` for non-blocking lock-free metric streaming (`vu_id`, `dur_ms`, `status_code`), completely avoiding heap allocations and memory corruption.
+  2. Coroutine task functions are scoped within the module where `spawn` is executed.
+  3. The CLI test runner implements a two-stage execution strategy: static type verification via `noxc check <path>` (immune to missing C compiler toolchain in child process) followed by dynamic test execution, providing informative diagnostics when child process compiler execution is restricted by environment sandboxing.

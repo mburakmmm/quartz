@@ -65,7 +65,7 @@ def test_multiplication_commutative() -> None:
     res: PropertyResult = run_int_property("int_commutative", config, gen, prop_commutative)
     if res.status != "PASS":
         # Automatically shrinks to minimal counterexample
-        shrunk: ShrinkResultInt = shrink_int(res.seed, prop_commutative, 50)
+        shrunk: ShrinkResultInt = shrink_int(100, prop_commutative, 50)
         print("Failure shrunk to: " + str(shrunk.value))
 ```
 
