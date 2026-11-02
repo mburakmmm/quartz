@@ -308,8 +308,40 @@
 
 ---
 
-## Phase 7: v1.0.0 — Production Stabilization & Release
-*Objective: Interface freeze, complete documentation, security audit, and formal v1.0 release.*
+## Phase 6.2: v0.7.1 — Property Generator Invariants, CLI Commands & Rate Pacing Hardening
+*Objective: Resolve GPT 6 Sol audit findings on empty body contract bypass, generator constraint compliance, non-blocking rate pacing, CLI execution capabilities, and histogram precision.*
+
+- [x] **6.2.1 Empty Body Contract Enforcement (`contract/property_contract.nox`)**
+  - [x] Reject empty response bodies when a response schema is specified unless status is 204 or schema is null.
+  - [x] Fail with clear contract diagnostic when an endpoint returns 200 OK with empty body.
+- [x] **6.2.2 Generator Constraint Compliance & Self-Validation (`contract/property_contract.nox`)**
+  - [x] Obey `minItems` (`min_len`) and `maxItems` (`max_len`) when generating arrays.
+  - [x] In `generate_invalid_json_payload`, never return valid `{}` for objects without required keys; inject unexpected properties or corrupt field types.
+  - [x] Enforce generator self-validation invariant (`validate_schema` check ensuring valid generator produces 0 errors and invalid generator produces >= 1 error).
+- [x] **6.2.3 CLI Command Functional Implementations (`cli/main.nox`)**
+  - [x] `quartz test`: Execute `nox.process.Command("noxc")` with arguments and stream output.
+  - [x] `quartz replay <file.json>`: Parse artifact JSON, extract seed and case index, rerun replay engine, and confirm bug reproduction.
+  - [x] `quartz report [dir]`: Inspect test artifacts and summary files, output structured overview.
+  - [x] `quartz contract [spec]`: Parse and inspect OpenAPI 3 specification paths and operations.
+- [x] **6.2.4 Non-Blocking Rate Pacing & Timeout Enforcement (`load/executor.nox`)**
+  - [x] Replace busy-wait pacing (`while t0 < expected: pass`) with `nox.time.sleep_ms(rem_ms)`.
+  - [x] Pass strict socket `timeout_ms` to network request calls in `run_network_load_test`.
+- [x] **6.2.5 60-Second Extended Histogram & Accurate High Latency Percentiles (`load/metrics.nox`)**
+  - [x] Expand histogram buckets from 136 to 246 buckets covering up to 60,000ms with 500ms intervals.
+  - [x] Eliminate percentile skew for latencies between 5,000ms and 60,000ms.
+- [x] **6.2.6 Aether Adapter Pipeline Semantics (`adapters/aether.nox`)**
+  - [x] Allow after-middlewares (e.g. logging, CORS) to process early-return responses.
+- [x] **6.2.7 Verification & Release**
+  - [x] Update `tests/backend_matrix_test.nox` and test suite.
+  - [x] Update `CHANGELOG.md` and `docs/api.md` for v0.7.1.
+  - [x] Verify `noxc test` (11/11 pass), push commit & tag `v0.7.1`, verify CI across 4 platforms, and run `noxc publish`.
+
+*Phase 6.2 Exit Gate:* PASSED. Zero silent bypasses on empty response bodies; generator invariant verified; CLI commands fully operational; non-blocking pacing; accurate 60s histograms. 11/11 test suites pass.
+
+---
+
+## Phase 7: Production Stabilization & Release
+*Objective: Interface freeze, complete documentation, security audit, and formal release.*
 
 - [ ] **7.1 Interface Freeze & SemVer Contract**
   - [ ] Finalize public API signatures in `quartz.nox` and core modules.
@@ -375,3 +407,5 @@
 | 2026-11-02 | Phase 6 | Ecosystem Adapters | `adapters/nyx.nox`, `aether.nox` | Nyx router bridge, Aether middleware pipeline bridge | [x] DONE |
 | 2026-11-02 | Phase 6 | Matrix & CLI | `tests/backend_matrix_test.nox`, `cli/main.nox` | Full matrix test (11/11 pass), CLI subcommand dispatcher | [x] DONE |
 | 2026-11-02 | Phase 6 | Release Packaging | `quartz.nox`, `CHANGELOG.md`, `docs/api.md` | Version bumped to `0.7.0`, ready for publish | [x] DONE |
+| 2026-11-02 | Phase 6.2 | Hardening & Fixes | `contract/`, `load/`, `cli/`, `adapters/` | Empty body guard, generator invariants, 60s histogram, non-blocking pacing | [x] DONE |
+| 2026-11-02 | Phase 6.2 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 11/11 tests pass, QBE & LLVM CI matrix, published `v0.7.1` | [x] DONE |

@@ -29,7 +29,7 @@ import load.workload
 import load.executor
 
 def version() -> str:
-    return "0.7.0"
+    return "0.7.1"
 
 def framework_info() -> str:
     return "Quartz Test Framework v" + version() + " for NOX Ecosystem"

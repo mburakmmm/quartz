@@ -9,10 +9,10 @@ from nox.http import HttpRequest, HttpResponse
 from nox.time import Instant
 from nox.router import Router, Context
 from core.prng import Prng, derive_case_seed, PRNG_VERSION
-from core.assert import assert_eq_int, assert_eq_str, assert_true, assert_false, assert_eq_float
+from core.assert import assert_eq_int, assert_eq_str, assert_true, assert_false, assert_eq_float, assert_contains_str
 from contract.http import build_request, build_response, execute_handler, HandlerExecutionResult
-from contract.schema import schema_object, schema_string, schema_integer, PropertyRule, validate_schema, SchemaDescriptor, json_get_key
-from contract.property_contract import run_property_contract_test, run_negative_property_contract_test, PropertyContractResult
+from contract.schema import schema_object, schema_string, schema_integer, schema_array, PropertyRule, validate_schema, SchemaDescriptor, json_get_key
+from contract.property_contract import run_property_contract_test, run_negative_property_contract_test, PropertyContractResult, generate_valid_json_payload, generate_invalid_json_payload
 from adapters.nyx import create_nyx_adapter, NyxAdapter
 from adapters.aether import create_aether_adapter, AetherAdapter
 
@@ -111,6 +111,42 @@ def test_property_driven_contract_execution() -> None:
     assert_eq_int(res_neg.passed_cases, 15, "15 negative cases passed")
     assert_eq_int(res_neg.failed_cases, 0, "0 negative cases failed")
 
+    # 3. Empty body rejection: handler returns 200 with empty body when schema expected
+    def empty_body_handler(req: HttpRequest) -> HttpResponse:
+        h_empty: dict[str, str] = {}
+        return build_response(200, "", h_empty)
+
+    res_empty: PropertyContractResult = run_property_contract_test(
+        empty_body_handler,
+        "POST",
+        "/double",
+        req_schema,
+        [200],
+        resp_schema,
+        99999,
+        5
+    )
+    assert_false(res_empty.is_success(), "empty body with schema expected must fail contract")
+    assert_true(res_empty.failed_cases > 0, "failed cases > 0 on empty body")
+    assert_contains_str(res_empty.counterexample_error, "received empty body", "error diagnostic indicates empty body")
+
+def test_generator_array_bounds_and_invariants() -> None:
+    arr_schema: SchemaDescriptor = schema_array(schema_integer(1, 100, True, True), 3, 5)
+    rng: Prng = Prng(777)
+    i: int = 0
+    while i < 10:
+        valid_json: str = generate_valid_json_payload(rng, arr_schema)
+        parsed: JsonValue = nox.json.parse(valid_json)
+        errs: list[str] = validate_schema(arr_schema, parsed, "$")
+        assert_eq_int(len(errs), 0, "generated array must strictly obey minItems 3 and maxItems 5")
+        i = i + 1
+
+    # Invalid payload must produce at least 1 schema error
+    inv_json: str = generate_invalid_json_payload(rng, arr_schema)
+    parsed_inv: JsonValue = nox.json.parse(inv_json)
+    inv_errs: list[str] = validate_schema(arr_schema, parsed_inv, "$")
+    assert_true(len(inv_errs) > 0, "invalid array payload must produce schema errors")
+
 def test_nyx_and_aether_adapters() -> None:
     router: Router = Router()
 
@@ -142,9 +178,23 @@ def test_nyx_and_aether_adapters() -> None:
     assert_eq_int(resp_aether.status, 200, "aether adapter returned 200")
     assert_eq_str(resp_aether.headers["X-Trace-Id"], "trace-12345", "aether middleware injected header")
 
+    # Test early-return before-middleware still runs after-middleware
+    def auth_reject_middleware(req: HttpRequest) -> HttpResponse | None:
+        h_rej: dict[str, str] = {}
+        return build_response(401, "{\"error\": \"unauthorized\"}", h_rej)
+
+    aether_ad_rej: AetherAdapter = create_aether_adapter(router)
+    aether_ad_rej.use_before(auth_reject_middleware)
+    aether_ad_rej.use_after(trace_middleware)
+
+    resp_rej: HttpResponse = aether_ad_rej.dispatch(req_aether)
+    assert_eq_int(resp_rej.status, 401, "early return 401 status")
+    assert_eq_str(resp_rej.headers["X-Trace-Id"], "trace-12345", "after middleware ran on early return")
+
 test_prng_golden_determinism()
 test_monotonic_clock_progress()
 test_json_and_schema_validation()
+test_generator_array_bounds_and_invariants()
 test_property_driven_contract_execution()
 test_nyx_and_aether_adapters()
 print("quartz backend matrix test: ALL PASS")

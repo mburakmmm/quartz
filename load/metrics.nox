@@ -1,20 +1,31 @@
 # Quartz Load — Bounded Latency Metrics & Histograms
+# High-precision logarithmic-linear histogram spanning 0ms to 60,000ms (60 seconds)
+# with 246 fixed buckets, guaranteeing bounded O(1) memory and accurate percentiles.
+
 import nox.time
 from nox.time import Instant
 from core.report import escape_json
 
-HISTOGRAM_NUM_BUCKETS: int = 136
+HISTOGRAM_NUM_BUCKETS: int = 246
+HISTOGRAM_OVERFLOW_INDEX: int = 245
 
 def get_bucket_index(latency_ms: int) -> int:
     if latency_ms <= 0:
         return 0
     if latency_ms < 100:
+        # 0 - 99ms: 2ms resolution (50 buckets: 0..49)
         return latency_ms // 2
     if latency_ms < 1000:
+        # 100 - 999ms: 20ms resolution (45 buckets: 50..94)
         return 50 + (latency_ms - 100) // 20
     if latency_ms < 5000:
+        # 1000 - 4999ms: 100ms resolution (40 buckets: 95..134)
         return 95 + (latency_ms - 1000) // 100
-    return 135
+    if latency_ms < 60000:
+        # 5000 - 59999ms: 500ms resolution (110 buckets: 135..244)
+        return 135 + (latency_ms - 5000) // 500
+    # >= 60000ms: overflow bucket (bucket 245)
+    return HISTOGRAM_OVERFLOW_INDEX
 
 def get_bucket_midpoint(idx: int) -> int:
     if idx <= 0:
@@ -25,7 +36,9 @@ def get_bucket_midpoint(idx: int) -> int:
         return 100 + (idx - 50) * 20 + 10
     if idx < 135:
         return 1000 + (idx - 95) * 100 + 50
-    return 5000
+    if idx < 245:
+        return 5000 + (idx - 135) * 500 + 250
+    return 60000
 
 class LoadMetrics:
     scheduled: int
@@ -52,7 +65,7 @@ class LoadMetrics:
         self.max_latency_ms = 0
         self.sum_latency_ms = 0
 
-        # Initialize 136 buckets to 0
+        # Initialize 246 buckets to 0
         b: list[int] = []
         i: int = 0
         while i < HISTOGRAM_NUM_BUCKETS:
@@ -66,14 +79,14 @@ class LoadMetrics:
     def record_rejected(self: LoadMetrics) -> None:
         self.rejected = self.rejected + 1
 
-    def record_result(self: LoadMetrics, status_code: int, duration_ms: int, is_timeout: bool, is_success: bool) -> None:
+    def record_result(self: LoadMetrics, status: int, duration_ms: int, is_timeout: bool, is_success: bool) -> None:
         self.completed = self.completed + 1
         if is_timeout:
             self.timed_out = self.timed_out + 1
             self.failed = self.failed + 1
             return
 
-        if not is_success or status_code >= 400:
+        if not is_success or status >= 400:
             self.failed = self.failed + 1
             return
 
@@ -88,7 +101,7 @@ class LoadMetrics:
         # Record into bounded histogram bucket
         b_idx: int = get_bucket_index(duration_ms)
         self.buckets[b_idx] = self.buckets[b_idx] + 1
-        if b_idx == 135:
+        if b_idx == HISTOGRAM_OVERFLOW_INDEX:
             self.overflow_count = self.overflow_count + 1
 
     def percentile(self: LoadMetrics, p: float) -> int:
@@ -104,8 +117,8 @@ class LoadMetrics:
         while idx < HISTOGRAM_NUM_BUCKETS:
             accum = accum + self.buckets[idx]
             if accum >= target_count:
-                # If target falls into overflow bucket, use actual max_latency_ms
-                if idx == 135 and self.max_latency_ms > 5000:
+                # If target falls into overflow bucket (>60s), use actual max_latency_ms
+                if idx == HISTOGRAM_OVERFLOW_INDEX and self.max_latency_ms > 60000:
                     return self.max_latency_ms
                 return get_bucket_midpoint(idx)
             idx = idx + 1
@@ -139,29 +152,27 @@ class LoadMetrics:
         return float(self.completed) / sec
 
     def error_rate(self: LoadMetrics) -> float:
-        total: int = self.completed + self.rejected
-        if total <= 0:
+        if self.completed <= 0:
             return 0.0
-        return float(self.failed + self.rejected) / float(total)
+        return float(self.failed + self.timed_out) / float(self.completed)
 
     def to_json(self: LoadMetrics, total_duration_ms: int) -> str:
-        s: str = "{\n"
-        s = s + "  \"scheduled\": " + str(self.scheduled) + ",\n"
-        s = s + "  \"completed\": " + str(self.completed) + ",\n"
-        s = s + "  \"successful\": " + str(self.successful) + ",\n"
-        s = s + "  \"failed\": " + str(self.failed) + ",\n"
-        s = s + "  \"timed_out\": " + str(self.timed_out) + ",\n"
-        s = s + "  \"rejected\": " + str(self.rejected) + ",\n"
-        s = s + "  \"overflow_count\": " + str(self.overflow_count) + ",\n"
-        s = s + "  \"min_latency_ms\": " + str(self.min_latency_ms) + ",\n"
-        s = s + "  \"max_latency_ms\": " + str(self.max_latency_ms) + ",\n"
-        s = s + "  \"mean_latency_ms\": " + str(self.mean_latency_ms()) + ",\n"
-        s = s + "  \"p50_latency_ms\": " + str(self.p50()) + ",\n"
-        s = s + "  \"p90_latency_ms\": " + str(self.p90()) + ",\n"
-        s = s + "  \"p95_latency_ms\": " + str(self.p95()) + ",\n"
-        s = s + "  \"p99_latency_ms\": " + str(self.p99()) + ",\n"
-        s = s + "  \"throughput_rps\": " + str(self.throughput_rps(total_duration_ms)) + ",\n"
-        s = s + "  \"error_rate\": " + str(self.error_rate()) + ",\n"
-        s = s + "  \"total_duration_ms\": " + str(total_duration_ms) + "\n"
-        s = s + "}\n"
+        s: str = "{"
+        s = s + "\"scheduled\": " + str(self.scheduled) + ", "
+        s = s + "\"completed\": " + str(self.completed) + ", "
+        s = s + "\"successful\": " + str(self.successful) + ", "
+        s = s + "\"failed\": " + str(self.failed) + ", "
+        s = s + "\"timed_out\": " + str(self.timed_out) + ", "
+        s = s + "\"rejected\": " + str(self.rejected) + ", "
+        s = s + "\"overflow_count\": " + str(self.overflow_count) + ", "
+        s = s + "\"min_latency_ms\": " + str(self.min_latency_ms if self.min_latency_ms >= 0 else 0) + ", "
+        s = s + "\"max_latency_ms\": " + str(self.max_latency_ms) + ", "
+        s = s + "\"mean_latency_ms\": " + str(self.mean_latency_ms()) + ", "
+        s = s + "\"p50_latency_ms\": " + str(self.p50()) + ", "
+        s = s + "\"p90_latency_ms\": " + str(self.p90()) + ", "
+        s = s + "\"p95_latency_ms\": " + str(self.p95()) + ", "
+        s = s + "\"p99_latency_ms\": " + str(self.p99()) + ", "
+        s = s + "\"throughput_rps\": " + str(self.throughput_rps(total_duration_ms)) + ", "
+        s = s + "\"error_rate\": " + str(self.error_rate())
+        s = s + "}"
         return s

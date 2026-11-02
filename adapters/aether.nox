@@ -38,7 +38,13 @@ class AetherAdapter:
         while i < len(self.before_middlewares):
             early: HttpResponse | None = self.before_middlewares[i](req)
             if early != None:
-                return early
+                # Apply after-middlewares (e.g. CORS, logging, security headers) to early response
+                early_resp: HttpResponse = early
+                k: int = 0
+                while k < len(self.after_middlewares):
+                    early_resp = self.after_middlewares[k](req, early_resp)
+                    k = k + 1
+                return early_resp
             i = i + 1
 
         # Dispatch through router

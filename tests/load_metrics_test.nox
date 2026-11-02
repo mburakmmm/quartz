@@ -17,9 +17,13 @@ def test_histogram_bucketing() -> None:
     # 1000 to 5000ms: 100ms buckets
     assert_eq_int(get_bucket_index(1000), 95, "1000ms is bucket 95")
 
-    # > 5000ms: overflow bucket
+    # 5000 to 60000ms: 500ms buckets
     assert_eq_int(get_bucket_index(5000), 135, "5000ms is bucket 135")
-    assert_eq_int(get_bucket_index(99999), 135, "large ms is overflow bucket")
+    assert_eq_int(get_bucket_index(10000), 145, "10000ms is bucket 145")
+
+    # >= 60000ms: overflow bucket
+    assert_eq_int(get_bucket_index(60000), 245, "60000ms is bucket 245")
+    assert_eq_int(get_bucket_index(99999), 245, "large ms is overflow bucket")
 
 def test_percentile_calculations_and_monotonicity() -> None:
     m: LoadMetrics = LoadMetrics()
@@ -110,20 +114,37 @@ def test_threshold_evaluations() -> None:
 
 def test_high_latency_overflow() -> None:
     m: LoadMetrics = LoadMetrics()
-    # Record 10 requests taking 8000ms each
+    # 1. Mixed latencies between 5,000ms and 60,000ms must retain bucket resolution
     i: int = 0
-    while i < 10:
+    while i < 5:
         m.record_scheduled()
-        m.record_result(200, 8000, False, True)
+        m.record_result(200, 6000, False, True)
         i = i + 1
 
-    assert_eq_int(m.overflow_count, 10, "10 overflow requests recorded")
-    # p95 must accurately report 8000ms instead of being artificially capped at 5000ms!
-    assert_eq_int(m.p95(), 8000, "p95 accurately reports 8000ms on overflow")
-    assert_eq_int(m.p50(), 8000, "p50 accurately reports 8000ms on overflow")
+    j: int = 0
+    while j < 5:
+        m.record_scheduled()
+        m.record_result(200, 12000, False, True)
+        j = j + 1
 
-    json_str: str = m.to_json(1000)
-    assert_contains_str(json_str, "\"overflow_count\": 10", "json includes overflow_count")
+    # p50 should be in bucket 137 (~6250ms), p95 should be in bucket 149 (~12250ms)
+    assert_true(m.p50() >= 6000 and m.p50() <= 6500, "p50 resolves to ~6250ms without jumping to max")
+    assert_true(m.p95() >= 12000 and m.p95() <= 12500, "p95 resolves to ~12250ms")
+
+    # 2. Extreme overflow above 60,000ms (e.g. 70,000ms)
+    m_ext: LoadMetrics = LoadMetrics()
+    k: int = 0
+    while k < 5:
+        m_ext.record_scheduled()
+        m_ext.record_result(200, 70000, False, True)
+        k = k + 1
+
+    assert_eq_int(m_ext.overflow_count, 5, "5 extreme overflow requests recorded")
+    assert_eq_int(m_ext.p95(), 70000, "p95 accurately reports 70000ms on extreme overflow")
+    assert_eq_int(m_ext.p50(), 70000, "p50 accurately reports 70000ms on extreme overflow")
+
+    json_str: str = m_ext.to_json(1000)
+    assert_contains_str(json_str, "\"overflow_count\": 5", "json includes overflow_count")
 
 def run_all_load_metrics_tests() -> None:
     test_histogram_bucketing()

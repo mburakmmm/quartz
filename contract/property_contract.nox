@@ -102,7 +102,11 @@ def generate_valid_json_payload(rng: Prng, schema: SchemaDescriptor) -> str:
     elif t == SCHEMA_ARRAY:
         if len(schema.item_schemas) > 0:
             item_schema: SchemaDescriptor = schema.item_schemas[0]
-            count: int = rng.next_int_range(1, 3)
+            min_c: int = schema.min_len if schema.min_len >= 0 else 1
+            max_c: int = schema.max_len if schema.max_len >= 0 else (min_c + 2)
+            if max_c < min_c:
+                max_c = min_c
+            count: int = rng.next_int_range(min_c, max_c)
             out: str = "["
             c: int = 0
             while c < count:
@@ -137,18 +141,45 @@ def generate_invalid_json_payload(rng: Prng, schema: SchemaDescriptor) -> str:
     elif t == SCHEMA_BOOLEAN:
         return "\"true\""
     elif t == SCHEMA_OBJECT:
-        if len(schema.properties) > 0:
-            mode: int = rng.choose_index(2)
-            if mode == 0:
-                return "{}"
+        if len(schema.required_keys) > 0:
+            # Omit required keys to violate schema
+            return "{}"
+        else:
+            if schema.is_strict:
+                return "{\"__forbidden_undeclared_key__\": 99999}"
             else:
-                first_prop: PropertyRule = schema.properties[0]
-                corrupted: str = generate_invalid_json_payload(rng, first_prop.schema)
-                return "{\"" + first_prop.name + "\":" + corrupted + "}"
-        return "[]"
+                return "\"not_an_object_literal\""
     elif t == SCHEMA_ARRAY:
-        return "{\"not\": \"an array\"}"
+        if schema.min_len > 0:
+            return "[]"
+        elif schema.max_len >= 0:
+            # Produce array with items exceeding max_len
+            oversized: str = "["
+            oi: int = 0
+            limit: int = schema.max_len + 2
+            while oi < limit:
+                if oi > 0:
+                    oversized = oversized + ","
+                oversized = oversized + "0"
+                oi = oi + 1
+            oversized = oversized + "]"
+            return oversized
+        else:
+            return "{\"not\": \"an array\"}"
     return "null"
+
+def verify_generator_invariant(schema: SchemaDescriptor, payload: str, expect_valid: bool) -> bool:
+    try:
+        parsed: JsonValue = nox.json.parse(payload)
+        errs: list[str] = validate_schema(schema, parsed, "$")
+        if expect_valid:
+            return len(errs) == 0
+        else:
+            return len(errs) > 0
+    except Exception as e:
+        if not expect_valid:
+            return True
+        return False
 
 def run_property_contract_test(
     handler: (HttpRequest) -> HttpResponse,
@@ -191,20 +222,28 @@ def run_property_contract_test(
             counterexample_err = "unexpected status " + str(resp.status) + ", expected one of: " + str(expected_status_codes)
             return PropertyContractResult(c + 1, passed, failed, counterexample_in, counterexample_err, seed)
 
-        if response_schema != None and len(resp.body) > 0:
-            try:
-                parsed_json: JsonValue = nox.json.parse(resp.body)
-                errors: list[str] = validate_schema(response_schema, parsed_json, "$")
-                if len(errors) > 0:
+        if response_schema != None:
+            if len(resp.body) == 0:
+                # Disallow empty response body unless explicitly a 204 No Content or schema is null
+                if response_schema.type_name != SCHEMA_NULL and resp.status != 204:
                     failed = failed + 1
                     counterexample_in = body
-                    counterexample_err = "response schema error: " + errors[0]
+                    counterexample_err = "expected response body matching schema '" + response_schema.type_name + "', but received empty body (status " + str(resp.status) + ")"
                     return PropertyContractResult(c + 1, passed, failed, counterexample_in, counterexample_err, seed)
-            except Exception as e:
-                failed = failed + 1
-                counterexample_in = body
-                counterexample_err = "response is not valid JSON: " + str(e)
-                return PropertyContractResult(c + 1, passed, failed, counterexample_in, counterexample_err, seed)
+            else:
+                try:
+                    parsed_json: JsonValue = nox.json.parse(resp.body)
+                    errors: list[str] = validate_schema(response_schema, parsed_json, "$")
+                    if len(errors) > 0:
+                        failed = failed + 1
+                        counterexample_in = body
+                        counterexample_err = "response schema error: " + errors[0]
+                        return PropertyContractResult(c + 1, passed, failed, counterexample_in, counterexample_err, seed)
+                except Exception as e:
+                    failed = failed + 1
+                    counterexample_in = body
+                    counterexample_err = "response is not valid JSON: " + str(e)
+                    return PropertyContractResult(c + 1, passed, failed, counterexample_in, counterexample_err, seed)
 
         passed = passed + 1
         c = c + 1

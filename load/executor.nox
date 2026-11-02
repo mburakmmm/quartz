@@ -118,9 +118,12 @@ def run_task_workload(workload: WorkloadConfig, task_func: (int) -> bool, thresh
         while case_idx < max_cases and t0.elapsed_ms() < deadline_ms:
             # Rate pacing: expected arrival time for case_idx
             expected_ms: int = (case_idx * 1000) // target_rps
-            while t0.elapsed_ms() < expected_ms and t0.elapsed_ms() < deadline_ms:
-                # Cooperative wait for scheduled arrival time
-                pass
+            rem_ms: int = expected_ms - t0.elapsed_ms()
+            if rem_ms > 0:
+                if t0.elapsed_ms() + rem_ms > deadline_ms:
+                    rem_ms = deadline_ms - t0.elapsed_ms()
+                if rem_ms > 0:
+                    nox.time.sleep_ms(rem_ms)
 
             if t0.elapsed_ms() >= deadline_ms:
                 break

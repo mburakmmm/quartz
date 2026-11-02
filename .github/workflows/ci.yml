@@ -64,6 +64,15 @@ jobs:
         run: |
           noxc test
 
+      - name: Run backend matrix test with QBE
+        run: |
+          noxc run tests/backend_matrix_test.nox --backend qbe
+
+      - name: Run backend matrix test with LLVM
+        if: runner.os != 'Windows'
+        run: |
+          noxc run tests/backend_matrix_test.nox --backend llvm
+
       - name: Run Quartz CLI entry point
         run: |
           noxc run cli/main.nox
