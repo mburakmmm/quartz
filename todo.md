@@ -2,7 +2,7 @@
 
 > **Ecosystem:** NOX Programming Language (`nox-lang` v2.0.108+)  
 > **Status:** Production Hardening & Pre-Release Stabilization  
-> **Target Version:** v0.1.0 (Phase 1) → v0.8.0 (Phase 7)  
+> **Target Version:** v0.1.0 (Phase 1) → v0.9.0 (Phase 8)  
 > **Operating Contract:** Strictly adhere to `AGENTS.md` non-negotiable rules. Zero unverified claims, zero skipped phases. Never label 1.0 without explicit user authorization.
 
 ---
@@ -397,6 +397,32 @@
   - [x] Tag `v0.8.1`, push to GitHub, verify CI green, and run `noxc publish`.
 
 *Phase 7.2 Exit Gate:* PASSED. Zero double-counted timeouts; generator self-validation active in all runs; CLI returns valid exit codes on failure; documentation 100% compliant with source API; 12/12 tests passing.
+
+---
+
+## Phase 8: v0.9.0 — Real Concurrency, Task Coroutines & Native Framework Testing
+*Objective: Real concurrent virtual user execution via task coroutines and channels, in-flight overlap, framework-native Nyx/Aether integration test suite, documentation example verification, and dual-backend test matrix.*
+
+- [ ] **8.1 Real Concurrent Virtual User Scheduling (`load/executor.nox`)**
+  - [ ] Implement asynchronous worker pool using `Channel[int]` / `Channel[str]` allowing concurrent, overlapping execution of tasks across virtual users.
+  - [ ] Hard deadline watchdog forcing immediate termination of in-flight workers when test duration limit expires.
+  - [ ] True in-flight concurrency tracking with monotonic timestamps and backpressure accounting.
+- [ ] **8.2 Framework-Native Nyx & Aether Integration Suite (`tests/framework_native_test.nox`)**
+  - [ ] Deep routing verification: path variables, query string parameters, multi-method handlers on `Router`.
+  - [ ] Middleware chains: before, after, error interceptors, and CORS/header manipulation with `AetherAdapter`.
+  - [ ] Real contract tests and load scenarios executed against multi-route application adapters.
+- [ ] **8.3 Documentation Examples Verification (`tests/doc_examples_test.nox`)**
+  - [ ] Automated compiling test executing all recipes from `docs/recipes.md` ensuring zero syntax or type drift.
+- [ ] **8.4 Extended Dual-Backend CI Matrix & Percentile Accuracy**
+  - [ ] Expand GitHub Actions CI matrix to test all 13+ test files independently under both QBE and LLVM.
+  - [ ] Reference distribution percentile verification in `tests/load_metrics_test.nox`.
+- [ ] **8.5 Release Packaging & Verification (v0.9.0)**
+  - [ ] Update facade `quartz.nox` to `0.9.0`.
+  - [ ] Run full test suite: 14/14 test suites passing cleanly via `noxc test`.
+  - [ ] Update `CHANGELOG.md` with detailed v0.9.0 release notes.
+  - [ ] Tag `v0.9.0`, push to GitHub, verify CI green, and run `noxc publish`.
+
+*Phase 8 Exit Gate:* Real overlapping virtual user concurrency demonstrated; zero deadlocks on single-threaded QBE and multi-threaded LLVM; documentation examples 100% executable; 14/14 test suites passing.
 
 ---
 
