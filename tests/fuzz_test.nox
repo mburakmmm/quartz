@@ -104,21 +104,18 @@ def test_crash_minimizer() -> None:
     assert_true(res.minimized_len < res.original_len, "minimized input is significantly shorter")
 
 def target_fuzz_parser(s: str) -> None:
-    # Simulated parser with an edge-case crash
-    if nox.strings.starts_with(s, "KEY:"):
-        # Normal key-value format
-        pass
-    elif nox.strings.contains(s, "BUG_XYZ"):
-        raise Exception("simulated internal parser error")
-    else:
-        # Handled rejection
+    # A parser that expects KEY:<val> and crashes on unhandled escape / boundary tokens
+    if not nox.strings.starts_with(s, "KEY:"):
         raise Exception("invalid format: expected KEY: prefix")
+    val: str = s[4:len(s)]
+    if nox.strings.contains(val, "\"") or nox.strings.contains(val, "\x00") or nox.strings.contains(val, "-1"):
+        raise Exception("internal parser fault: unhandled boundary token in value")
 
 def test_fuzzer_session() -> None:
     cfg: CorpusConfig = CorpusConfig(50, 1048576, 256)
     cm: CorpusManager = CorpusManager("fuzz_session_test", "fixtures/corpus", cfg)
     
-    seeds: list[str] = ["KEY:username", "KEY:password", "KEY:BUG_XYZ"]
+    seeds: list[str] = ["KEY:username", "KEY:password", "KEY:guest"]
     summary: FuzzSummary = run_fuzz("fuzz_session_test", target_fuzz_parser, seeds, 50, 1337, cm, 64)
 
     assert_eq_int(summary.total_cases, 50, "50 total fuzz cases executed")

@@ -33,6 +33,18 @@ def ensure_path_recursive(full_path: str) -> None:
             ensure_dir(current)
         i = i + 1
 
+def sort_strings(xs: list[str]) -> list[str]:
+    i: int = 1
+    while i < len(xs):
+        key: str = xs[i]
+        j: int = i - 1
+        while j >= 0 and xs[j] > key:
+            xs[j + 1] = xs[j]
+            j = j - 1
+        xs[j + 1] = key
+        i = i + 1
+    return xs
+
 class CorpusConfig:
     max_files: int
     max_total_bytes: int
@@ -99,7 +111,8 @@ class CorpusManager:
     def load_seeds(self: CorpusManager) -> list[str]:
         self.ensure_directories()
         res: list[str] = []
-        entries: list[str] = nox.fs.read_dir(self.seeds_dir)
+        raw_entries: list[str] = nox.fs.read_dir(self.seeds_dir)
+        entries: list[str] = sort_strings(raw_entries)
         i: int = 0
         while i < len(entries):
             fname: str = entries[i]
