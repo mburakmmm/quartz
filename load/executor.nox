@@ -15,6 +15,38 @@ def bool_to_json(b: bool) -> str:
         return "true"
     return "false"
 
+class VirtualUserState:
+    vu_id: int
+    completed: int
+    successful: int
+    failed: int
+    total_latency_ms: int
+
+    def __init__(self: VirtualUserState, vu_id: int) -> None:
+        self.vu_id = vu_id
+        self.completed = 0
+        self.successful = 0
+        self.failed = 0
+        self.total_latency_ms = 0
+
+    def record(self: VirtualUserState, latency_ms: int, success: bool) -> None:
+        self.completed = self.completed + 1
+        self.total_latency_ms = self.total_latency_ms + latency_ms
+        if success:
+            self.successful = self.successful + 1
+        else:
+            self.failed = self.failed + 1
+
+    def to_json(self: VirtualUserState) -> str:
+        s: str = "{"
+        s = s + "\"vu_id\": " + str(self.vu_id) + ", "
+        s = s + "\"completed\": " + str(self.completed) + ", "
+        s = s + "\"successful\": " + str(self.successful) + ", "
+        s = s + "\"failed\": " + str(self.failed) + ", "
+        s = s + "\"total_latency_ms\": " + str(self.total_latency_ms)
+        s = s + "}"
+        return s
+
 class LoadTestSummary:
     workload_name: str
     metrics: LoadMetrics
@@ -23,8 +55,9 @@ class LoadTestSummary:
     all_passed: bool
     aborted: bool
     abort_reason: str
+    virtual_users: list[VirtualUserState]
 
-    def __init__(self: LoadTestSummary, workload_name: str, metrics: LoadMetrics, threshold_results: list[ThresholdResult], total_duration_ms: int, all_passed: bool, aborted: bool, abort_reason: str) -> None:
+    def __init__(self: LoadTestSummary, workload_name: str, metrics: LoadMetrics, threshold_results: list[ThresholdResult], total_duration_ms: int, all_passed: bool, aborted: bool, abort_reason: str, virtual_users: list[VirtualUserState]) -> None:
         self.workload_name = workload_name
         self.metrics = metrics
         self.threshold_results = threshold_results
@@ -32,6 +65,7 @@ class LoadTestSummary:
         self.all_passed = all_passed
         self.aborted = aborted
         self.abort_reason = abort_reason
+        self.virtual_users = virtual_users
 
     def to_json(self: LoadTestSummary) -> str:
         s: str = "{\n"
@@ -43,7 +77,16 @@ class LoadTestSummary:
         s = s + "  \"aborted\": " + bool_to_json(self.aborted) + ",\n"
         s = s + "  \"abort_reason\": \"" + escape_json(self.abort_reason) + "\",\n"
         s = s + "  \"total_duration_ms\": " + str(self.total_duration_ms) + ",\n"
-        s = s + "  \"metrics\": " + self.metrics.to_json(self.total_duration_ms) + "\n"
+        s = s + "  \"metrics\": " + self.metrics.to_json(self.total_duration_ms) + ",\n"
+        s = s + "  \"virtual_users\": [\n"
+        idx: int = 0
+        while idx < len(self.virtual_users):
+            s = s + "    " + self.virtual_users[idx].to_json()
+            if idx + 1 < len(self.virtual_users):
+                s = s + ","
+            s = s + "\n"
+            idx = idx + 1
+        s = s + "  ]\n"
         s = s + "}\n"
         return s
 
@@ -63,6 +106,8 @@ def run_task_workload(workload: WorkloadConfig, task_func: (int) -> bool, thresh
 
     in_flight: int = 0
 
+    vu_states: list[VirtualUserState] = []
+
     if workload.model == MODEL_CLOSED:
         # Closed model: virtual users interleaved up to max_cases or deadline
         vu_count: int = workload.virtual_users
@@ -70,6 +115,11 @@ def run_task_workload(workload: WorkloadConfig, task_func: (int) -> bool, thresh
             vu_count = limits.virtual_users
         if vu_count < 1:
             vu_count = 1
+
+        v_i: int = 0
+        while v_i < vu_count:
+            vu_states.append(VirtualUserState(v_i))
+            v_i = v_i + 1
 
         vu_idx: int = 0
         while case_idx < max_cases and t0.elapsed_ms() < deadline_ms:
@@ -104,11 +154,13 @@ def run_task_workload(workload: WorkloadConfig, task_func: (int) -> bool, thresh
                 cb.record_success()
 
             metrics.record_result(status, task_duration, is_timeout, success)
+            vu_states[vu_idx].record(task_duration, success and (not is_timeout))
             case_idx = case_idx + 1
             vu_idx = (vu_idx + 1) % vu_count
 
     elif workload.model == MODEL_OPEN:
         # Open model: target arrival rate pacing with in-flight backpressure
+        vu_states.append(VirtualUserState(0))
         target_rps: int = workload.target_rps
         if target_rps > limits.rate_rps:
             target_rps = limits.rate_rps
@@ -167,13 +219,19 @@ def run_task_workload(workload: WorkloadConfig, task_func: (int) -> bool, thresh
                 cb.record_success()
 
             metrics.record_result(status, task_duration, is_timeout, success)
+            vu_states[0].record(task_duration, success and (not is_timeout))
             case_idx = case_idx + 1
+
+    if (not aborted) and t0.elapsed_ms() >= deadline_ms:
+        if workload.duration_seconds <= 0 and case_idx < max_cases:
+            aborted = True
+            abort_reason = "workload execution deadline reached (" + str(deadline_ms) + "ms)"
 
     total_duration_ms: int = t0.elapsed_ms()
     thresh_results: list[ThresholdResult] = evaluate_all_thresholds(thresholds, metrics, total_duration_ms)
     all_passed: bool = (not aborted) and all_thresholds_passed(thresh_results)
 
-    return LoadTestSummary(workload.name, metrics, thresh_results, total_duration_ms, all_passed, aborted, abort_reason)
+    return LoadTestSummary(workload.name, metrics, thresh_results, total_duration_ms, all_passed, aborted, abort_reason, vu_states)
 
 def run_handler_load_test(workload: WorkloadConfig, handler: (HttpRequest) -> HttpResponse, req: HttpRequest, thresholds: list[Threshold], limits: SafetyLimits) -> LoadTestSummary:
     def adapter_task(idx: int) -> bool:

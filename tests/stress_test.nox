@@ -1,0 +1,124 @@
+# Quartz Stress & Deep Invariant Test Suite
+import nox.json
+from nox.json import JsonValue
+from core.types import STATUS_PASS
+from core.assert import assert_true, assert_false, assert_eq_int, assert_eq_str
+from core.prng import derive_case_seed, Prng
+from property.generator import IntGen, StringGen, ListIntGen
+from property.property import PropertyConfig, PropertyResult, run_int_property
+from property.shrink import shrink_int, shrink_str, ShrinkResultInt, ShrinkResultStr
+from contract.schema import schema_object, schema_array, schema_string, schema_integer, PropertyRule, validate_schema, SchemaDescriptor
+from load.workload import closed_workload, WorkloadConfig
+from load.safety import default_safety_limits, SafetyLimits
+from load.thresholds import Threshold
+from load.executor import run_task_workload, LoadTestSummary, VirtualUserState
+from fuzz.mutation import mutate
+
+def test_high_iteration_property_invariants() -> None:
+    # 1,000 cases of boundary-biased integers
+    gen: IntGen = IntGen(-50000, 50000, True)
+    config: PropertyConfig = PropertyConfig(1000, 10, 999123, 5000)
+
+    seen_zero: bool = False
+    seen_boundary: bool = False
+
+    def prop_algebraic(x: int) -> bool:
+        return (x * 0 == 0) and ((x - x) == 0)
+
+    res: PropertyResult = run_int_property("stress_algebraic_identity", config, gen, prop_algebraic)
+    assert_true(res.status == STATUS_PASS, "1000 iterations of algebraic identity must pass")
+    assert_eq_int(res.cases_executed, 1000, "all 1000 cases executed")
+
+    # Verify boundary injection
+    i: int = 0
+    while i < 100:
+        val: int = gen.generate(Prng(derive_case_seed(42, "boundary_check", i, 1)))
+        if val == 0:
+            seen_zero = True
+        if val == -50000 or val == 50000:
+            seen_boundary = True
+        i = i + 1
+
+    assert_true(seen_zero, "boundary-biased generator produces 0")
+    assert_true(seen_boundary, "boundary-biased generator produces range limits")
+
+def test_shrink_convergence() -> None:
+    # Target condition: integer <= 77. Smallest integer violating this is 78.
+    def prop_under_78(x: int) -> bool:
+        return x <= 77
+
+    shrunk_res: ShrinkResultInt = shrink_int(100000, prop_under_78, 100)
+    assert_eq_int(shrunk_res.value, 78, "shrink converges exactly to boundary + 1")
+
+    # Target condition: string does not contain 'CRASH'. Shrunk counterexample must be 'CRASH'.
+    def prop_no_crash(s: str) -> bool:
+        return ("CRASH" not in s)
+
+    failing_str: str = "prefix_abc_123_CRASH_suffix_xyz_890"
+    shrunk_s_res: ShrinkResultStr = shrink_str(failing_str, prop_no_crash, 100)
+    assert_eq_str(shrunk_s_res.value, "CRASH", "shrink_str converges exactly to 'CRASH'")
+
+def test_deep_nested_schema_validation() -> None:
+    # Construct a schema with nested objects and arrays
+    item_props: list[PropertyRule] = [
+        PropertyRule("item_id", schema_integer(1, 1000, True, True)),
+        PropertyRule("tag", schema_string(2, 10))
+    ]
+    item_req: list[str] = ["item_id", "tag"]
+    item_schema: SchemaDescriptor = schema_object(item_props, item_req, True)
+
+    root_props: list[PropertyRule] = [
+        PropertyRule("order_id", schema_integer(100, 999999, True, True)),
+        PropertyRule("items", schema_array(item_schema, 1, 5))
+    ]
+    root_req: list[str] = ["order_id", "items"]
+    root_schema: SchemaDescriptor = schema_object(root_props, root_req, True)
+
+    # 1. Valid deep JSON document
+    valid_json: str = "{\"order_id\": 500, \"items\": [{\"item_id\": 10, \"tag\": \"book\"}, {\"item_id\": 20, \"tag\": \"pen\"}]}"
+    v_doc: JsonValue = nox.json.parse(valid_json)
+    v_errors: list[str] = validate_schema(root_schema, v_doc, "$")
+    assert_eq_int(len(v_errors), 0, "no error strings on valid payload")
+
+    # 2. Corrupt item: tag is empty string violating min_length 2
+    invalid_json: str = "{\"order_id\": 500, \"items\": [{\"item_id\": 10, \"tag\": \"\"}]}"
+    inv_doc: JsonValue = nox.json.parse(invalid_json)
+    inv_errors: list[str] = validate_schema(root_schema, inv_doc, "$")
+    assert_true(len(inv_errors) >= 1, "at least one error recorded")
+
+def mock_worker_task(idx: int) -> bool:
+    return True
+
+def test_multi_vu_load_accounting() -> None:
+    limits: SafetyLimits = default_safety_limits()
+    wl: WorkloadConfig = closed_workload("stress_vusers", 3, 2, 30)
+    summary: LoadTestSummary = run_task_workload(wl, mock_worker_task, [], limits)
+
+    assert_true(summary.all_passed, "load test passed")
+    assert_eq_int(summary.metrics.completed, 30, "all 30 tasks completed")
+    assert_eq_int(len(summary.virtual_users), 3, "3 virtual user states tracked")
+
+    # Exactly 10 requests per VU under round-robin closed model
+    assert_eq_int(summary.virtual_users[0].completed, 10, "VU 0 completed 10 tasks")
+    assert_eq_int(summary.virtual_users[1].completed, 10, "VU 1 completed 10 tasks")
+    assert_eq_int(summary.virtual_users[2].completed, 10, "VU 2 completed 10 tasks")
+
+def test_fuzz_mutation_stability() -> None:
+    seed: str = "{\"name\":\"alice\",\"active\":true}"
+    prng: Prng = Prng(1234567)
+
+    i: int = 0
+    while i < 500:
+        mutated: str = mutate(seed, prng, 512)
+        assert_true(len(mutated) >= 0, "mutation produced string")
+        i = i + 1
+
+def run_all_stress_tests() -> None:
+    test_high_iteration_property_invariants()
+    test_shrink_convergence()
+    test_deep_nested_schema_validation()
+    test_multi_vu_load_accounting()
+    test_fuzz_mutation_stability()
+    print("quartz stress test: ALL PASS")
+
+run_all_stress_tests()

@@ -3,6 +3,19 @@
 All notable changes to the Quartz test framework will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] - 2026-11-02 - Phase 7: Production Hardening, Concurrency & Pre-Release Stabilization
+
+### Added
+- **Per-Virtual-User State Tracking (`load/executor.nox`)**: Added `VirtualUserState` struct tracking per-VU state (`vu_id`, `completed`, `successful`, `failed`, `total_latency_ms`). Exposed `virtual_users: list[VirtualUserState]` on `LoadTestSummary` with JSON serialization.
+- **Hard Execution Deadline Accounting (`load/executor.nox`)**: Iteration-based workloads cut short by overall duration limits now record `aborted = True` with explicit diagnostic reason `"workload execution deadline reached (<deadline>ms)"`.
+- **Comprehensive Documentation Suite (`docs/`)**:
+  - `docs/recipes.md`: Complete real-world testing guide covering unit testing, property testing, parser fuzzing, HTTP contract validation with OpenAPI schemas, bounded load testing, and Nyx/Aether framework integration.
+  - `docs/security.md`: Comprehensive security policy and guardrails detailing loopback isolation, target authorization policies, resource hard caps, secret redaction, and watchdog timeouts.
+  - `docs/compatibility.md`: Detailed cross-platform matrix covering Windows x64, macOS Apple Silicon ARM64, Linux x64/ARM64, and QBE vs. LLVM backend execution characteristics.
+  - `docs/architecture.md`: Expanded with ADR-006 through ADR-011 covering handler contracts, delta-debugging minimization, 60s histograms, framework adapters, generator self-validation, and QBE channel parameterization.
+- **Stress & Invariant Verification Suite (`tests/stress_test.nox`)**: 1,000-case algebraic invariant tests, boundary convergence shrink validation, deep nested object/array schema validation, multi-VU load execution accounting, and fuzz mutation stability over 500 iterations.
+- **CLI & Public Facade Export (`quartz.nox`)**: Exported optional framework adapters `adapters.nyx` and `adapters.aether` in `quartz.nox` and bumped version to `0.8.0`.
+
 ## [0.7.1] - 2026-11-02 - Phase 6.2: Property Invariants, CLI Commands & Rate Pacing Hardening
 
 ### Fixed & Hardened

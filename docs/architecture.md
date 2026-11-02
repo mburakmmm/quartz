@@ -87,3 +87,27 @@ Quartz is designed as a standalone, zero-dependency testing framework for the NO
 ### ADR-005: Cross-Platform Windows & macOS Scheduling Awareness
 - **Context:** The NOX language author develops on macOS M4 (LLVM / M:N work-stealing / kqueue), while this test bed runs on Windows x86_64 (currently using QBE cooperative single-threaded fiber runtime).
 - **Decision:** Quartz scheduling paths must strictly avoid blocking calls (`sleep_ms`) in workers and must structure channels and tasks so they run deterministically and safely on both single-threaded cooperative QBE and multi-threaded LLVM backends.
+
+### ADR-006: In-Process HTTP Handler Contracts vs. Opt-in Loopback
+- **Context:** Integration testing against network sockets introduces port binding collisions, OS firewall prompts, flakiness in CI, and SSRF risks.
+- **Decision:** Default to direct in-process `(HttpRequest) -> HttpResponse` handler dispatch for API contract tests. Only activate real socket requests via `contract/http_network.nox` when network transport is explicitly opted into, enforcing loopback-only constraints by default.
+
+### ADR-007: Delta-Debugging Crash Minimization with Signature Preservation
+- **Context:** Fuzz testing produces crashes, but raw crashing payloads are often hundreds of bytes with irrelevant noise. Minimizing indiscriminately can shrink a payload to trigger an unrelated earlier exception (e.g., syntax error rather than buffer overflow).
+- **Decision:** `minimize_crash` iteratively reduces payload chunks using delta-debugging while asserting that every candidate candidate continues to produce the exact failure signature / error message of the original crash.
+
+### ADR-008: Bounded Latency Histograms and Zero-Allocation Quantiles
+- **Context:** Recording individual latency floats for millions of requests causes unbounded memory growth and GC pressure. Capping at 5,000ms distorts percentiles for slow endpoints.
+- **Decision:** Implement a fixed 246-bucket monotonic latency histogram covering up to 60,000ms with 500ms intervals above 5,000ms. Quantile computations (p50, p90, p95, p99) run in $O(1)$ memory with mathematical interpolation.
+
+### ADR-009: Decoupled Framework Adapters (Nyx & Aether)
+- **Context:** NOX ecosystem frameworks like Nyx and Aether offer routing and middleware paradigms. Direct dependencies on these frameworks in Quartz Core would create circular dependencies or bloat.
+- **Decision:** Quartz Core remains completely pure and zero-dependency. Framework adapters reside in `adapters/nyx.nox` and `adapters/aether.nox`, translating framework routers and middleware pipelines into standard `(HttpRequest) -> HttpResponse` handlers.
+
+### ADR-010: Generator Self-Validation and Schema Invariant Preservation
+- **Context:** Property-driven contract testing generates request bodies from schema descriptors. If the generator produces an invalid payload when claiming to generate a valid one, false negative contract violations occur.
+- **Decision:** `contract/property_contract.nox` enforces a strict self-validation invariant: every generated payload is immediately evaluated against `validate_schema()`. Valid payloads must produce zero errors; negative/invalid payloads must produce at least one error.
+
+### ADR-011: Channel Primitive Parameterization under QBE Runtime
+- **Context:** In NOX 2.0.108 with the QBE backend on Windows, parameterized channels with complex custom classes (`Channel[CustomClass]`) can cause exit code 1 during fiber cleanup.
+- **Decision:** Internal worker channels use primitive payloads (`Channel[int]`, `Channel[str]`) or serialized string frames. Complex state aggregation is handled via deterministic accumulators and structured structs outside the channel fiber.

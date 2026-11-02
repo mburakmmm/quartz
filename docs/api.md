@@ -1,4 +1,4 @@
-# Quartz API Reference — v0.7.1
+# Quartz API Reference — v0.8.0
 
 ## 1. Core Types (`core/types.nox`)
 
@@ -317,12 +317,21 @@ Bounded deterministic byte and structured mutations:
 - `WorkloadConfig(name: str, model: str = "closed", virtual_users: int = 5, duration_seconds: int = 5, target_rps: int = 10, max_in_flight: int = 10, max_iterations: int = 100, warmup_seconds: int = 0)`
 - `closed_workload(name: str, virtual_users: int = 5, duration_seconds: int = 5, max_iterations: int = 100) -> WorkloadConfig`
 - `open_workload(name: str, target_rps: int = 10, duration_seconds: int = 5, max_in_flight: int = 10, max_iterations: int = 100) -> WorkloadConfig`
+- `VirtualUserState`
+  - `.vu_id: int`
+  - `.completed: int`
+  - `.successful: int`
+  - `.failed: int`
+  - `.total_latency_ms: int`
+  - `.record(latency_ms: int, success: bool) -> None`
+  - `.to_json() -> str`
 - `LoadTestSummary`
   - `.all_passed: bool`
   - `.aborted: bool`
   - `.abort_reason: str`
   - `.metrics: LoadMetrics`
   - `.threshold_results: list[ThresholdResult]`
+  - `.virtual_users: list[VirtualUserState]`
   - `.to_json() -> str`
 - `run_task_workload(workload: WorkloadConfig, task_func: (int) -> bool, thresholds: list[Threshold], limits: SafetyLimits) -> LoadTestSummary`
 - `run_handler_load_test(workload: WorkloadConfig, handler: (HttpRequest) -> HttpResponse, req: HttpRequest, thresholds: list[Threshold], limits: SafetyLimits) -> LoadTestSummary`
