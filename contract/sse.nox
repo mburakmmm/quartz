@@ -1,4 +1,7 @@
 # Quartz Contract — Server-Sent Events (SSE) Stream Validator
+# Spec-compliant EventSource parser according to WHATWG EventSource standards,
+# supporting multiline data, retry intervals, ID persistence, and typed JSON schema validation.
+
 import nox.strings
 import nox.json
 from nox.json import JsonValue
@@ -26,61 +29,93 @@ class SseEvent:
 
 def parse_sse_events(raw_body: str) -> list[SseEvent]:
     events: list[SseEvent] = []
-    # Normalize CRLF to LF
-    clean: str = nox.strings.replace(raw_body, "\r\n", "\n")
+    if len(raw_body) == 0:
+        return events
+
+    # 1. Normalize line endings: CRLF and solitary CR become LF
+    c1: str = nox.strings.replace(raw_body, "\r\n", "\n")
+    clean: str = nox.strings.replace(c1, "\r", "\n")
+
+    # In WHATWG spec, events are only dispatched upon reaching an empty line (dispatch boundary).
+    # If the stream does not end with an empty line (e.g. terminating "\n\n" or "\n\n..."),
+    # trailing incomplete pending data must not be dispatched.
+    ends_with_boundary: bool = nox.strings.ends_with(clean, "\n\n")
+
     blocks: list[str] = nox.strings.split(clean, "\n\n")
+    # If clean doesn't end with "\n\n", the last item in blocks is an incomplete trailing fragment
+    total_valid_blocks: int = len(blocks)
+    if not ends_with_boundary:
+        total_valid_blocks = len(blocks) - 1
+
+    last_event_id: str = ""
+    retry_ms: int = 0
 
     b_i: int = 0
-    while b_i < len(blocks):
-        block: str = nox.strings.trim(blocks[b_i])
+    while b_i < total_valid_blocks:
+        block: str = blocks[b_i]
+        # Ignore purely empty whitespace blocks
         if len(block) > 0:
             event_name: str = "message"
-            data_acc: str = ""
-            event_id: str = ""
-            retry_ms: int = 0
-            has_fields: bool = False
+            data_lines: list[str] = []
+            data_seen: bool = False
 
             lines: list[str] = nox.strings.split(block, "\n")
             l_i: int = 0
             while l_i < len(lines):
                 line: str = lines[l_i]
-                # Ignore SSE comments starting with ':'
+                # Ignore empty line or comments starting with ':'
                 if len(line) > 0 and line[0] != ":":
-                    if nox.strings.starts_with(line, "event:"):
-                        ev: str = nox.strings.replace(line, "event:", "")
-                        event_name = nox.strings.trim(ev)
-                        has_fields = True
-                    elif nox.strings.starts_with(line, "data:"):
-                        d: str = nox.strings.replace(line, "data:", "")
-                        if len(d) > 0 and d[0] == " ":
-                            # Remove single leading space per SSE spec
-                            if len(d) == 1:
-                                d = ""
+                    field_name: str = line
+                    field_value: str = ""
+
+                    if nox.strings.contains(line, ":"):
+                        parts: list[str] = nox.strings.splitn(line, ":", 2)
+                        field_name = parts[0]
+                        if len(parts) > 1:
+                            raw_val: str = parts[1]
+                            # Per SSE spec: If value starts with a single space U+0020, remove only that space
+                            if len(raw_val) > 0 and raw_val[0] == " ":
+                                if len(raw_val) > 1:
+                                    subparts: list[str] = nox.strings.splitn(raw_val, " ", 2)
+                                    if len(subparts) > 1:
+                                        field_value = subparts[1]
+                                else:
+                                    field_value = ""
                             else:
-                                parts: list[str] = nox.strings.splitn(d, " ", 2)
-                                if len(parts) > 1:
-                                    d = parts[1]
-                        if len(data_acc) > 0:
-                            data_acc = data_acc + "\n" + d
-                        else:
-                            data_acc = d
-                        has_fields = True
-                    elif nox.strings.starts_with(line, "id:"):
-                        raw_id: str = nox.strings.replace(line, "id:", "")
-                        event_id = nox.strings.trim(raw_id)
-                        has_fields = True
-                    elif nox.strings.starts_with(line, "retry:"):
-                        raw_retry: str = nox.strings.replace(line, "retry:", "")
-                        raw_retry = nox.strings.trim(raw_retry)
+                                field_value = raw_val
+
+                    if field_name == "data":
+                        data_lines.append(field_value)
+                        data_seen = True
+                    elif field_name == "event":
+                        event_name = field_value
+                    elif field_name == "id":
+                        null_ch: str = chr(0)
+                        if not nox.strings.contains(field_value, null_ch):
+                            last_event_id = field_value
+                    elif field_name == "retry":
                         try:
-                            retry_ms = int(raw_retry)
+                            retry_ms = int(field_value)
                         except Exception as e:
-                            retry_ms = 0
-                        has_fields = True
+                            pass
                 l_i = l_i + 1
 
-            if has_fields:
-                events.append(SseEvent(event_name, data_acc, event_id, retry_ms))
+            # WHATWG Spec Rule: If no data field was seen in this block, DO NOT dispatch an event.
+            # Setting retry: or id: alone updates state but must never dispatch an empty event.
+            if data_seen:
+                data_joined: str = ""
+                d_i: int = 0
+                while d_i < len(data_lines):
+                    if d_i > 0:
+                        data_joined = data_joined + "\n"
+                    data_joined = data_joined + data_lines[d_i]
+                    d_i = d_i + 1
+
+                disp_type: str = event_name
+                if len(disp_type) == 0:
+                    disp_type = "message"
+                events.append(SseEvent(disp_type, data_joined, last_event_id, retry_ms))
+
         b_i = b_i + 1
 
     return events
@@ -149,13 +184,11 @@ def validate_sse_stream(raw_body: str, expectations: list[SseEventExpectation]) 
                 if len(schema_errs) > 0:
                     s_i: int = 0
                     while s_i < len(schema_errs):
-                        se: str = schema_errs[s_i]
-                        errs.append(prefix + "schema violation: " + se)
+                        errs.append(prefix + "schema violation: " + schema_errs[s_i])
                         s_i = s_i + 1
             except Exception as e:
-                errs.append(prefix + "invalid JSON data payload: " + str(e))
+                errs.append(prefix + "invalid json: " + str(e))
 
         i = i + 1
 
-    is_ok: bool = (len(errs) == 0)
-    return SseValidationResult(is_ok, len(events), errs)
+    return SseValidationResult(len(errs) == 0, len(events), errs)

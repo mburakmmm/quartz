@@ -17,6 +17,7 @@ def test_jsonl_event_formatting() -> None:
     assert_contains_str(line, "\"test_id\":\"scenario_1\"", "test_id field formatted")
     assert_contains_str(line, "\"status\":\"RUNNING\"", "status field formatted")
     assert_contains_str(line, "\"duration_ms\":15", "duration_ms formatted")
+    assert_contains_str(line, "\"timestamp_ms\":", "timestamp_ms field formatted")
     assert_contains_str(line, "\"data\":{\"completed\":10}", "data payload formatted")
     assert_true(line[len(line) - 1] == "\n", "ends with newline")
 
@@ -140,12 +141,44 @@ def test_sse_negative_contract_violations() -> None:
     assert_false(res_no_id.is_valid, "missing ID caught")
     assert_contains_str(res_no_id.error_summary(), "missing required id field", "summary contains missing ID error")
 
+def test_whatwg_sse_golden_compliance() -> None:
+    # 1. Spec rule: Block with only retry: sets reconnection time, but must NOT dispatch an event
+    retry_only_stream: str = "retry: 5000\n\n"
+    evs_retry: list[SseEvent] = parse_sse_events(retry_only_stream)
+    assert_eq_int(len(evs_retry), 0, "retry-only block dispatches 0 events")
+
+    # 2. Spec rule: Incomplete trailing event without dispatch boundary (\n\n) is not dispatched
+    incomplete_stream: str = "data: pending message"
+    evs_incomplete: list[SseEvent] = parse_sse_events(incomplete_stream)
+    assert_eq_int(len(evs_incomplete), 0, "incomplete trailing event not dispatched")
+
+    # 3. Spec rule: Payload containing 'data:' substrings must not have them stripped
+    data_in_payload_stream: str = "data: hello data: world\n\n"
+    evs_payload: list[SseEvent] = parse_sse_events(data_in_payload_stream)
+    assert_eq_int(len(evs_payload), 1, "1 event parsed")
+    assert_eq_str(evs_payload[0].data, "hello data: world", "substring 'data:' preserved in payload")
+
+    # 4. Spec rule: ID persists across subsequent events if not overridden
+    id_persistence_stream: str = "id: session-99\ndata: first msg\n\ndata: second msg\n\n"
+    evs_id: list[SseEvent] = parse_sse_events(id_persistence_stream)
+    assert_eq_int(len(evs_id), 2, "2 events parsed")
+    assert_eq_str(evs_id[0].id, "session-99", "event 0 id")
+    assert_eq_str(evs_id[1].id, "session-99", "event 1 inherits last_event_id")
+
 def run_all_streaming_tests() -> None:
+    print("running test_jsonl_event_formatting...")
     test_jsonl_event_formatting()
+    print("running test_jsonl_stream_reporter_lifecycle...")
     test_jsonl_stream_reporter_lifecycle()
+    print("running test_workload_streaming_execution...")
     test_workload_streaming_execution()
+    print("running test_sse_event_parsing...")
     test_sse_event_parsing()
+    print("running test_whatwg_sse_golden_compliance...")
+    test_whatwg_sse_golden_compliance()
+    print("running test_sse_schema_contract_validation...")
     test_sse_schema_contract_validation()
+    print("running test_sse_negative_contract_violations...")
     test_sse_negative_contract_violations()
     print("quartz streaming & sse test: ALL PASS")
 

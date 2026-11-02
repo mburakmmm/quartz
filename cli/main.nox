@@ -123,6 +123,8 @@ def cmd_property() -> None:
             print("Wrote property JSON report to: " + out_opt)
         else:
             print(json_str)
+        if not res.is_passed():
+            nox.os.exit(1)
         return
 
     print("Result Status: " + res.status)
@@ -131,6 +133,7 @@ def cmd_property() -> None:
         print("Success: Property preserved across all cases.")
     else:
         print("Failure detected! Shrunk counterexample: " + res.shrunk_counterexample)
+        nox.os.exit(1)
 
 def cmd_fuzz() -> None:
     seed: int = parse_flag_int("--seed", 1337)
@@ -180,6 +183,8 @@ def cmd_load() -> None:
             print("Wrote load test JSON summary to: " + out_opt)
         else:
             print(json_str)
+        if not summary.all_passed:
+            nox.os.exit(1)
         return
     elif format_opt == "html":
         html_str: str = format_html_load_report("Quartz Load Scenario: " + workload.name, summary)
@@ -188,6 +193,8 @@ def cmd_load() -> None:
             print("Wrote load test HTML report to: " + out_opt)
         else:
             print(html_str)
+        if not summary.all_passed:
+            nox.os.exit(1)
         return
 
     print("Completed Requests: " + str(summary.metrics.completed))
@@ -195,6 +202,8 @@ def cmd_load() -> None:
     print("p50 Latency: " + str(summary.metrics.p50()) + " ms")
     print("p95 Latency: " + str(summary.metrics.p95()) + " ms")
     print("Thresholds Passed: " + str(summary.all_passed))
+    if not summary.all_passed:
+        nox.os.exit(1)
 
 def cmd_replay() -> None:
     if nox.os.arg_count() < 3:
@@ -324,58 +333,71 @@ def cmd_test() -> None:
 
     print("Executing Quartz test runner on: " + target_path)
     try:
-        candidate_bins: list[str] = [
-            "noxc",
-            "noxc.exe",
-            "/home/runner/.nox-lang/bin/noxc",
-            "/root/.nox-lang/bin/noxc",
-            "/usr/local/bin/noxc",
-            "/usr/bin/noxc"
-        ]
+        candidate_bins: list[str] = []
+        try:
+            user_prof: str = nox.os.getenv("USERPROFILE")
+            candidate_bins.append(user_prof + "\\.nox-lang\\bin\\noxc.exe")
+            candidate_bins.append(user_prof + "/.nox-lang/bin/noxc.exe")
+        except Exception as e:
+            pass
 
-        # Step 1: Static type check verification
-        chk_passed: bool = False
-        chk_not_found: bool = True
-        err_msg: str = ""
+        try:
+            home_dir: str = nox.os.getenv("HOME")
+            candidate_bins.append(home_dir + "/.nox-lang/bin/noxc")
+        except Exception as e:
+            pass
 
+        candidate_bins.append("/home/runner/.nox-lang/bin/noxc")
+        candidate_bins.append("/Users/runner/.nox-lang/bin/noxc")
+        candidate_bins.append("/root/.nox-lang/bin/noxc")
+        candidate_bins.append("/usr/local/bin/noxc")
+        candidate_bins.append("/usr/bin/noxc")
+        candidate_bins.append("noxc.exe")
+        candidate_bins.append("noxc")
+
+        # Step 1: Discover working noxc compiler binary
+        valid_bin: str = ""
         c_i: int = 0
         while c_i < len(candidate_bins):
             bin_name: str = candidate_bins[c_i]
             check_cmd: Command = Command(bin_name)
-            check_cmd.arg("check")
-            check_cmd.arg(target_path)
+            check_cmd.arg("--version")
             try:
                 out_chk: Output = check_cmd.run()
-                if out_chk.success():
-                    chk_passed = True
-                    chk_not_found = False
-                    break
-                elif not is_binary_not_found(out_chk.stderr, out_chk.status):
-                    # Real type error from compiler
-                    chk_not_found = False
-                    err_msg = out_chk.stderr
+                if out_chk.success() and (nox.strings.contains(out_chk.stdout, "noxc") or nox.strings.contains(out_chk.stderr, "noxc")):
+                    valid_bin = bin_name
                     break
             except Exception as e:
                 pass
             c_i = c_i + 1
 
-        if chk_passed:
-            print("Type check passed: " + target_path)
-        elif not chk_not_found:
-            print("Type check failed for " + target_path + ":")
-            print(err_msg)
-            nox.os.exit(1)
-            return
-        else:
-            print("Note: Compiler binary not directly executable from child environment.")
+        if len(valid_bin) > 0:
+            print("Using compiler: " + valid_bin)
+            # If target is an existing source file, run static type check first
+            if nox.fs.exists(target_path):
+                chk_cmd: Command = Command(valid_bin)
+                chk_cmd.arg("check")
+                chk_cmd.arg(target_path)
+                try:
+                    chk_res: Output = chk_cmd.run()
+                    if not chk_res.success():
+                        print("Type check failed for " + target_path + ":")
+                        print(chk_res.stderr)
+                        nox.os.exit(1)
+                        return
+                    print("Type check passed: " + target_path)
+                except Exception as e:
+                    pass
 
-        # Step 2: Attempt dynamic test execution
-        t_i: int = 0
-        while t_i < len(candidate_bins):
-            bin_t: str = candidate_bins[t_i]
-            cmd: Command = Command(bin_t)
-            cmd.arg("test")
-            cmd.arg(target_path)
+            # Step 2: Dynamic test execution using the verified compiler binary
+            cmd: Command = Command(valid_bin)
+            if nox.strings.ends_with(target_path, "_test.nox"):
+                cmd.arg("run")
+                cmd.arg(target_path)
+            else:
+                cmd.arg("test")
+                if target_path != "quartz.nox":
+                    cmd.arg(target_path)
             try:
                 out: Output = cmd.run()
                 if out.success():
@@ -383,12 +405,20 @@ def cmd_test() -> None:
                         print(out.stdout)
                     print("All test suites executed successfully.")
                     return
+                else:
+                    if len(out.stdout) > 0:
+                        print(out.stdout)
+                    if len(out.stderr) > 0:
+                        print(out.stderr)
+                    nox.os.exit(1)
+                    return
             except Exception as e:
-                pass
-            t_i = t_i + 1
+                print("Error executing test: " + str(e))
+                nox.os.exit(1)
+                return
 
-        print("Note: Child process environment lacks backend compiler PATH; static check verified successfully.")
-        print("To run the test executable directly, execute 'noxc test " + target_path + "' in the host shell.")
+        print("Error: Could not locate 'noxc' compiler binary to execute tests dynamically.")
+        nox.os.exit(1)
     except Exception as e:
         print("Note: Process execution encountered: " + str(e))
         nox.os.exit(1)
@@ -403,7 +433,7 @@ def cmd_report() -> None:
 
     if not nox.fs.exists(report_dir):
         if format_opt == "json":
-            empty_json: str = "{\"artifacts_dir\":\"" + escape_json(report_dir) + "\",\"exists\":false,\"total_files\":0,\"json_count\":0,\"xml_count\":0}"
+            empty_json: str = "{\"artifacts_dir\":\"" + escape_json(report_dir) + "\",\"exists\":false,\"total_files\":0,\"json_count\":0,\"jsonl_count\":0,\"xml_count\":0}"
             print(empty_json)
         else:
             print("=== Quartz Test Artifacts & Report Summary ===")
@@ -414,18 +444,21 @@ def cmd_report() -> None:
     files: list[str] = nox.fs.read_dir(report_dir)
     total_files: int = len(files)
     json_count: int = 0
+    jsonl_count: int = 0
     xml_count: int = 0
     i: int = 0
     while i < total_files:
         fn: str = files[i]
-        if nox.strings.ends_with(fn, ".json") or nox.strings.ends_with(fn, ".jsonl"):
+        if nox.strings.ends_with(fn, ".jsonl"):
+            jsonl_count = jsonl_count + 1
+        elif nox.strings.ends_with(fn, ".json"):
             json_count = json_count + 1
         elif nox.strings.ends_with(fn, ".xml"):
             xml_count = xml_count + 1
         i = i + 1
 
     if format_opt == "json":
-        rep_json: str = "{\"artifacts_dir\":\"" + escape_json(report_dir) + "\",\"exists\":true,\"total_files\":" + str(total_files) + ",\"json_count\":" + str(json_count) + ",\"xml_count\":" + str(xml_count) + "}"
+        rep_json: str = "{\"artifacts_dir\":\"" + escape_json(report_dir) + "\",\"exists\":true,\"total_files\":" + str(total_files) + ",\"json_count\":" + str(json_count) + ",\"jsonl_count\":" + str(jsonl_count) + ",\"xml_count\":" + str(xml_count) + "}"
         if len(out_opt) > 0:
             nox.fs.write_string(out_opt, rep_json)
             print("Wrote report JSON summary to: " + out_opt)
@@ -435,7 +468,7 @@ def cmd_report() -> None:
     elif format_opt == "html":
         summ: RunSummary = RunSummary()
         summ.total = total_files
-        summ.passed = json_count + xml_count
+        summ.passed = json_count + jsonl_count + xml_count
         rep_html: str = format_html_test_report("Quartz Test Artifacts Summary (" + report_dir + ")", summ, "report-inspection", "noxc", "default")
         if len(out_opt) > 0:
             write_html_report(out_opt, rep_html)
@@ -447,7 +480,8 @@ def cmd_report() -> None:
     print("=== Quartz Test Artifacts & Report Summary ===")
     print("Directory: " + report_dir)
     print("Total Artifact Files: " + str(total_files))
-    print("JSON Summaries / Failures: " + str(json_count))
+    print("JSON Summaries: " + str(json_count))
+    print("Streaming JSONL Logs: " + str(jsonl_count))
     print("JUnit XML Reports: " + str(xml_count))
     print("Inspection complete.")
 

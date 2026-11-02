@@ -510,6 +510,34 @@
 
 ---
 
+## Phase 10.2: v0.9.4 — Bugfix Release & Production Hardening (Sol v0.9.2 Findings)
+*Objective: Full WHATWG EventSource compliance, real-time live telemetry timestamps/ticks, and strict CLI exit codes.*
+
+- [x] **10.2.1 WHATWG SSE Compliance (`contract/sse.nox`)**
+  - [x] Dispatch rule: Blocks containing only `retry:` or `id:` update stream state but do not dispatch an empty event.
+  - [x] Discard trailing pending data if the stream does not end with a complete dispatch boundary (`\n\n`).
+  - [x] Correctly handle field/value splitting via `splitn(line, ":", 2)` to preserve colons in payload (`data: hello: world`).
+  - [x] Safe null-byte detection for event IDs using `chr(0)` rather than literal `\0`.
+  - [x] Concatenate multiline `data:` fields with newline delimiters.
+- [x] **10.2.2 Real-time Live Telemetry & Timestamps (`core/report.nox`, `load/executor.nox`)**
+  - [x] Include wall-clock `timestamp_ms` (via `nox.time.now_ms()`) in `format_jsonl_event` and `JsonlStreamReporter`.
+  - [x] Emit periodic live metric ticks (`reporter.emit_metric_tick`) during active workload execution.
+  - [x] Immediately emit `threshold_breach` diagnostic events upon threshold violations.
+- [x] **10.2.3 CLI Exit Codes & Output Formatting (`cli/main.nox`)**
+  - [x] Ensure `cmd_property()` exits with status 1 on invariant failure across both summary and JSON modes.
+  - [x] Ensure `cmd_load()` exits with status 1 on threshold breaches across all output formats.
+  - [x] Separate `jsonl_count` from `json_count` in `cmd_report()`.
+  - [x] Robust compiler discovery using `noxc --version` and support for test filter names.
+- [x] **10.2.4 Release Packaging & Verification (v0.9.4)**
+  - [x] Update facade `quartz.nox` to `0.9.4`.
+  - [x] Update `CHANGELOG.md` with detailed bugfix notes.
+  - [x] Verify all 18 test suites pass cleanly (`noxc test`).
+  - [x] Tag `v0.9.4`, push to GitHub, and publish to NOX registry.
+
+*Phase 10.2 Exit Gate:* PASSED. All Sol v0.9.2 audit findings resolved; 18/18 test suites pass; verified locally and published as v0.9.4.
+
+---
+
 ## Execution Log & Audit Trail
 
 | Date | Phase | Task | Action / Command | Result / Evidence | Status |
@@ -573,3 +601,5 @@
 | 2026-11-02 | Phase 10 | WebSocket Contracts | `contract/websocket.nox` | RFC 6455 handshakes, conversation script checking, schema payloads | [x] DONE |
 | 2026-11-02 | Phase 10 | Property Suite | `property/suite.nox` | Unified suite PRNG, RunSummary conversion, aggregate statistics JSON | [x] DONE |
 | 2026-11-02 | Phase 10 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 18/18 tests pass, recipes 9 & 10 verified, published v0.9.3 | [x] DONE |
+| 2026-11-02 | Phase 10.2 | Bugfixes & Hardening | `contract/`, `core/`, `load/`, `cli/` | WHATWG SSE compliance, live JSONL timestamps/ticks, CLI exit codes | [x] DONE |
+| 2026-11-02 | Phase 10.2 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 18/18 tests pass, tagged `v0.9.4`, published | [x] DONE |

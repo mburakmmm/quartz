@@ -3,6 +3,24 @@
 All notable changes to the Quartz test framework will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.4] - 2026-11-02 - Bugfix Release: WHATWG SSE Compliance, Live Telemetry & CLI Exit Codes
+
+### Fixed
+- **WHATWG EventSource Spec Compliance (`contract/sse.nox`)**:
+  - Implemented event dispatch rule: blocks containing only `retry:` or `id:` without `data:` update stream state but do not dispatch empty events.
+  - Resolved payload corruption on multiple colons by using `splitn(line, ":", 2)` for field/value splitting, preserving subsequent `"data:"` substrings in event payloads.
+  - Safe null-byte detection for event IDs using `chr(0)` rather than literal `\0` (preventing false positive matches on digit `'0'`).
+  - Implemented stream boundary enforcement: incomplete trailing streams without a terminating empty line (`\n\n`) are discarded rather than dispatched prematurely.
+  - Supported multiline `data:` concatenation with newline delimiters and persistent `last_event_id` propagation.
+- **Real-Time Live Workload Telemetry (`core/report.nox`, `load/executor.nox`)**:
+  - Added wall-clock `timestamp_ms` to `format_jsonl_event` and `JsonlStreamReporter` using `nox.time.now_ms()`.
+  - Added periodic live metric ticks (`reporter.emit_metric_tick`) and in-flight threshold breach notifications during workload loops in `load/executor.nox`.
+- **CLI Robustness & Exit Code Conformance (`cli/main.nox`)**:
+  - Ensured `cmd_property()` exits with status 1 on invariant failure in both JSON and summary output modes.
+  - Ensured `cmd_load()` exits with status 1 on threshold breach across all output formats.
+  - Separated `jsonl_count` from `json_count` in `cmd_report()`.
+  - Hardened dynamic `noxc` discovery and test running to check compiler existence via `--version` and handle arbitrary test filter names.
+
 ## [0.9.3] - 2026-11-02 - Phase 10: Interactive HTML Visual Reports, WebSocket Contracts & PropertySuite
 
 ### Added

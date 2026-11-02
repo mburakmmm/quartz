@@ -2,6 +2,7 @@
 from core.types import STATUS_PASS, STATUS_FAIL, STATUS_SKIP, STATUS_ERROR, STATUS_TIMEOUT, TestResult, RunSummary
 import nox.fs
 import nox.strings
+import nox.time
 
 def escape_xml(s: str) -> str:
     s1: str = nox.strings.replace(s, "&", "&amp;")
@@ -100,14 +101,17 @@ def write_json_report(path: str, run_id: str, backend: str, compiler_version: st
     content: str = format_summary_json(run_id, backend, compiler_version, summary)
     nox.fs.write_string_atomic(path, content)
 
-def format_jsonl_event(event_type: str, test_id: str, status: str, duration_ms: int, payload_json: str) -> str:
+def format_jsonl_event(event_type: str, test_id: str, status: str, duration_ms: int, payload_json: str, timestamp_ms: int = -1) -> str:
     escaped_type: str = escape_json(event_type)
     escaped_id: str = escape_json(test_id)
     escaped_status: str = escape_json(status)
     data_block: str = payload_json
     if len(data_block) == 0:
         data_block = "{}"
-    return "{\"type\":\"" + escaped_type + "\",\"test_id\":\"" + escaped_id + "\",\"status\":\"" + escaped_status + "\",\"duration_ms\":" + str(duration_ms) + ",\"data\":" + data_block + "}\n"
+    ts: int = timestamp_ms
+    if ts < 0:
+        ts = nox.time.now_ms()
+    return "{\"type\":\"" + escaped_type + "\",\"test_id\":\"" + escaped_id + "\",\"status\":\"" + escaped_status + "\",\"duration_ms\":" + str(duration_ms) + ",\"timestamp_ms\":" + str(ts) + ",\"data\":" + data_block + "}\n"
 
 class JsonlStreamReporter:
     path: str

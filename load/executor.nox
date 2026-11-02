@@ -90,7 +90,7 @@ class LoadTestSummary:
         s = s + "}\n"
         return s
 
-def run_task_workload(workload: WorkloadConfig, task_func: (int) -> bool, thresholds: list[Threshold], limits: SafetyLimits) -> LoadTestSummary:
+def run_task_workload_internal(workload: WorkloadConfig, task_func: (int) -> bool, thresholds: list[Threshold], limits: SafetyLimits, reporter: JsonlStreamReporter | None) -> LoadTestSummary:
     metrics: LoadMetrics = LoadMetrics()
     cb: CircuitBreaker = CircuitBreaker(limits.max_consecutive_errors)
 
@@ -157,6 +157,17 @@ def run_task_workload(workload: WorkloadConfig, task_func: (int) -> bool, thresh
             vu_states[vu_idx].record(task_duration, success and (not is_timeout))
             case_idx = case_idx + 1
             vu_idx = (vu_idx + 1) % vu_count
+
+            # Live intermediate streaming telemetry during execution
+            if reporter != None and (case_idx % 5 == 0):
+                cur_ms: int = t0.elapsed_ms()
+                reporter.emit_metric_tick(workload.name, metrics.completed, metrics.throughput_rps(cur_ms), metrics.p50(), metrics.p95())
+                cur_th: list[ThresholdResult] = evaluate_all_thresholds(thresholds, metrics, cur_ms)
+                c_k: int = 0
+                while c_k < len(cur_th):
+                    if not cur_th[c_k].passed:
+                        reporter.emit_threshold_breach(workload.name, cur_th[c_k].metric_name, cur_th[c_k].target_value, cur_th[c_k].actual_value)
+                    c_k = c_k + 1
 
     elif workload.model == MODEL_OPEN:
         # Open model: target arrival rate pacing with in-flight backpressure
@@ -233,6 +244,9 @@ def run_task_workload(workload: WorkloadConfig, task_func: (int) -> bool, thresh
 
     return LoadTestSummary(workload.name, metrics, thresh_results, total_duration_ms, all_passed, aborted, abort_reason, vu_states)
 
+def run_task_workload(workload: WorkloadConfig, task_func: (int) -> bool, thresholds: list[Threshold], limits: SafetyLimits) -> LoadTestSummary:
+    return run_task_workload_internal(workload, task_func, thresholds, limits, None)
+
 def run_handler_load_test(workload: WorkloadConfig, handler: (HttpRequest) -> HttpResponse, req: HttpRequest, thresholds: list[Threshold], limits: SafetyLimits) -> LoadTestSummary:
     def adapter_task(idx: int) -> bool:
         res: HttpResponse = handler(req)
@@ -249,7 +263,7 @@ def run_network_load_test(workload: WorkloadConfig, req: HttpRequest, base_url: 
 
 def run_task_workload_streaming(workload: WorkloadConfig, task_func: (int) -> bool, thresholds: list[Threshold], limits: SafetyLimits, reporter: JsonlStreamReporter) -> LoadTestSummary:
     reporter.emit_case_start(workload.name, "workload_execution")
-    summary: LoadTestSummary = run_task_workload(workload, task_func, thresholds, limits)
+    summary: LoadTestSummary = run_task_workload_internal(workload, task_func, thresholds, limits, reporter)
 
     reporter.emit_metric_tick(workload.name, summary.metrics.completed, summary.metrics.throughput_rps(summary.total_duration_ms), summary.metrics.p50(), summary.metrics.p95())
 
