@@ -159,8 +159,11 @@ def _concurrent_loopback_srv_handler(req: HttpRequest) -> HttpResponse:
             if pk_c.compare_and_swap(prev, cur):
                 break
             prev = pk_c.load()
-        # Hold in-flight briefly so simultaneous OS worker threads overlap at the server
+        # Hold in-flight until at least 2 requests arrive concurrently at the server (or 200ms timeout)
         t_w: nox.time.Instant = nox.time.instant_now()
+        while pk_c.load() < 2 and t_w.elapsed_ms() < 200:
+            nox.time.sleep_ms(1)
+        # Hold briefly so individual request execution exceeds 20ms for histogram p50 measurement
         while t_w.elapsed_ms() < 25:
             nox.time.sleep_ms(1)
         act_c.decrement()
@@ -179,7 +182,7 @@ def test_network_load_concurrent_http_server() -> None:
     fd: int = nox.http.listen(port)
     _s0: ThreadHandle[int] = nox.thread.start(_concurrent_loopback_srv_worker, str(fd))
     _s1: ThreadHandle[int] = nox.thread.start(_concurrent_loopback_srv_worker, str(fd))
-    nox.time.sleep_ms(20)
+    nox.time.sleep_ms(50)
 
     limits: SafetyLimits = default_safety_limits()
     wl_net: WorkloadConfig = closed_workload("net_concurrent_http", 4, 3, 8)
@@ -193,11 +196,15 @@ def test_network_load_concurrent_http_server() -> None:
     srv_active.free()
     srv_peak.free()
 
-    assert_eq_int(net_summary.metrics.completed, 8, "8 real HTTP network requests completed across 4 VUs")
-    assert_eq_int(net_summary.metrics.successful, 8, "8 real HTTP network requests returned 200 OK")
-    assert_true(net_summary.metrics.peak_concurrency >= 2, "client metrics recorded >= 2 concurrent in-flight HTTP requests")
-    assert_true(observed_srv_peak >= 2, "HTTP test server directly observed >= 2 simultaneous in-flight requests")
-    assert_true(net_summary.metrics.p50() >= 15, "individual request latencies accurately recorded in histogram (p50 >= 15ms)")
+    try:
+        assert_eq_int(net_summary.metrics.completed, 8, "8 real HTTP network requests completed across 4 VUs")
+        assert_eq_int(net_summary.metrics.successful, 8, "8 real HTTP network requests returned 200 OK")
+        assert_true(net_summary.metrics.peak_concurrency >= 2, "client metrics recorded >= 2 concurrent in-flight HTTP requests")
+        assert_true(observed_srv_peak >= 2, "HTTP test server directly observed >= 2 simultaneous in-flight requests")
+        assert_true(net_summary.metrics.p50() >= 15, "individual request latencies accurately recorded in histogram (p50 >= 15ms)")
+    except AssertionError as e:
+        print("[FAIL DETAIL] net_summary: completed=" + str(net_summary.metrics.completed) + " succ=" + str(net_summary.metrics.successful) + " client_peak=" + str(net_summary.metrics.peak_concurrency) + " srv_peak=" + str(observed_srv_peak) + " p50=" + str(net_summary.metrics.p50()))
+        raise e
 
 def _concurrent_cb_worker_task(case_idx: int, act_h: int, pk_h: int) -> bool:
     act_c: AtomicInt = AtomicInt(act_h)
@@ -209,6 +216,8 @@ def _concurrent_cb_worker_task(case_idx: int, act_h: int, pk_h: int) -> bool:
             break
         prev = pk_c.load()
     t_w: nox.time.Instant = nox.time.instant_now()
+    while pk_c.load() < 2 and t_w.elapsed_ms() < 200:
+        nox.time.sleep_ms(1)
     while t_w.elapsed_ms() < 25:
         nox.time.sleep_ms(1)
     act_c.decrement()
@@ -251,8 +260,12 @@ def test_task_callback_real_concurrency() -> None:
     cb_pk.free()
     cb_done.free()
 
-    assert_eq_int(completed, 4, "all 4 concurrent task workers completed")
-    assert_true(peak >= 2, "user callback directly observed >= 2 simultaneous in-flight executions (peak=" + str(peak) + ")")
+    try:
+        assert_eq_int(completed, 4, "all 4 concurrent task workers completed")
+        assert_true(peak >= 2, "user callback directly observed >= 2 simultaneous in-flight executions (peak=" + str(peak) + ")")
+    except AssertionError as e:
+        print("[FAIL DETAIL] task callback: completed=" + str(completed) + " peak=" + str(peak))
+        raise e
 
 def test_network_load_runner() -> None:
     policy: NetworkPolicy = loopback_network_policy(100)
@@ -419,19 +432,33 @@ async def test_concurrent_scheduler() -> None:
     assert_true(http_404_summary.aborted, "404 responses trip circuit breaker in handler load test")
 
 def run_all_load_scheduler_tests() -> None:
+    print("running test_safety_limits_clamping...")
     test_safety_limits_clamping()
+    print("running test_load_target_validation...")
     test_load_target_validation()
+    print("running test_circuit_breaker...")
     test_circuit_breaker()
+    print("running test_closed_workload_execution...")
     test_closed_workload_execution()
+    print("running test_parallel_os_thread_workload...")
     test_parallel_os_thread_workload()
+    print("running test_task_callback_real_concurrency...")
     test_task_callback_real_concurrency()
+    print("running test_wave_scope_timeout_lifetime_safety...")
     test_wave_scope_timeout_lifetime_safety()
+    print("running test_open_workload_execution...")
     test_open_workload_execution()
+    print("running test_circuit_breaker_abort_in_workload...")
     test_circuit_breaker_abort_in_workload()
+    print("running test_handler_load_runner...")
     test_handler_load_runner()
+    print("running test_load_json_compliance_and_escaping...")
     test_load_json_compliance_and_escaping()
+    print("running test_task_timeout_guard...")
     test_task_timeout_guard()
+    print("running test_network_load_concurrent_http_server...")
     test_network_load_concurrent_http_server()
+    print("running test_network_load_runner...")
     test_network_load_runner()
 
 run_all_load_scheduler_tests()
