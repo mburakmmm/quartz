@@ -206,65 +206,71 @@ def test_network_load_concurrent_http_server() -> None:
         print("[FAIL DETAIL] net_summary: completed=" + str(net_summary.metrics.completed) + " succ=" + str(net_summary.metrics.successful) + " client_peak=" + str(net_summary.metrics.peak_concurrency) + " srv_peak=" + str(observed_srv_peak) + " p50=" + str(net_summary.metrics.p50()))
         raise e
 
-def _concurrent_cb_worker_task(case_idx: int, act_h: int, pk_h: int) -> bool:
+async def _concurrent_cb_channel_worker(vu_id: int, act_h: int, pk_h: int, sync_ch: Channel[int], release_ch: Channel[int], done_ch: Channel[int]) -> None:
     act_c: AtomicInt = AtomicInt(act_h)
     pk_c: AtomicInt = AtomicInt(pk_h)
+
     cur: int = act_c.increment()
     prev: int = pk_c.load()
     while cur > prev:
         if pk_c.compare_and_swap(prev, cur):
             break
         prev = pk_c.load()
-    t_w: nox.time.Instant = nox.time.instant_now()
-    while pk_c.load() < 2 and t_w.elapsed_ms() < 200:
-        nox.time.sleep_ms(1)
-    while t_w.elapsed_ms() < 25:
-        nox.time.sleep_ms(1)
+
+    # Callback is actively in-flight — signal coordinator and wait for wave release
+    await sync_ch.send(vu_id)
+    _rel: int = await release_ch.recv()
+
     act_c.decrement()
-    return True
+    await done_ch.send(vu_id)
 
-async def _concurrent_task_vu_worker(arg: str) -> int:
-    parts: list[str] = nox.strings.split(arg, ",")
-    act_h: int = int(parts[0])
-    pk_h: int = int(parts[1])
-    done_h: int = int(parts[2])
-    idx: int = int(parts[3])
-
-    done_c: AtomicInt = AtomicInt(done_h)
-    ok: bool = _concurrent_cb_worker_task(idx, act_h, pk_h)
-    done_c.increment()
-    return 1 if ok else 0
-
-def test_task_callback_real_concurrency() -> None:
+async def test_task_callback_real_concurrency() -> None:
+    print("running test_task_callback_real_concurrency...")
     cb_act: AtomicInt = nox.atomic.new_int(0)
     cb_pk: AtomicInt = nox.atomic.new_int(0)
-    cb_done: AtomicInt = nox.atomic.new_int(0)
 
-    cfg0: str = str(cb_act.handle) + "," + str(cb_pk.handle) + "," + str(cb_done.handle) + ",0"
-    cfg1: str = str(cb_act.handle) + "," + str(cb_pk.handle) + "," + str(cb_done.handle) + ",1"
-    cfg2: str = str(cb_act.handle) + "," + str(cb_pk.handle) + "," + str(cb_done.handle) + ",2"
-    cfg3: str = str(cb_act.handle) + "," + str(cb_pk.handle) + "," + str(cb_done.handle) + ",3"
+    sync_ch: Channel[int] = Channel[int](8)
+    release_ch: Channel[int] = Channel[int](8)
+    done_ch: Channel[int] = Channel[int](8)
 
-    h0: ThreadHandle[int] = nox.thread.start(_concurrent_task_vu_worker, cfg0)
-    h1: ThreadHandle[int] = nox.thread.start(_concurrent_task_vu_worker, cfg1)
-    h2: ThreadHandle[int] = nox.thread.start(_concurrent_task_vu_worker, cfg2)
-    h3: ThreadHandle[int] = nox.thread.start(_concurrent_task_vu_worker, cfg3)
+    t0: Task[None] = spawn _concurrent_cb_channel_worker(0, cb_act.handle, cb_pk.handle, sync_ch, release_ch, done_ch)
+    t1: Task[None] = spawn _concurrent_cb_channel_worker(1, cb_act.handle, cb_pk.handle, sync_ch, release_ch, done_ch)
+    t2: Task[None] = spawn _concurrent_cb_channel_worker(2, cb_act.handle, cb_pk.handle, sync_ch, release_ch, done_ch)
+    t3: Task[None] = spawn _concurrent_cb_channel_worker(3, cb_act.handle, cb_pk.handle, sync_ch, release_ch, done_ch)
 
-    t0: nox.time.Instant = nox.time.instant_now()
-    while cb_done.load() < 4 and t0.elapsed_ms() < 2000:
-        nox.time.sleep_ms(1)
+    # Wait for all 4 callbacks to reach their simultaneous in-flight execution point
+    r_i: int = 0
+    while r_i < 4:
+        _vu: int = await sync_ch.recv()
+        r_i = r_i + 1
 
-    completed: int = cb_done.load()
     peak: int = cb_pk.load()
+    active: int = cb_act.load()
+
+    # Release all 4 concurrent workers
+    rel_i: int = 0
+    while rel_i < 4:
+        await release_ch.send(1)
+        rel_i = rel_i + 1
+
+    d_i: int = 0
+    while d_i < 4:
+        _d: int = await done_ch.recv()
+        d_i = d_i + 1
+
+    await t0
+    await t1
+    await t2
+    await t3
+
     cb_act.free()
     cb_pk.free()
-    cb_done.free()
 
     try:
-        assert_eq_int(completed, 4, "all 4 concurrent task workers completed")
         assert_true(peak >= 2, "user callback directly observed >= 2 simultaneous in-flight executions (peak=" + str(peak) + ")")
+        assert_eq_int(active, 4, "all 4 callbacks were simultaneously active in-flight")
     except AssertionError as e:
-        print("[FAIL DETAIL] task callback: completed=" + str(completed) + " peak=" + str(peak))
+        print("[FAIL DETAIL] task callback: active=" + str(active) + " peak=" + str(peak))
         raise e
 
 def test_network_load_runner() -> None:
@@ -442,8 +448,6 @@ def run_all_load_scheduler_tests() -> None:
     test_closed_workload_execution()
     print("running test_parallel_os_thread_workload...")
     test_parallel_os_thread_workload()
-    print("running test_task_callback_real_concurrency...")
-    test_task_callback_real_concurrency()
     print("running test_wave_scope_timeout_lifetime_safety...")
     test_wave_scope_timeout_lifetime_safety()
     print("running test_open_workload_execution...")
@@ -462,6 +466,9 @@ def run_all_load_scheduler_tests() -> None:
     test_network_load_runner()
 
 run_all_load_scheduler_tests()
+
+cb_task: Task[None] = spawn test_task_callback_real_concurrency()
+await cb_task
 
 conc_task: Task[None] = spawn test_concurrent_scheduler()
 await conc_task
