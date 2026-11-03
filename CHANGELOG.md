@@ -3,6 +3,28 @@
 All notable changes to the Quartz test framework will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.13] - 2026-11-03 - Bugfix Release: Real CLI Tag Filtering, Full-Row Atlas Contracts, Feather Transaction Outcomes, Canonical Crash Identity & State Models
+
+### Fixed & Hardened
+- **Real CLI Tag Filtering (`core/suite.nox`, `cli/main.nox` & `fixtures/tag_demo.nox`)**:
+  - Added `TestSuite.apply_filter_args(args: list[str])` and `TestSuite.apply_argv_filters()` supporting `--tag <tag[,tag2]>`, `--exclude-tag <tag[,tag2]>`, and `--filter <pattern>` (plus `=` variants).
+  - Updated `cli/main.nox` `cmd_test()` to forward `--tag` and `--exclude-tag` flags to child test suites via `noxc run <file.nox> -- --tag ...` (iterating `*_test.nox` files when a directory is passed), so CLI tag filtering genuinely executes only matching tests instead of running all tests unfiltered.
+- **Deterministic Property Replay with Original Predicate (`property/replay.nox` & `cli/main.nox`)**:
+  - Added `replay_list_int_case()` and `PropertyRegistry` (`register_int`, `register_list_int`, `has`, `kind_of`, `replay`, `replay_result`) in `property/replay.nox`.
+  - Updated `cli/main.nox` `cmd_replay()` to look up `test_id` in `PropertyRegistry` and replay the regenerated candidate against the original predicate rather than comparing against a saved string.
+- **Atlas Full-Row Join, Duplicate-Key GroupBy & Sort Contracts (`adapters/atlas.nox`)**:
+  - **Duplicate Group Rejection (`verify_groupby_contract`)**: Explicitly rejects grouped tables containing duplicate group keys (e.g., `A:2, A:2`).
+  - **Full-Row Cell & Independent Key Verification (`verify_inner_join_contract`)**: Verifies positional column layout (`left.col_count() + right.col_count()`), validates left and right join key positions independently (including same-named key columns where the right key is prefixed `right_<col>`), and matches the exact full-row cell multiset against ground truth so any corrupted non-key cell is detected.
+  - **Sort Contract & Pluggable Engine (`verify_sort_contract`, `AtlasEngine`, `run_atlas_engine_contract`)**: Added monotonic ordering + row-multiset preservation verifier for sorted tables and an engine callback harness so external tabular implementations can be verified against reference ground truth.
+- **Feather Explicit Transaction Outcome States (`adapters/feather.nox`)**:
+  - Added `TX_COMMITTED`, `TX_ABORTED`, `TX_ROLLED_BACK_ON_ERROR`, `TX_ROLLBACK_FAILED`, `TxResult`, `snapshot_matches()`, and `run_transaction()` to distinguish normal commits, clean aborts, exception-triggered rollbacks, and rollback corruption, while preserving `verify_transaction_rollback()` compatibility.
+- **Single Canonical Crash Identity (`fuzz/fuzzer.nox`)**:
+  - Unified crash deduplication in `run_fuzz()` around `deduplicator.normalize_signature(outcome.status + ": " + outcome.message)` so `unique_crashes`, corpus signature registration, minimization, and `cluster_count()` share a single canonical crash identity (`unique_crashes == cluster_count()`).
+- **Stateful Sequence Fuzzing Initial Actions, Valid Shrinking & StateModel (`fuzz/sequence.nox`)**:
+  - Added `set_initial_actions()`, `is_valid_start()`, and `is_valid_sequence()` to `SequenceFuzzer` so generated and mutated sequences start only with legal initial actions and respect all transition rules.
+  - Added `shrink_valid_sequence()` so counterexample shrinking never produces sequences that violate initial action or transition rules.
+  - Added `StateModel` (`initial_state`, `precondition`, `apply_fn`, `postcondition`), `run_model_sequence()`, and `model_sequence_runner()` for model-based stateful verification.
+
 ## [0.9.12] - 2026-11-03 - Bugfix Release: Ecosystem Contract Hardening, Exception-Safe Rollback, Lazy Tag Execution & Fuzzer Clustering Integration
 
 ### Fixed & Hardened

@@ -59,13 +59,17 @@ def run_fuzz(target_name: str, target_func: (str) -> None, initial_seeds: list[s
 
         if outcome.is_failure():
             crashes_total = crashes_total + 1
-            deduplicator.record_crash(outcome.message, candidate, seed, case_idx)
-            if corpus.is_new_signature(outcome.signature):
+            # Single canonical crash identity: normalized signature drives clustering, counting,
+            # corpus registration, minimization and reporting.
+            canon_sig: str = deduplicator.normalize_signature(outcome.status + ": " + outcome.message)
+            clusters_before: int = deduplicator.unique_cluster_count()
+            deduplicator.record_crash(canon_sig, candidate, seed, case_idx)
+            if deduplicator.unique_cluster_count() > clusters_before:
                 unique_crashes = unique_crashes + 1
-                # Minimize candidate
-                min_res: MinimizationResult = minimize_crash(target_func, candidate, outcome.signature, 100)
-                # Save minimized crash artifact
-                corpus.save_crash_artifact(min_res.minimized_input, outcome, seed, case_idx)
+                # Persist artifact only if this canonical signature was never stored in the corpus
+                if corpus.is_new_signature(canon_sig):
+                    min_res: MinimizationResult = minimize_crash(target_func, candidate, outcome.signature, 100)
+                    corpus.save_crash_artifact(min_res.minimized_input, outcome, seed, case_idx)
         else:
             # If normal and within limits, occasionally add interesting candidate to seeds
             if len(candidate) > 0 and len(current_seeds) < corpus.config.max_files and (case_idx % 10 == 0):

@@ -209,6 +209,9 @@ def test_crash_clustering() -> None:
     assert_true(auto_summary.crashes_found > 0, "run_fuzz found simulated crashes")
     assert_true(auto_summary.cluster_count() >= 1, "run_fuzz cluster_count automatically available")
     assert_true(auto_summary.deduplicator.total_crashes() > 0, "deduplicator embedded in FuzzSummary")
+    # Single canonical crash identity: both counters must agree
+    assert_eq_int(auto_summary.unique_crashes, auto_summary.cluster_count(), "unique_crashes equals cluster_count (canonical identity)")
+    assert_eq_int(auto_summary.crashes_found, auto_summary.deduplicator.total_crashes(), "crashes_found equals deduplicator total")
 
 def cleanup_dir(path: str) -> None:
     if nox.fs.exists(path):

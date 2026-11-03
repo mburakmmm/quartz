@@ -1,7 +1,7 @@
 # Quartz Property Test — Deterministic Runs, Failure Shrinking and Replay
-from property.generator import IntGen, StringGen, CHARSET_TURKISH_UNICODE
-from property.property import PropertyConfig, PropertyResult, run_int_property, run_str_property, default_property_config
-from property.replay import replay_int_case, save_failure_artifact
+from property.generator import IntGen, StringGen, ListIntGen, CHARSET_TURKISH_UNICODE
+from property.property import PropertyConfig, PropertyResult, run_int_property, run_str_property, run_list_int_property, default_property_config
+from property.replay import replay_int_case, replay_list_int_case, PropertyRegistry, save_failure_artifact
 from core.assert import assert_eq_int, assert_eq_str, assert_true, assert_false
 import nox.fs
 
@@ -45,12 +45,18 @@ def test_failure_shrinking_and_replay() -> None:
     reproduced: bool = replay_int_case("bounded_int_fail", res.seed, res.failing_case_index, gen, prop_bounded_int)
     assert_true(reproduced, "failing case must be 100% reproducible via replay")
 
-    # Save failure artifact to disk and verify JSON content
+    # Save failure artifact to disk and verify JSON content + PropertyRegistry replay
     if not nox.fs.exists("fixtures"):
         nox.fs.create_dir("fixtures")
     artifact_path: str = "fixtures/failure_artifact_test.json"
     save_failure_artifact(artifact_path, res)
     assert_true(nox.fs.exists(artifact_path), "artifact file exists")
+
+    reg: PropertyRegistry = PropertyRegistry()
+    reg.register_int("bounded_int_fail", gen, prop_bounded_int)
+    assert_true(reg.has("bounded_int_fail"), "registry has bounded_int_fail")
+    assert_true(reg.replay_result(res), "PropertyRegistry replays actual predicate failure from PropertyResult")
+    assert_eq_int(reg.replay("unknown_test", res.seed, res.failing_case_index), -1, "unknown test returns -1")
     nox.fs.remove_file(artifact_path)
 
 def test_unicode_string_property() -> None:

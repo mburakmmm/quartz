@@ -114,6 +114,15 @@ def test_suite_tag_filtering() -> None:
     suite.check_true("case_runs_after_clear", True)
     assert_eq_int(suite.pass_count(), 2, "runs after clearing tags")
 
+    # Test CLI argv filter parsing (--tag, --exclude-tag, --filter)
+    suite2: TestSuite = TestSuite("argv_filter_suite")
+    suite2.apply_filter_args(["--tag", "smoke,fast", "--exclude-tag", "flaky", "--filter", "login"])
+    suite2.check_true("login_smoke", True, ["smoke"])
+    suite2.check_true("login_flaky", True, ["smoke", "flaky"])
+    suite2.check_true("logout_smoke", True, ["smoke"])
+    assert_eq_int(suite2.pass_count(), 1, "only login_smoke matches both --tag smoke, not --exclude-tag flaky, and --filter login")
+    assert_eq_int(suite2.skip_count(), 2, "two cases skipped by CLI filter args")
+
 def test_lazy_test_execution() -> None:
     suite: TestSuite = TestSuite("lazy_suite")
     suite.set_include_tag("fast")

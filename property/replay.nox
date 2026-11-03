@@ -1,6 +1,6 @@
 # Quartz Property — Replay Engine
 from core.prng import Prng, PRNG_VERSION, derive_case_seed
-from property.generator import IntGen, StringGen
+from property.generator import IntGen, StringGen, ListIntGen
 from property.property import PropertyResult
 import nox.fs
 
@@ -12,13 +12,13 @@ def replay_int_case(test_id: str, seed: int, case_index: int, gen: IntGen, predi
     case_seed: int = derive_case_seed(seed, test_id, case_index, PRNG_VERSION)
     case_prng: Prng = Prng(case_seed)
     candidate: int = gen.generate(case_prng)
-    
+
     passed: bool = False
     try:
         passed = predicate(candidate)
     except Exception as e:
         passed = False
-        
+
     # Return True if failure reproduces (i.e. predicate returned False)
     return not passed
 
@@ -34,3 +34,81 @@ def replay_str_case(test_id: str, seed: int, case_index: int, gen: StringGen, pr
         passed = False
 
     return not passed
+
+def replay_list_int_case(test_id: str, seed: int, case_index: int, gen: ListIntGen, predicate: (list[int]) -> bool) -> bool:
+    case_seed: int = derive_case_seed(seed, test_id, case_index, PRNG_VERSION)
+    case_prng: Prng = Prng(case_seed)
+    candidate: list[int] = gen.generate(case_prng)
+
+    passed: bool = False
+    try:
+        passed = predicate(candidate)
+    except Exception as e:
+        passed = False
+
+    return not passed
+
+# Explicit (non-global) registry mapping stable test IDs to the ORIGINAL generator + predicate,
+# so a saved failure artifact is replayed against the real property function.
+class PropertyRegistry:
+    int_ids: list[str]
+    int_gens: list[IntGen]
+    int_preds: list[(int) -> bool]
+    list_ids: list[str]
+    list_gens: list[ListIntGen]
+    list_preds: list[(list[int]) -> bool]
+
+    def __init__(self: PropertyRegistry) -> None:
+        self.int_ids = []
+        self.int_gens = []
+        self.int_preds = []
+        self.list_ids = []
+        self.list_gens = []
+        self.list_preds = []
+
+    def register_int(self: PropertyRegistry, test_id: str, gen: IntGen, predicate: (int) -> bool) -> None:
+        self.int_ids.append(test_id)
+        self.int_gens.append(gen)
+        self.int_preds.append(predicate)
+
+    def register_list_int(self: PropertyRegistry, test_id: str, gen: ListIntGen, predicate: (list[int]) -> bool) -> None:
+        self.list_ids.append(test_id)
+        self.list_gens.append(gen)
+        self.list_preds.append(predicate)
+
+    def has(self: PropertyRegistry, test_id: str) -> bool:
+        return self.kind_of(test_id) != ""
+
+    def kind_of(self: PropertyRegistry, test_id: str) -> str:
+        i: int = 0
+        while i < len(self.int_ids):
+            if self.int_ids[i] == test_id:
+                return "int"
+            i = i + 1
+        j: int = 0
+        while j < len(self.list_ids):
+            if self.list_ids[j] == test_id:
+                return "list_int"
+            j = j + 1
+        return ""
+
+    # Returns 1 if failure reproduced, 0 if the case now passes, -1 if test_id is not registered.
+    def replay(self: PropertyRegistry, test_id: str, seed: int, case_index: int) -> int:
+        i: int = 0
+        while i < len(self.int_ids):
+            if self.int_ids[i] == test_id:
+                if replay_int_case(test_id, seed, case_index, self.int_gens[i], self.int_preds[i]):
+                    return 1
+                return 0
+            i = i + 1
+        j: int = 0
+        while j < len(self.list_ids):
+            if self.list_ids[j] == test_id:
+                if replay_list_int_case(test_id, seed, case_index, self.list_gens[j], self.list_preds[j]):
+                    return 1
+                return 0
+            j = j + 1
+        return -1
+
+    def replay_result(self: PropertyRegistry, result: PropertyResult) -> bool:
+        return self.replay(result.test_id, result.seed, result.failing_case_index) == 1

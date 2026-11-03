@@ -1,7 +1,68 @@
 # Quartz Tests — Atlas Ecosystem Adapter & Tabular Invariant Tests
 from core.suite import TestSuite
 from core.prng import Prng
-from adapters.atlas import AtlasTable, parse_csv, sort_table, verify_sort_idempotence, verify_csv_roundtrip, groupby_count, verify_groupby_contract, verify_groupby_conservation, inner_join_tables, verify_inner_join_contract, verify_inner_join_conservation, mutate_csv
+from adapters.atlas import AtlasTable, parse_csv, sort_table, verify_sort_idempotence, verify_csv_roundtrip, groupby_count, verify_groupby_contract, verify_groupby_conservation, inner_join_tables, verify_inner_join_contract, verify_inner_join_conservation, mutate_csv, verify_sort_contract, AtlasEngine, reference_atlas_engine, run_atlas_engine_contract
+
+def broken_groupby(table: AtlasTable, group_col: str) -> AtlasTable:
+    # Returns duplicated group rows: A:2, A:2 style corruption
+    return AtlasTable([group_col, "count"], [["North", "3"], ["North", "3"], ["South", "2"]])
+
+def broken_join(left: AtlasTable, right: AtlasTable, left_key: str, right_key: str) -> AtlasTable:
+    good: AtlasTable = inner_join_tables(left, right, left_key, right_key)
+    # Corrupt a NON-key cell while keeping row count and keys intact
+    bad_rows: list[list[str]] = []
+    i: int = 0
+    while i < good.row_count():
+        r: list[str] = []
+        c: int = 0
+        while c < len(good.rows[i]):
+            r.append(good.rows[i][c])
+            c = c + 1
+        if i == 0:
+            r[1] = "CORRUPTED"
+        bad_rows.append(r)
+        i = i + 1
+    return AtlasTable(good.headers, bad_rows)
+
+def run_contract_hardening_tests(suite: TestSuite) -> None:
+    # GroupBy duplicate groups must be rejected
+    src: AtlasTable = AtlasTable(["g", "v"], [["A", "1"], ["A", "2"], ["B", "3"], ["B", "4"]])
+    dup_grouped: AtlasTable = AtlasTable(["g", "count"], [["A", "2"], ["A", "2"]])
+    suite.check_false("groupby_rejects_duplicate_groups", verify_groupby_contract(src, "g", dup_grouped))
+    ok_grouped: AtlasTable = AtlasTable(["g", "count"], [["A", "2"], ["B", "2"]])
+    suite.check_true("groupby_accepts_unique_groups", verify_groupby_contract(src, "g", ok_grouped))
+
+    # Join: corrupted non-key cell must be caught
+    left: AtlasTable = AtlasTable(["id", "name"], [["1", "Ann"], ["2", "Bob"]])
+    right: AtlasTable = AtlasTable(["rid", "city"], [["1", "Rome"], ["2", "Oslo"]])
+    good_join: AtlasTable = inner_join_tables(left, right, "id", "rid")
+    suite.check_true("join_accepts_correct_result", verify_inner_join_contract(left, right, "id", "rid", good_join))
+    bad_join: AtlasTable = broken_join(left, right, "id", "rid")
+    suite.check_false("join_rejects_corrupted_non_key_cell", verify_inner_join_contract(left, right, "id", "rid", bad_join))
+
+    # Join: same-named key columns on both sides verified independently
+    l2: AtlasTable = AtlasTable(["k", "a"], [["1", "x"], ["2", "y"]])
+    r2: AtlasTable = AtlasTable(["k", "b"], [["1", "p"], ["2", "q"]])
+    j2: AtlasTable = inner_join_tables(l2, r2, "k", "k")
+    suite.check_true("join_same_named_key_ok", verify_inner_join_contract(l2, r2, "k", "k", j2))
+    j2_bad_key: AtlasTable = AtlasTable(j2.headers, [["1", "x", "2", "p"], ["2", "y", "2", "q"]])
+    suite.check_false("join_same_named_key_right_key_mismatch_rejected", verify_inner_join_contract(l2, r2, "k", "k", j2_bad_key))
+
+    # Sort contract
+    unsorted_t: AtlasTable = AtlasTable(["n"], [["3"], ["1"], ["2"]])
+    sorted_ok: AtlasTable = AtlasTable(["n"], [["1"], ["2"], ["3"]])
+    sorted_lossy: AtlasTable = AtlasTable(["n"], [["1"], ["2"], ["2"]])
+    suite.check_true("sort_contract_accepts_correct", verify_sort_contract(unsorted_t, sorted_ok, "n", True, True))
+    suite.check_false("sort_contract_rejects_lossy_permutation", verify_sort_contract(unsorted_t, sorted_lossy, "n", True, True))
+    suite.check_false("sort_contract_rejects_unordered", verify_sort_contract(unsorted_t, unsorted_t, "n", True, True))
+
+    # Pluggable engine: reference passes, broken engine is caught
+    ref: AtlasEngine = reference_atlas_engine()
+    ref_fail: list[str] = run_atlas_engine_contract(ref, left, "id", True, "name", right, "id", "rid")
+    suite.check_eq_int("reference_engine_contract_clean", len(ref_fail), 0)
+    bad_engine: AtlasEngine = AtlasEngine("broken", sort_table, broken_groupby, broken_join)
+    bad_fail: list[str] = run_atlas_engine_contract(bad_engine, src, "g", False, "g", right, "g", "rid")
+    suite.check_true("broken_engine_detected", len(bad_fail) >= 1)
 
 def run_atlas_adapter_tests() -> None:
     suite: TestSuite = TestSuite("atlas_adapter_suite")
@@ -135,6 +196,8 @@ def run_atlas_adapter_tests() -> None:
             mutations_count = mutations_count + 1
         m_i = m_i + 1
     suite.check_true("csv_mutation_fuzzing_generated", mutations_count > 0)
+
+    run_contract_hardening_tests(suite)
 
     print("Atlas Adapter Invariant Tests: " + str(suite.pass_count()) + "/" + str(suite.total_count()) + " passed.")
     if not suite.all_passed():

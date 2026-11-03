@@ -297,6 +297,18 @@ def verify_groupby_contract(
     if grouped_table.row_count() != len(gt_keys):
         return False
 
+    # Output group keys must be unique (A:2, A:2 is a corrupted result even if counts add up)
+    seen_keys: list[str] = []
+    u: int = 0
+    while u < grouped_table.row_count():
+        uk: str = grouped_table.get_cell(u, group_col)
+        s: int = 0
+        while s < len(seen_keys):
+            if seen_keys[s] == uk:
+                return False
+            s = s + 1
+        seen_keys.append(uk)
+        u = u + 1
     # Check each row in grouped_table matches exact ground truth
     total_in_grouped: int = 0
     g: int = 0
@@ -378,6 +390,14 @@ def inner_join_tables(left: AtlasTable, right: AtlasTable, left_key: str, right_
 
     return AtlasTable(out_headers, out_rows)
 
+def row_signature(row: list[str]) -> str:
+    s: str = ""
+    i: int = 0
+    while i < len(row):
+        s = s + row[i] + "\x1f"
+        i = i + 1
+    return s
+
 def verify_inner_join_contract(
     left: AtlasTable,
     right: AtlasTable,
@@ -406,18 +426,60 @@ def verify_inner_join_contract(
     if joined_table.row_count() != expected_matches:
         return False
 
-    # 2. Check key equality across all joined rows
-    r_key_in_joined: str = right_key
-    if left.col_index(right_key) >= 0 and left_key != right_key:
-        r_key_in_joined = "right_" + right_key
+    # 2. Column layout must be left columns followed by right columns (positional, so
+    #    same-named left/right key columns are verified independently of header naming)
+    expected_cols: int = left.col_count() + right.col_count()
+    if joined_table.col_count() != expected_cols:
+        return False
+
+    left_key_pos: int = l_idx
+    right_key_pos: int = left.col_count() + r_idx
+
+    # 3. Build the ground-truth multiset of full-row signatures (ALL cells, positional)
+    expected_sigs: list[str] = []
+    ei: int = 0
+    while ei < left.row_count():
+        ej: int = 0
+        while ej < right.row_count():
+            if left.get_cell(ei, left_key) == right.get_cell(ej, right_key):
+                expected_sigs.append(row_signature(left.rows[ei]) + "\x1e" + row_signature(right.rows[ej]))
+            ej = ej + 1
+        ei = ei + 1
+
+    used: list[bool] = []
+    ui: int = 0
+    while ui < len(expected_sigs):
+        used.append(False)
+        ui = ui + 1
 
     row_i: int = 0
     while row_i < joined_table.row_count():
-        val_l: str = joined_table.get_cell(row_i, left_key)
-        val_r: str = joined_table.get_cell(row_i, r_key_in_joined)
-        if len(val_r) == 0:
-            val_r = joined_table.get_cell(row_i, "right_" + right_key)
-        if len(val_r) > 0 and val_l != val_r:
+        jrow: list[str] = joined_table.rows[row_i]
+        if len(jrow) != expected_cols:
+            return False
+        # Key columns on both sides of the joined row must match each other
+        if jrow[left_key_pos] != jrow[right_key_pos]:
+            return False
+        # Split joined row back into left part and right part and compare ALL cells
+        lpart: list[str] = []
+        rpart: list[str] = []
+        cc: int = 0
+        while cc < expected_cols:
+            if cc < left.col_count():
+                lpart.append(jrow[cc])
+            else:
+                rpart.append(jrow[cc])
+            cc = cc + 1
+        sig: str = row_signature(lpart) + "\x1e" + row_signature(rpart)
+        found_match: bool = False
+        mi: int = 0
+        while mi < len(expected_sigs):
+            if not used[mi] and expected_sigs[mi] == sig:
+                used[mi] = True
+                found_match = True
+                break
+            mi = mi + 1
+        if not found_match:
             return False
         row_i = row_i + 1
 
@@ -452,3 +514,115 @@ def mutate_csv(raw_csv: str, prng: Prng) -> str:
             cutoff: int = prng.choose_index(len(raw_csv) - 2) + 1
             return raw_csv[0:cutoff]
         return raw_csv + ",\n"
+
+def verify_sort_contract(input_table: AtlasTable, sorted_table: AtlasTable, sort_col: str, is_numeric: bool = False, ascending: bool = True) -> bool:
+    # Output must be (1) same shape, (2) ordered by sort_col, (3) a permutation of the input rows (all cells)
+    if sorted_table.row_count() != input_table.row_count() or sorted_table.col_count() != input_table.col_count():
+        return False
+    if input_table.col_index(sort_col) < 0:
+        return False
+
+    # Ordered check
+    r: int = 0
+    while r + 1 < sorted_table.row_count():
+        a: str = sorted_table.get_cell(r, sort_col)
+        b: str = sorted_table.get_cell(r + 1, sort_col)
+        in_order: bool = True
+        if is_numeric:
+            try:
+                an: int = int(a)
+                bn: int = int(b)
+                if ascending:
+                    in_order = an <= bn
+                else:
+                    in_order = an >= bn
+            except Exception as e:
+                return False
+        else:
+            if ascending:
+                in_order = a <= b
+            else:
+                in_order = a >= b
+        if not in_order:
+            return False
+        r = r + 1
+
+    # Permutation check (multiset of full rows)
+    used: list[bool] = []
+    u: int = 0
+    while u < input_table.row_count():
+        used.append(False)
+        u = u + 1
+    s: int = 0
+    while s < sorted_table.row_count():
+        sig: str = row_signature(sorted_table.rows[s])
+        matched: bool = False
+        k: int = 0
+        while k < input_table.row_count():
+            if not used[k] and row_signature(input_table.rows[k]) == sig:
+                used[k] = True
+                matched = True
+                break
+            k = k + 1
+        if not matched:
+            return False
+        s = s + 1
+    return True
+
+# Pluggable engine: a real Atlas implementation supplies these callbacks; Quartz verifies the
+# results against independent ground truth. reference_atlas_engine() is the in-repo reference.
+class AtlasEngine:
+    name: str
+    sort_fn: (AtlasTable, str, bool, bool) -> AtlasTable
+    groupby_fn: (AtlasTable, str) -> AtlasTable
+    join_fn: (AtlasTable, AtlasTable, str, str) -> AtlasTable
+
+    def __init__(
+        self: AtlasEngine,
+        name: str,
+        sort_fn: (AtlasTable, str, bool, bool) -> AtlasTable,
+        groupby_fn: (AtlasTable, str) -> AtlasTable,
+        join_fn: (AtlasTable, AtlasTable, str, str) -> AtlasTable
+    ) -> None:
+        self.name = name
+        self.sort_fn = sort_fn
+        self.groupby_fn = groupby_fn
+        self.join_fn = join_fn
+
+def reference_groupby(table: AtlasTable, group_col: str) -> AtlasTable:
+    return groupby_count(table, group_col)
+
+def reference_atlas_engine() -> AtlasEngine:
+    return AtlasEngine("reference", sort_table, reference_groupby, inner_join_tables)
+
+# Runs the engine against ground-truth contracts. Returns a list of failure descriptions (empty = all hold).
+def run_atlas_engine_contract(
+    engine: AtlasEngine,
+    table: AtlasTable,
+    sort_col: str,
+    sort_numeric: bool,
+    group_col: str,
+    other: AtlasTable,
+    left_key: str,
+    right_key: str
+) -> list[str]:
+    failures: list[str] = []
+    try:
+        sorted_t: AtlasTable = engine.sort_fn(table, sort_col, sort_numeric, True)
+        if not verify_sort_contract(table, sorted_t, sort_col, sort_numeric, True):
+            failures.append(engine.name + ": sort contract violated")
+    except Exception as e:
+        failures.append(engine.name + ": sort raised " + str(e))
+    try:
+        grouped_t: AtlasTable = engine.groupby_fn(table, group_col)
+        if not verify_groupby_contract(table, group_col, grouped_t):
+            failures.append(engine.name + ": groupby contract violated")
+    except Exception as e2:
+        failures.append(engine.name + ": groupby raised " + str(e2))
+    try:
+        joined_t: AtlasTable = engine.join_fn(table, other, left_key, right_key)
+        if not verify_inner_join_contract(table, other, left_key, right_key, joined_t):
+            failures.append(engine.name + ": join contract violated")
+    except Exception as e3:
+        failures.append(engine.name + ": join raised " + str(e3))
+    return failures

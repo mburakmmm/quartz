@@ -15,7 +15,7 @@ from core.report_html import format_html_load_report, format_html_test_report, w
 from core.types import RunSummary, TestResult, STATUS_PASS
 from property.generator import IntGen, ListIntGen
 from property.property import PropertyConfig, run_list_int_property, PropertyResult
-from property.replay import replay_int_case
+from property.replay import replay_int_case, PropertyRegistry
 from fuzz.corpus import CorpusManager, default_corpus_config
 from fuzz.fuzzer import run_fuzz, FuzzSummary
 from load.safety import SafetyLimits, default_safety_limits
@@ -82,6 +82,31 @@ def parse_flag_int(flag_name: str, default_val: int) -> int:
 def cmd_version() -> None:
     print(quartz.framework_info())
 
+def sample_list_invariant(xs: list[int]) -> bool:
+    rev: list[int] = []
+    i: int = len(xs)
+    while i > 0:
+        i = i - 1
+        rev.append(xs[i])
+    rev2: list[int] = []
+    j: int = len(rev)
+    while j > 0:
+        j = j - 1
+        rev2.append(rev[j])
+    if len(xs) != len(rev2):
+        return False
+    k: int = 0
+    while k < len(xs):
+        if xs[k] != rev2[k]:
+            return False
+        k = k + 1
+    return True
+
+def build_cli_registry() -> PropertyRegistry:
+    reg: PropertyRegistry = PropertyRegistry()
+    reg.register_list_int("cli_property_check", ListIntGen(0, 15, IntGen(-100, 100, True)), sample_list_invariant)
+    return reg
+
 def cmd_property() -> None:
     seed: int = parse_flag_int("--seed", 42)
     cases: int = parse_flag_int("--cases", 100)
@@ -92,30 +117,10 @@ def cmd_property() -> None:
         print("Running Quartz Property Invariant Check...")
         print("Config: seed=" + str(seed) + ", cases=" + str(cases))
 
-    def sample_invariant(xs: list[int]) -> bool:
-        rev: list[int] = []
-        i: int = len(xs)
-        while i > 0:
-            i = i - 1
-            rev.append(xs[i])
-        rev2: list[int] = []
-        j: int = len(rev)
-        while j > 0:
-            j = j - 1
-            rev2.append(rev[j])
-        if len(xs) != len(rev2):
-            return False
-        k: int = 0
-        while k < len(xs):
-            if xs[k] != rev2[k]:
-                return False
-            k = k + 1
-        return True
-
     item_gen: IntGen = IntGen(-100, 100, True)
     gen: ListIntGen = ListIntGen(0, 15, item_gen)
     cfg: PropertyConfig = PropertyConfig(cases, 10, seed, 5000)
-    res: PropertyResult = run_list_int_property("cli_property_check", cfg, gen, sample_invariant)
+    res: PropertyResult = run_list_int_property("cli_property_check", cfg, gen, sample_list_invariant)
 
     if format_opt == "json":
         json_str: str = res.to_json()
@@ -261,19 +266,18 @@ def cmd_replay() -> None:
             nox.os.exit(1)
             return
 
-        rep_gen: IntGen = IntGen(-100, 100, True)
-
-        # Predicate reproduces failure if the generated candidate matches the failing counterexample
-        def check_reproduced(val: int) -> bool:
-            # If val matches the recorded failure counterexample, predicate returns False to trigger reproduction
-            return (str(val) != orig_str)
-
-        replayed_ok: bool = replay_int_case(test_id, seed_val, case_idx, rep_gen, check_reproduced)
-        if replayed_ok:
-            print("  Replay executed: PASS")
+        # Replay against the ORIGINAL registered generator + predicate (no synthetic predicate).
+        registry: PropertyRegistry = build_cli_registry()
+        replay_code: int = registry.replay(test_id, seed_val, case_idx)
+        if replay_code < 0:
+            print("Error: test_id '" + test_id + "' is not registered in the CLI property registry; cannot replay with the original predicate.")
+            nox.os.exit(2)
+            return
+        if replay_code == 1:
+            print("  Replay executed: FAIL (original predicate violated again)")
             print("[REPLAY SUCCESS] Deterministic counterexample reproduction verified.")
         else:
-            print("  Replay executed: FAIL")
+            print("  Replay executed: PASS (original predicate now holds)")
             print("[REPLAY FAILED] Counterexample could not be reproduced from seed and case index.")
             nox.os.exit(1)
     except Exception as e:
@@ -405,12 +409,30 @@ def cmd_test() -> None:
             return
 
         # Step 2: Attempt dynamic test execution
+        # Tag filters are forwarded as program argv via 'noxc run <file> -- --tag X' because
+        # 'noxc test' cannot forward argv; the test file applies them via TestSuite.apply_argv_filters().
+        use_tag_mode: bool = len(tag_filter) > 0 or len(exclude_tag) > 0
+        if use_tag_mode and not nox.fs.is_file(target_path):
+            print("Error: --tag/--exclude-tag require a single test file path (got: " + target_path + ").")
+            nox.os.exit(2)
+            return
         t_i: int = 0
         while t_i < len(candidate_bins):
             bin_t: str = candidate_bins[t_i]
             cmd: Command = Command(bin_t)
-            cmd.arg("test")
-            cmd.arg(target_path)
+            if use_tag_mode:
+                cmd.arg("run")
+                cmd.arg(target_path)
+                cmd.arg("--")
+                if len(tag_filter) > 0:
+                    cmd.arg("--tag")
+                    cmd.arg(tag_filter)
+                if len(exclude_tag) > 0:
+                    cmd.arg("--exclude-tag")
+                    cmd.arg(exclude_tag)
+            else:
+                cmd.arg("test")
+                cmd.arg(target_path)
             try:
                 out: Output = cmd.run()
                 if out.success():

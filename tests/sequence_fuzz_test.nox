@@ -2,7 +2,7 @@
 # Validates action sequence modeling, mutations, state machine fuzzing, and counterexample shrinking.
 
 from core.assert import assert_eq_int, assert_eq_str, assert_true, assert_false, assert_contains_str
-from fuzz.sequence import FuzzAction, ActionSequence, SequenceFuzzer, SequenceFuzzResult, run_sequence_fuzz, shrink_failing_sequence
+from fuzz.sequence import FuzzAction, ActionSequence, SequenceFuzzer, SequenceFuzzResult, run_sequence_fuzz, shrink_failing_sequence, shrink_valid_sequence, StateModel, run_model_sequence, model_sequence_runner
 
 def test_action_and_sequence_basics() -> None:
     act1: FuzzAction = FuzzAction("push", "alpha", 10)
@@ -169,10 +169,91 @@ def test_sequence_payload_shrinking() -> None:
     assert_true(shrunk.get(0).payload_int < 80, "payload was shrunk below original 80")
     assert_false(fail_on_large_payload(shrunk), "shrunk sequence still triggers failure")
 
+def test_initial_actions_and_valid_shrinking() -> None:
+    actions: list[str] = ["connect", "auth", "query", "disconnect"]
+    fuzzer: SequenceFuzzer = SequenceFuzzer(77, actions, 4, 10)
+    fuzzer.add_transition_rule("connect", ["auth"])
+    fuzzer.add_transition_rule("auth", ["query", "disconnect"])
+    fuzzer.add_transition_rule("query", ["query", "disconnect"])
+    fuzzer.add_transition_rule("disconnect", ["connect"])
+    fuzzer.set_initial_actions(["connect"])
+
+    # Generated and mutated sequences always start in a valid state
+    t: int = 0
+    while t < 20:
+        gen_seq: ActionSequence = fuzzer.generate_random_sequence()
+        assert_eq_str(gen_seq.get(0).name, "connect", "generated sequence starts with connect")
+        assert_true(fuzzer.is_valid_sequence(gen_seq), "generated sequence valid")
+        mut_seq: ActionSequence = fuzzer.mutate_sequence(gen_seq)
+        assert_eq_str(mut_seq.get(0).name, "connect", "mutated sequence starts with connect")
+        assert_true(fuzzer.is_valid_sequence(mut_seq), "mutated sequence valid")
+        t = t + 1
+
+    # Invalid sequences are detected
+    bad_start: ActionSequence = ActionSequence([FuzzAction("query"), FuzzAction("disconnect")])
+    assert_false(fuzzer.is_valid_sequence(bad_start), "invalid start rejected")
+    bad_trans: ActionSequence = ActionSequence([FuzzAction("connect"), FuzzAction("query")])
+    assert_false(fuzzer.is_valid_sequence(bad_trans), "invalid transition rejected")
+
+    # Shrinking never leaves the valid space: failure = contains 'query'; naive shrink would drop 'auth'
+    def fails_on_query(s: ActionSequence) -> bool:
+        i: int = 0
+        while i < s.len():
+            if s.get(i).name == "query":
+                return False
+            i = i + 1
+        return True
+
+    def validator(s: ActionSequence) -> bool:
+        return fuzzer.is_valid_sequence(s)
+
+    original: ActionSequence = ActionSequence([FuzzAction("connect"), FuzzAction("auth"), FuzzAction("query"), FuzzAction("query"), FuzzAction("disconnect")])
+    shrunk: ActionSequence = shrink_valid_sequence(original, fails_on_query, validator)
+    assert_true(fuzzer.is_valid_sequence(shrunk), "shrunk sequence remains valid")
+    assert_false(fails_on_query(shrunk), "shrunk sequence still fails")
+    assert_true(shrunk.len() <= original.len(), "shrunk not longer")
+    assert_eq_str(shrunk.get(0).name, "connect", "shrunk sequence keeps valid start")
+
+def model_pre(state: int, act: FuzzAction) -> bool:
+    if act.name == "pop":
+        return state > 0
+    return True
+
+def model_apply(state: int, act: FuzzAction) -> int:
+    if act.name == "push":
+        return state + 1
+    if act.name == "pop":
+        return state - 1
+    return state
+
+def model_post_ok(state: int, act: FuzzAction, new_state: int) -> bool:
+    return new_state >= 0
+
+def model_post_buggy(state: int, act: FuzzAction, new_state: int) -> bool:
+    # Buggy expectation: claims a push never exceeds 2 items
+    return new_state <= 2
+
+def test_state_model() -> None:
+    good: StateModel = StateModel(0, model_pre, model_apply, model_post_ok)
+    seq: ActionSequence = ActionSequence([FuzzAction("pop"), FuzzAction("push"), FuzzAction("push"), FuzzAction("pop")])
+    assert_eq_str(run_model_sequence(good, seq), "", "pop on empty skipped by precondition; postconditions hold")
+
+    buggy: StateModel = StateModel(0, model_pre, model_apply, model_post_buggy)
+    long_seq: ActionSequence = ActionSequence([FuzzAction("push"), FuzzAction("push"), FuzzAction("push")])
+    msg: str = run_model_sequence(buggy, long_seq)
+    assert_true(len(msg) > 0, "postcondition violation reported")
+    assert_contains_str(msg, "step 2", "violation points at third push")
+
+    runner: (ActionSequence) -> bool = model_sequence_runner(buggy)
+    assert_false(runner(long_seq), "model runner reports failure")
+    assert_true(runner(seq), "model runner passes short sequence")
+
 test_action_and_sequence_basics()
 test_sequence_generator_and_mutation()
 test_sequence_fuzzing_and_shrinking()
 test_safe_state_machine_clean_fuzz()
 test_sequence_transition_rules()
 test_sequence_payload_shrinking()
+test_initial_actions_and_valid_shrinking()
+test_state_model()
 print("quartz sequence fuzz test: ALL PASS")

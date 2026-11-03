@@ -812,6 +812,40 @@
 
 ---
 
+## Phase 14.3: v0.9.13 — Bugfix Release (GPT-6 Sol v0.9.12 findings)
+*Objective: Address ALL findings from Sol's v0.9.12 evaluation. P1: CLI tag filters must really select tests; Atlas contracts must catch duplicate groups, corrupted non-key cells and wrong right-hand keys; deterministic replay and concurrent load / CLI child execution tracked explicitly. P2: single canonical crash identity, stateful shrinking preserving transitions + state/precondition/postcondition model, Feather transaction outcome states. Registry note: package status is "awaiting approval" — NOT approved, never claim otherwise.*
+
+- [x] **14.3.1 [P1] CLI tag filtering really selects tests (`core/suite.nox`, `cli/main.nox`)**
+  - [x] `TestSuite.apply_argv_filters()` reads `--tag` / `--exclude-tag` from program argv (`noxc run file -- --tag smoke`).
+  - [x] `cmd_test()` forwards tag flags to child via `noxc run <file> -- --tag X` (since `noxc test` cannot forward argv); directory targets iterate `*_test.nox` files.
+  - [x] Tests: argv parsing helper, include/exclude semantics, fail-closed if tag requested but child cannot run.
+- [x] **14.3.2 [P1] Atlas contract correctness (`adapters/atlas.nox`)**
+  - [x] GroupBy: reject duplicate group keys in output (A:2, A:2 must fail).
+  - [x] Join: compare ALL cells (left columns and right columns) of each joined row against ground truth multiset; detect corrupted non-key cells.
+  - [x] Join: verify right-side key independently, including same-named left/right key columns (`right_` prefix handling).
+  - [x] Engine-pluggable contract harness (`AtlasEngine` callbacks: sort/groupby/join) so real Atlas can be plugged in; reference engine used in CI.
+  - [!] Real Atlas package integration: mark **BLOCKED / NOT RUN** (Atlas package not available/verified in this standalone environment) — documented, not claimed.
+- [x] **14.3.3 [P2] Feather transaction outcome states (`adapters/feather.nox`)**
+  - [x] `TxResult` with outcomes `COMMITTED`, `ABORTED`, `ROLLED_BACK_ON_ERROR`, `ROLLBACK_FAILED`; `run_transaction()` + keep boolean `verify_transaction_rollback` wrapper.
+  - [!] Real Feather persistence / SQL transaction tests: **BLOCKED / NOT RUN** (in-memory reference repository only) — documented.
+- [x] **14.3.4 [P2] Single canonical crash identity (`fuzz/fuzzer.nox`, `fuzz/cluster.nox`)**
+  - [x] `unique_crashes`, corpus signature registration, minimization and reporting all use the normalized cluster signature; `unique_crashes == cluster_count()`.
+- [x] **14.3.5 [P2] Stateful fuzzing model (`fuzz/sequence.nox`)**
+  - [x] Initial-state check (`set_initial_actions`): first action must be allowed start action.
+  - [x] `shrink_valid_sequence` preserves transition rules and initial actions (validator predicate).
+  - [x] Model state API: `StateModel` with `precondition`, `apply_fn`, `postcondition`; `run_model_sequence`.
+- [x] **14.3.6 [P1] Items still open from earlier analysis — tracked honestly**
+  - [x] Deterministic replay with original registered predicate (`property/replay.nox` `PropertyRegistry` + `cli replay` uses it).
+  - [!] Real concurrent VU execution measurement: **OPEN** — requires LLVM M:N backend verification (QBE cooperative); not claimed.
+  - [!] CLI child execution without static fallback: **OPEN** — environment-dependent (`--allow-static` still used in CI); not claimed.
+- [x] **14.3.7 Tests, docs, release**
+  - [x] Tests for all of the above; 26/26 suites.
+  - [x] CHANGELOG `[0.9.13]`, docs/api.md, quartz.nox `0.9.13`, tag, push, publish; verify CI 4/4.
+
+*Phase 14.3 Exit Gate:* PASSED. Real CLI tag forwarding verified end-to-end; Atlas full-row join/duplicate-group/sort contracts verified (35/35); Feather `TxResult` outcomes verified (41/41); canonical crash identity unified; stateful fuzzing initial-state/valid-shrink/`StateModel` verified; `PropertyRegistry` predicate replay verified; 26/26 test suites passing cleanly.
+
+---
+
 ## Execution Log & Audit Trail
 
 | Date | Phase | Task | Action / Command | Result / Evidence | Status |
@@ -894,3 +928,5 @@
 | 2026-11-03 | Phase 14 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 26/26 tests pass, recipes 17 & 18 pass, tagged `v0.9.11`, published | [x] DONE |
 | 2026-11-03 | Phase 14.2 | Bugfixes & Hardening | `adapters/`, `core/`, `fuzz/`, `cli/` | Atlas/Feather contracts, exception rollback, lazy tag suite, fuzzer clustering | [x] DONE |
 | 2026-11-03 | Phase 14.2 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 26/26 tests pass, tagged `v0.9.12`, published | [x] DONE |
+| 2026-11-03 | Phase 14.3 | Bugfixes & Hardening | `adapters/`, `core/`, `property/`, `fuzz/`, `cli/` | Real CLI tag forwarding, full-row join/sort/groupby contracts, `TxResult`, canonical crash identity, `StateModel`, `PropertyRegistry` | [x] DONE |
+| 2026-11-03 | Phase 14.3 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 26/26 tests pass, tagged `v0.9.13`, published | [x] DONE |

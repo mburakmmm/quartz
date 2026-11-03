@@ -226,36 +226,77 @@ def verify_idempotent_upsert(repo: FeatherRepository, record: FeatherRecord) -> 
     s_copy: FeatherRecord = second_copy
     return f_copy.equals(s_copy)
 
+TX_COMMITTED: str = "COMMITTED"
+TX_ABORTED: str = "ABORTED"
+TX_ROLLED_BACK_ON_ERROR: str = "ROLLED_BACK_ON_ERROR"
+TX_ROLLBACK_FAILED: str = "ROLLBACK_FAILED"
+
+class TxResult:
+    outcome: str
+    error_message: str
+
+    def __init__(self: TxResult, outcome: str, error_message: str) -> None:
+        self.outcome = outcome
+        self.error_message = error_message
+
+    def is_committed(self: TxResult) -> bool:
+        return self.outcome == TX_COMMITTED
+
+    def is_rollback_failed(self: TxResult) -> bool:
+        return self.outcome == TX_ROLLBACK_FAILED
+
+def snapshot_matches(repo: FeatherRepository, snap: list[FeatherRecord]) -> bool:
+    if repo.count() != len(snap):
+        return False
+    i: int = 0
+    while i < len(snap):
+        expected: FeatherRecord = snap[i]
+        cur: FeatherRecord | None = repo.find_by_id(expected.id)
+        if cur == None:
+            return False
+        c_rec: FeatherRecord = cur
+        if not c_rec.equals(expected):
+            return False
+        i = i + 1
+    return True
+
+# Runs mutation_fn as a transaction and reports a precise outcome:
+#   COMMITTED            mutation succeeded and commit requested (state kept)
+#   ABORTED              mutation succeeded, commit not requested -> restored
+#   ROLLED_BACK_ON_ERROR mutation raised -> restored
+#   ROLLBACK_FAILED      state could not be restored to the pre-transaction snapshot
+def run_transaction(repo: FeatherRepository, mutation_fn: (FeatherRepository) -> None, commit: bool) -> TxResult:
+    pre_snap: list[FeatherRecord] = repo.create_snapshot()
+    err: str = ""
+    threw: bool = False
+    try:
+        mutation_fn(repo)
+    except Exception as e:
+        threw = True
+        err = str(e)
+
+    if threw:
+        repo.restore_snapshot(pre_snap)
+        if snapshot_matches(repo, pre_snap):
+            return TxResult(TX_ROLLED_BACK_ON_ERROR, err)
+        return TxResult(TX_ROLLBACK_FAILED, err)
+
+    if commit:
+        return TxResult(TX_COMMITTED, "")
+
+    repo.restore_snapshot(pre_snap)
+    if snapshot_matches(repo, pre_snap):
+        return TxResult(TX_ABORTED, "")
+    return TxResult(TX_ROLLBACK_FAILED, "")
+
 def verify_transaction_rollback(
     repo: FeatherRepository,
     mutation_fn: (FeatherRepository) -> None,
     should_abort: bool
 ) -> bool:
-    # Takes snapshot, executes mutations with exception-safety, and restores pre-tx integrity upon abort or error
-    pre_snap: list[FeatherRecord] = repo.create_snapshot()
-    threw_exception: bool = False
-    try:
-        mutation_fn(repo)
-    except Exception as e:
-        threw_exception = True
-
-    if should_abort or threw_exception:
-        repo.restore_snapshot(pre_snap)
-        # Verify complete restoration
-        if repo.count() != len(pre_snap):
-            return False
-        i: int = 0
-        while i < len(pre_snap):
-            expected: FeatherRecord = pre_snap[i]
-            cur: FeatherRecord | None = repo.find_by_id(expected.id)
-            if cur == None:
-                return False
-            c_rec: FeatherRecord = cur
-            if not c_rec.equals(expected):
-                return False
-            i = i + 1
-
-    return True
+    # Backwards-compatible boolean wrapper: True unless the rollback itself failed.
+    res: TxResult = run_transaction(repo, mutation_fn, not should_abort)
+    return not res.is_rollback_failed()
 
 class FeatherFixture:
     repo: FeatherRepository

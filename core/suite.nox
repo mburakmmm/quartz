@@ -2,6 +2,7 @@
 from core.types import STATUS_PASS, STATUS_FAIL, STATUS_SKIP, Failure, TestResult, RunSummary
 import nox.strings
 import nox.time
+import nox.os
 
 class TestSuite:
     name: str
@@ -33,6 +34,73 @@ class TestSuite:
     def clear_tag_filters(self: TestSuite) -> None:
         self.include_tags = []
         self.exclude_tags = []
+
+    # Applies "--tag X" / "--exclude-tag Y" / "--filter P" (also "--tag=X", comma-separated tags) from an explicit argument list.
+    # Returns the number of filters applied.
+    def apply_filter_args(self: TestSuite, args: list[str]) -> int:
+        applied: int = 0
+        i: int = 0
+        while i < len(args):
+            a: str = args[i]
+            if a == "--tag" and (i + 1) < len(args):
+                parts: list[str] = nox.strings.split(args[i + 1], ",")
+                p: int = 0
+                while p < len(parts):
+                    t: str = nox.strings.trim(parts[p])
+                    if len(t) > 0:
+                        self.set_include_tag(t)
+                        applied = applied + 1
+                    p = p + 1
+                i = i + 1
+            elif a == "--exclude-tag" and (i + 1) < len(args):
+                ex_parts: list[str] = nox.strings.split(args[i + 1], ",")
+                ep: int = 0
+                while ep < len(ex_parts):
+                    et: str = nox.strings.trim(ex_parts[ep])
+                    if len(et) > 0:
+                        self.set_exclude_tag(et)
+                        applied = applied + 1
+                    ep = ep + 1
+                i = i + 1
+            elif a == "--filter" and (i + 1) < len(args):
+                self.set_filter(args[i + 1])
+                applied = applied + 1
+                i = i + 1
+            elif nox.strings.starts_with(a, "--tag="):
+                t_val: str = nox.strings.replace(a, "--tag=", "")
+                t_parts: list[str] = nox.strings.split(t_val, ",")
+                tp: int = 0
+                while tp < len(t_parts):
+                    tt: str = nox.strings.trim(t_parts[tp])
+                    if len(tt) > 0:
+                        self.set_include_tag(tt)
+                        applied = applied + 1
+                    tp = tp + 1
+            elif nox.strings.starts_with(a, "--exclude-tag="):
+                e_val: str = nox.strings.replace(a, "--exclude-tag=", "")
+                e_parts: list[str] = nox.strings.split(e_val, ",")
+                ep2: int = 0
+                while ep2 < len(e_parts):
+                    ett: str = nox.strings.trim(e_parts[ep2])
+                    if len(ett) > 0:
+                        self.set_exclude_tag(ett)
+                        applied = applied + 1
+                    ep2 = ep2 + 1
+            elif nox.strings.starts_with(a, "--filter="):
+                self.set_filter(nox.strings.replace(a, "--filter=", ""))
+                applied = applied + 1
+            i = i + 1
+        return applied
+
+    # Reads tag filters forwarded by the Quartz CLI ('quartz test <file> --tag smoke').
+    def apply_argv_filters(self: TestSuite) -> int:
+        args: list[str] = []
+        n: int = nox.os.arg_count()
+        k: int = 1
+        while k < n:
+            args.append(nox.os.arg(k))
+            k = k + 1
+        return self.apply_filter_args(args)
 
     def _matches_tags(self: TestSuite, case_tags: list[str]) -> bool:
         # Check exclusion first

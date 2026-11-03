@@ -1,6 +1,46 @@
 # Quartz Tests — Feather Ecosystem Adapter & Persistence Invariant Tests
 from core.suite import TestSuite
-from adapters.feather import FeatherRecord, FeatherRepository, FeatherFixture, verify_crud_lifecycle, verify_idempotent_upsert, verify_transaction_rollback
+from adapters.feather import FeatherRecord, FeatherRepository, FeatherFixture, verify_crud_lifecycle, verify_idempotent_upsert, verify_transaction_rollback, TxResult, run_transaction, TX_COMMITTED, TX_ABORTED, TX_ROLLED_BACK_ON_ERROR, TX_ROLLBACK_FAILED
+
+def tx_ok_insert(r: FeatherRepository) -> None:
+    rec: FeatherRecord = FeatherRecord("tx_new")
+    rec.set("v", "1")
+    r.insert(rec)
+
+def tx_raises(r: FeatherRepository) -> None:
+    rec: FeatherRecord = FeatherRecord("tx_err")
+    rec.set("v", "1")
+    r.insert(rec)
+    raise ValueError("boom")
+
+def run_tx_outcome_tests(suite: TestSuite) -> None:
+    repo: FeatherRepository = FeatherRepository("tx_repo")
+    base: FeatherRecord = FeatherRecord("base")
+    base.set("v", "0")
+    repo.insert(base)
+
+    # COMMITTED: state kept
+    committed: TxResult = run_transaction(repo, tx_ok_insert, True)
+    suite.check_eq_str("tx_outcome_committed", committed.outcome, TX_COMMITTED)
+    suite.check_true("tx_committed_state_kept", repo.find_by_id("tx_new") != None)
+    suite.check_eq_int("tx_committed_count", repo.count(), 2)
+    repo.delete("tx_new")
+
+    # ABORTED: success but not committed -> restored
+    aborted: TxResult = run_transaction(repo, tx_ok_insert, False)
+    suite.check_eq_str("tx_outcome_aborted", aborted.outcome, TX_ABORTED)
+    suite.check_true("tx_aborted_state_restored", repo.find_by_id("tx_new") == None)
+    suite.check_eq_int("tx_aborted_count", repo.count(), 1)
+
+    # ROLLED_BACK_ON_ERROR: exception -> restored, message preserved
+    errored: TxResult = run_transaction(repo, tx_raises, True)
+    suite.check_eq_str("tx_outcome_rolled_back_on_error", errored.outcome, TX_ROLLED_BACK_ON_ERROR)
+    suite.check_true("tx_error_message_preserved", len(errored.error_message) > 0)
+    suite.check_true("tx_error_state_restored", repo.find_by_id("tx_err") == None)
+
+    # Outcomes are mutually distinct
+    suite.check_true("tx_outcomes_distinct", committed.outcome != aborted.outcome and aborted.outcome != errored.outcome and TX_ROLLBACK_FAILED != errored.outcome)
+    suite.check_false("tx_rollback_not_failed", errored.is_rollback_failed())
 
 def run_feather_adapter_tests() -> None:
     suite: TestSuite = TestSuite("feather_adapter_suite")
@@ -128,6 +168,8 @@ def run_feather_adapter_tests() -> None:
     fixture.run_isolated(isolated_mutation)
     suite.check_eq_int("count_after_isolated_run", repo.count(), 2)
     suite.check_true("iso_item_cleaned_up", repo.find_by_id("iso_item") == None)
+
+    run_tx_outcome_tests(suite)
 
     print("Feather Adapter Invariant Tests: " + str(suite.pass_count()) + "/" + str(suite.total_count()) + " passed.")
     if not suite.all_passed():

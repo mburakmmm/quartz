@@ -1,0 +1,31 @@
+# Fixture program for verifying real CLI tag selection:
+#   noxc run fixtures/tag_demo.nox -- --tag smoke
+# Prints "RAN:<names> SKIPPED:<names>" so callers can verify only matching tests ran.
+from core.suite import TestSuite
+
+ran: list[str] = []
+
+def t_smoke() -> bool:
+    ran.append("smoke_case")
+    return True
+
+def t_slow() -> bool:
+    ran.append("slow_case")
+    return True
+
+def t_untagged() -> bool:
+    ran.append("untagged_case")
+    return True
+
+suite: TestSuite = TestSuite("tag_demo")
+suite.apply_argv_filters()
+suite.run_test("smoke_case", t_smoke, ["smoke"])
+suite.run_test("slow_case", t_slow, ["slow"])
+suite.run_test("untagged_case", t_untagged)
+
+out: str = "RAN:"
+i: int = 0
+while i < len(ran):
+    out = out + ran[i] + ","
+    i = i + 1
+print(out + " PASS=" + str(suite.pass_count()) + " SKIP=" + str(suite.skip_count()))
