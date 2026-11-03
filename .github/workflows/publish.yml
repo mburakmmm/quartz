@@ -15,7 +15,7 @@ jobs:
 
       - name: Install NOX
         env:
-          NOX_VERSION: v2.0.108
+          NOX_VERSION: v2.0.123
         run: |
           curl -fsSL https://raw.githubusercontent.com/mburakmmm/nox-lang/main/install.sh | bash
           echo "$HOME/.nox-lang/bin" >> $GITHUB_PATH

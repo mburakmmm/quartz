@@ -386,18 +386,48 @@ def find_env_binary() -> str:
         i = i + 1
     return ""
 
-def attach_parent_env(cmd: Command) -> None:
-    env_keys: list[str] = ["PATH", "Path", "HOME", "USERPROFILE", "TEMP", "TMP", "TMPDIR", "SystemRoot", "SYSTEMROOT", "LOCALAPPDATA", "APPDATA", "PATHEXT"]
+def to_msys_path_list(win_path: str) -> str:
+    if not nox.strings.contains(win_path, ";"):
+        return win_path
+    parts: list[str] = nox.strings.split(win_path, ";")
+    converted: list[str] = []
+    i: int = 0
+    while i < len(parts):
+        p: str = nox.strings.trim(parts[i])
+        if len(p) > 0:
+            p = nox.strings.replace(p, "\\", "/")
+            if len(p) >= 2 and p[1:2] == ":":
+                drive: str = nox.strings.lower(p[0:1])
+                p = "/" + drive + p[2:len(p)]
+            converted.append(p)
+        i = i + 1
+    return nox.strings.join(converted, ":")
+
+def attach_parent_env(cmd: Command, is_msys_env: bool) -> None:
+    path_val: str = ""
+    try:
+        path_val = nox.os.getenv("PATH")
+    except Exception as e:
+        path_val = ""
+    if len(path_val) == 0:
+        try:
+            path_val = nox.os.getenv("Path")
+        except Exception as e2:
+            path_val = ""
+    if len(path_val) > 0:
+        if is_msys_env:
+            cmd.arg("PATH=" + to_msys_path_list(path_val))
+        else:
+            cmd.arg("PATH=" + path_val)
+
+    env_keys: list[str] = ["HOME", "USERPROFILE", "TEMP", "TMP", "TMPDIR", "SystemRoot", "SYSTEMROOT", "LOCALAPPDATA", "APPDATA", "PATHEXT"]
     i: int = 0
     while i < len(env_keys):
         k: str = env_keys[i]
         try:
             v: str = nox.os.getenv(k)
             if len(v) > 0:
-                if k == "Path":
-                    cmd.arg("PATH=" + v)
-                else:
-                    cmd.arg(k + "=" + v)
+                cmd.arg(k + "=" + v)
         except Exception as e:
             pass
         i = i + 1
@@ -405,7 +435,8 @@ def attach_parent_env(cmd: Command) -> None:
 def build_noxc_command(env_bin: str, noxc_bin: str) -> Command:
     if len(env_bin) > 0:
         cmd: Command = Command(env_bin)
-        attach_parent_env(cmd)
+        is_msys: bool = nox.strings.contains(env_bin, "Git") or nox.strings.contains(env_bin, ".exe")
+        attach_parent_env(cmd, is_msys)
         cmd.arg(noxc_bin)
         return cmd
     return Command(noxc_bin)
