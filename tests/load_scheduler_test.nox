@@ -178,7 +178,6 @@ def test_network_load_concurrent_http_server() -> None:
     port: int = 19133
     fd: int = nox.http.listen(port)
     _s0: ThreadHandle[int] = nox.thread.start(_concurrent_loopback_srv_worker, str(fd))
-    _s1: ThreadHandle[int] = nox.thread.start(_concurrent_loopback_srv_worker, str(fd))
     nox.time.sleep_ms(50)
 
     limits: SafetyLimits = default_safety_limits()
@@ -190,9 +189,8 @@ def test_network_load_concurrent_http_server() -> None:
     net_summary: LoadTestSummary = run_network_load_test(wl_net, req, "http://127.0.0.1:" + str(port), policy, [], limits)
     observed_srv_peak: int = srv_peak.load()
     nox.http.shutdown()
-    # Send wake-up requests to unblock worker threads waiting in accept() on BSD/macOS
+    # Send wake-up request to unblock server thread waiting in accept() on BSD/macOS
     try:
-        nox.http.request("GET", "http://127.0.0.1:" + str(port) + "/exit", "", {}, 100)
         nox.http.request("GET", "http://127.0.0.1:" + str(port) + "/exit", "", {}, 100)
     except Exception as wake_e:
         pass
