@@ -1,0 +1,102 @@
+# Quartz Tests — Feather Ecosystem Adapter & Persistence Invariant Tests
+from core.suite import TestSuite
+from adapters.feather import FeatherRecord, FeatherRepository, FeatherFixture, verify_crud_lifecycle, verify_idempotent_upsert, verify_transaction_rollback
+
+def run_feather_adapter_tests() -> None:
+    suite: TestSuite = TestSuite("feather_adapter_suite")
+
+    # 1. Record creation and field mutations
+    rec: FeatherRecord = FeatherRecord("user_1")
+    rec.set("username", "nox_dev")
+    rec.set("role", "admin")
+    suite.check_eq_str("record_id", rec.id, "user_1")
+    suite.check_eq_str("record_field_username", rec.get("username"), "nox_dev")
+    suite.check_eq_str("record_field_role", rec.get("role"), "admin")
+    suite.check_true("record_has_field", rec.has("username"))
+    suite.check_false("record_lacks_field", rec.has("email"))
+
+    # Record cloning and equality
+    cloned: FeatherRecord = rec.clone()
+    suite.check_true("cloned_equals_original", rec.equals(cloned))
+    cloned.set("role", "viewer")
+    suite.check_false("mutated_clone_not_equals", rec.equals(cloned))
+
+    # 2. Repository CRUD Lifecycle Invariant
+    repo: FeatherRepository = FeatherRepository("users")
+    user_alice: FeatherRecord = FeatherRecord("usr_100")
+    user_alice.set("name", "Alice")
+    user_alice.set("status", "active")
+
+    crud_ok: bool = verify_crud_lifecycle(repo, user_alice, "status", "suspended")
+    suite.check_true("crud_lifecycle_invariant", crud_ok)
+    suite.check_eq_int("repo_count_after_crud_lifecycle", repo.count(), 0)
+
+    # 3. Primary Key Uniqueness Invariant
+    u1: FeatherRecord = FeatherRecord("pk_1")
+    u1.set("val", "first")
+    u2: FeatherRecord = FeatherRecord("pk_1")
+    u2.set("val", "duplicate")
+
+    suite.check_true("insert_first_pk_success", repo.insert(u1))
+    suite.check_false("insert_duplicate_pk_rejected", repo.insert(u2))
+    suite.check_eq_int("count_after_rejected_pk", repo.count(), 1)
+    repo.clear()
+
+    # 4. Idempotent Upsert Invariant
+    user_bob: FeatherRecord = FeatherRecord("usr_200")
+    user_bob.set("name", "Bob")
+    user_bob.set("tier", "gold")
+
+    upsert_ok: bool = verify_idempotent_upsert(repo, user_bob)
+    suite.check_true("idempotent_upsert_invariant", upsert_ok)
+    repo.clear()
+
+    # 5. Ephemeral Transaction Rollback Invariant
+    init_rec1: FeatherRecord = FeatherRecord("t_1")
+    init_rec1.set("val", "pre_1")
+    init_rec2: FeatherRecord = FeatherRecord("t_2")
+    init_rec2.set("val", "pre_2")
+    repo.insert(init_rec1)
+    repo.insert(init_rec2)
+
+    def tx_mutation_to_abort(r: FeatherRepository) -> None:
+        # Corrupt / modify state inside aborted transaction
+        r_mod: FeatherRecord = FeatherRecord("t_1")
+        r_mod.set("val", "corrupted")
+        r.update(r_mod)
+        r_new: FeatherRecord = FeatherRecord("t_999")
+        r_new.set("val", "uncommitted")
+        r.insert(r_new)
+        r.delete("t_2")
+
+    rollback_ok: bool = verify_transaction_rollback(repo, tx_mutation_to_abort, True)
+    suite.check_true("transaction_rollback_invariant", rollback_ok)
+    suite.check_eq_int("count_restored_after_rollback", repo.count(), 2)
+
+    t1_check: FeatherRecord | None = repo.find_by_id("t_1")
+    if t1_check != None:
+        suite.check_eq_str("t1_val_restored", t1_check.get("val"), "pre_1")
+    else:
+        suite.check_true("t1_missing_fail", False)
+
+    # 6. Ephemeral FeatherFixture Lifecycle
+    fixture: FeatherFixture = FeatherFixture(repo)
+    fixture.setup()
+
+    # Apply test mutations
+    temp_rec: FeatherRecord = FeatherRecord("temp_item")
+    temp_rec.set("test", "data")
+    repo.insert(temp_rec)
+    suite.check_eq_int("fixture_count_during_test", repo.count(), 3)
+
+    # Teardown cleans up back to fixture snapshot
+    fixture.teardown()
+    suite.check_eq_int("fixture_count_after_teardown", repo.count(), 2)
+    suite.check_true("temp_item_cleaned_up", repo.find_by_id("temp_item") == None)
+
+    print("Feather Adapter Invariant Tests: " + str(suite.pass_count()) + "/" + str(suite.total_count()) + " passed.")
+    if not suite.all_passed():
+        print("ERROR: Some Feather adapter tests failed!")
+        assert False
+
+run_feather_adapter_tests()

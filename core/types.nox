@@ -23,14 +23,19 @@ class TestResult:
     duration_ms: int
     message: str
     failure: Failure | None
+    tags: list[str]
 
-    def __init__(self: TestResult, id: str, name: str, status: str, duration_ms: int, message: str, failure: Failure | None) -> None:
+    def __init__(self: TestResult, id: str, name: str, status: str, duration_ms: int, message: str, failure: Failure | None, tags: list[str] | None = None) -> None:
         self.id = id
         self.name = name
         self.status = status
         self.duration_ms = duration_ms
         self.message = message
         self.failure = failure
+        if tags != None:
+            self.tags = tags
+        else:
+            self.tags = []
 
     def is_passed(self: TestResult) -> bool:
         return self.status == STATUS_PASS

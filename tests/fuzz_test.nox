@@ -8,6 +8,7 @@ from fuzz.mutation import mutate, mutate_byte_flip, mutate_json, mutate_csv, mut
 from fuzz.corpus import CorpusManager, CorpusConfig, default_corpus_config
 from fuzz.minimize import minimize_crash, MinimizationResult
 from fuzz.fuzzer import run_fuzz, FuzzSummary
+from fuzz.cluster import CrashDeduplicator, CrashCluster
 
 # Dummy targets for harness tests
 def target_normal(s: str) -> None:
@@ -154,6 +155,43 @@ def test_fuzzer_session() -> None:
         fail_on_bug_threw = True
     assert_true(fail_on_bug_threw, "fail_on_bug=True must raise AssertionError when bugs are found")
 
+def test_crash_clustering() -> None:
+    dedup: CrashDeduplicator = CrashDeduplicator()
+
+    # 1. Signature normalization
+    sig1: str = dedup.normalize_signature("AssertionError at line 42: index out of bounds")
+    assert_contains_str(sig1, "line <N>:", "line number normalized")
+
+    sig2: str = dedup.normalize_signature("NullPointer at 0x7ffd12ab: memory faulted")
+    assert_contains_str(sig2, "0x<ADDR>:", "memory address normalized")
+
+    # 2. Crash recording and clustering
+    # First crash with division by zero
+    c1: CrashCluster = dedup.record_crash("Crash at 0x1111: division by zero", "123456789", 101, 1)
+    assert_eq_int(c1.count, 1, "first crash recorded")
+    assert_eq_str(c1.minimal_input, "123456789", "initial minimal reproducer")
+
+    # Second crash with same root signature, but shorter input
+    c2: CrashCluster = dedup.record_crash("Crash at 0x2222: division by zero", "12", 102, 2)
+    assert_eq_int(dedup.unique_cluster_count(), 1, "both crashes grouped into 1 cluster")
+    assert_eq_int(c2.count, 2, "cluster count incremented")
+    assert_eq_str(c2.minimal_input, "12", "minimal reproducer updated to shorter input")
+
+    # Third crash with same root signature, longer input
+    c3: CrashCluster = dedup.record_crash("Crash at 0x3333: division by zero", "12345", 103, 3)
+    assert_eq_str(c3.minimal_input, "12", "minimal reproducer kept at shortest '12'")
+
+    # Distinct crash signature (ParseError)
+    c_new: CrashCluster = dedup.record_crash("ParseError at line 99: unexpected EOF", "{", 200, 4)
+    assert_eq_int(dedup.unique_cluster_count(), 2, "second distinct cluster formed")
+    assert_eq_int(dedup.total_crashes(), 4, "total crashes recorded is 4")
+
+    # JSON report export
+    summary_json: str = dedup.to_summary_json()
+    assert_contains_str(summary_json, "\"unique_clusters\": 2", "summary json unique clusters")
+    assert_contains_str(summary_json, "\"total_crashes\": 4", "summary json total crashes")
+    assert_contains_str(summary_json, "\"minimal_input\": \"12\"", "summary json minimal input")
+
 def cleanup_dir(path: str) -> None:
     if nox.fs.exists(path):
         entries: list[str] = nox.fs.read_dir(path)
@@ -179,6 +217,7 @@ def run_all_fuzz_tests() -> None:
     test_corpus_management()
     test_crash_minimizer()
     test_fuzzer_session()
+    test_crash_clustering()
 
     cleanup_dir("fixtures/corpus")
     print("quartz fuzz test: ALL PASS")

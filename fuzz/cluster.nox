@@ -1,0 +1,154 @@
+# Quartz Fuzz — Crash Signature Deduplication & Clustering Engine
+# Clusters multiple crash artifacts by normalized failure signature, tracking minimal reproducers.
+
+import nox.strings
+from core.report import escape_json
+
+class CrashCluster:
+    signature: str
+    count: int
+    first_seed: int
+    first_case_index: int
+    minimal_input: str
+    sample_inputs: list[str]
+
+    def __init__(
+        self: CrashCluster,
+        signature: str,
+        count: int,
+        first_seed: int,
+        first_case_index: int,
+        minimal_input: str,
+        sample_inputs: list[str]
+    ) -> None:
+        self.signature = signature
+        self.count = count
+        self.first_seed = first_seed
+        self.first_case_index = first_case_index
+        self.minimal_input = minimal_input
+        self.sample_inputs = sample_inputs
+
+class CrashDeduplicator:
+    clusters: list[CrashCluster]
+    total_recorded: int
+
+    def __init__(self: CrashDeduplicator) -> None:
+        self.clusters = []
+        self.total_recorded = 0
+
+    def normalize_signature(self: CrashDeduplicator, raw_error: str) -> str:
+        # Strip memory addresses like 0x7ffd... or 0x0000...
+        cleaned: str = raw_error
+        # Normalize line numbers: e.g. "line 42:" -> "line <N>:"
+        if nox.strings.contains(cleaned, "line "):
+            # Split and normalize
+            parts: list[str] = nox.strings.split(cleaned, "line ")
+            if len(parts) >= 2:
+                # Find space or colon after number
+                rest: str = parts[1]
+                idx_colon: int = 0
+                while idx_colon < len(rest):
+                    ch: str = rest[idx_colon:idx_colon+1]
+                    if ch == ":" or ch == " " or ch == ")":
+                        rest = "<N>" + rest[idx_colon:]
+                        break
+                    idx_colon = idx_colon + 1
+                cleaned = parts[0] + "line " + rest
+
+        # Normalize hexadecimal pointer addresses (e.g. 0x...)
+        if nox.strings.contains(cleaned, "0x"):
+            parts_hex: list[str] = nox.strings.split(cleaned, "0x")
+            if len(parts_hex) >= 2:
+                rest_hex: str = parts_hex[1]
+                idx_h: int = 0
+                while idx_h < len(rest_hex):
+                    ch2: str = rest_hex[idx_h:idx_h+1]
+                    is_hex_char: bool = (ch2 >= "0" and ch2 <= "9") or (ch2 >= "a" and ch2 <= "f") or (ch2 >= "A" and ch2 <= "F")
+                    if not is_hex_char:
+                        rest_hex = "<ADDR>" + rest_hex[idx_h:]
+                        break
+                    idx_h = idx_h + 1
+                cleaned = parts_hex[0] + "0x" + rest_hex
+
+        return nox.strings.trim(cleaned)
+
+    def record_crash(
+        self: CrashDeduplicator,
+        raw_error: str,
+        input_payload: str,
+        seed: int,
+        case_index: int
+    ) -> CrashCluster:
+        self.total_recorded = self.total_recorded + 1
+        sig: str = self.normalize_signature(raw_error)
+
+        # Check existing clusters
+        i: int = 0
+        while i < len(self.clusters):
+            c: CrashCluster = self.clusters[i]
+            if c.signature == sig:
+                c.count = c.count + 1
+                # Check for smaller counterexample (minimal reproducer)
+                if len(input_payload) < len(c.minimal_input):
+                    c.minimal_input = input_payload
+                if len(c.sample_inputs) < 5:
+                    samples: list[str] = c.sample_inputs
+                    samples.append(input_payload)
+                    c.sample_inputs = samples
+                return c
+            i = i + 1
+
+        # Create new cluster
+        init_samples: list[str] = [input_payload]
+        new_cluster: CrashCluster = CrashCluster(
+            sig,
+            1,
+            seed,
+            case_index,
+            input_payload,
+            init_samples
+        )
+        cls_list: list[CrashCluster] = self.clusters
+        cls_list.append(new_cluster)
+        self.clusters = cls_list
+        return new_cluster
+
+    def unique_cluster_count(self: CrashDeduplicator) -> int:
+        return len(self.clusters)
+
+    def total_crashes(self: CrashDeduplicator) -> int:
+        return self.total_recorded
+
+    def find_cluster(self: CrashDeduplicator, signature: str) -> CrashCluster | None:
+        norm: str = self.normalize_signature(signature)
+        i: int = 0
+        while i < len(self.clusters):
+            if self.clusters[i].signature == norm:
+                return self.clusters[i]
+            i = i + 1
+        return None
+
+    def to_summary_json(self: CrashDeduplicator) -> str:
+        res: str = "{\n"
+        res = res + "  \"total_crashes\": " + str(self.total_recorded) + ",\n"
+        res = res + "  \"unique_clusters\": " + str(len(self.clusters)) + ",\n"
+        res = res + "  \"clusters\": [\n"
+
+        i: int = 0
+        while i < len(self.clusters):
+            c: CrashCluster = self.clusters[i]
+            res = res + "    {\n"
+            res = res + "      \"signature\": \"" + escape_json(c.signature) + "\",\n"
+            res = res + "      \"count\": " + str(c.count) + ",\n"
+            res = res + "      \"first_seed\": " + str(c.first_seed) + ",\n"
+            res = res + "      \"first_case_index\": " + str(c.first_case_index) + ",\n"
+            res = res + "      \"minimal_input\": \"" + escape_json(c.minimal_input) + "\",\n"
+            res = res + "      \"samples_count\": " + str(len(c.sample_inputs)) + "\n"
+            if i + 1 < len(self.clusters):
+                res = res + "    },\n"
+            else:
+                res = res + "    }\n"
+            i = i + 1
+
+        res = res + "  ]\n}"
+        return res

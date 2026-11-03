@@ -1,0 +1,268 @@
+# Quartz Adapters — Feather ORM & Persistence Ecosystem Adapter
+# Bridges Feather entity CRUD invariants, transaction rollback, and ephemeral fixtures with Quartz.
+# Quartz Core never depends on this adapter.
+
+import nox.strings
+
+class FeatherField:
+    name: str
+    value: str
+
+    def __init__(self: FeatherField, name: str, value: str) -> None:
+        self.name = name
+        self.value = value
+
+class FeatherRecord:
+    id: str
+    fields: list[FeatherField]
+
+    def __init__(self: FeatherRecord, id: str) -> None:
+        self.id = id
+        self.fields = []
+
+    def set(self: FeatherRecord, name: str, value: str) -> None:
+        i: int = 0
+        while i < len(self.fields):
+            if self.fields[i].name == name:
+                self.fields[i].value = value
+                return
+            i = i + 1
+        new_f: list[FeatherField] = self.fields
+        new_f.append(FeatherField(name, value))
+        self.fields = new_f
+
+    def get(self: FeatherRecord, name: str) -> str:
+        i: int = 0
+        while i < len(self.fields):
+            if self.fields[i].name == name:
+                return self.fields[i].value
+            i = i + 1
+        return ""
+
+    def has(self: FeatherRecord, name: str) -> bool:
+        i: int = 0
+        while i < len(self.fields):
+            if self.fields[i].name == name:
+                return True
+            i = i + 1
+        return False
+
+    def clone(self: FeatherRecord) -> FeatherRecord:
+        rec: FeatherRecord = FeatherRecord(self.id)
+        i: int = 0
+        while i < len(self.fields):
+            f: FeatherField = self.fields[i]
+            rec.set(f.name, f.value)
+            i = i + 1
+        return rec
+
+    def equals(self: FeatherRecord, other: FeatherRecord) -> bool:
+        if self.id != other.id:
+            return False
+        if len(self.fields) != len(other.fields):
+            return False
+        i: int = 0
+        while i < len(self.fields):
+            f: FeatherField = self.fields[i]
+            if not other.has(f.name):
+                return False
+            if other.get(f.name) != f.value:
+                return False
+            i = i + 1
+        return True
+
+class FeatherRepository:
+    table_name: str
+    records: list[FeatherRecord]
+
+    def __init__(self: FeatherRepository, table_name: str) -> None:
+        self.table_name = table_name
+        self.records = []
+
+    def insert(self: FeatherRepository, record: FeatherRecord) -> bool:
+        # Fails if ID already exists (primary key uniqueness)
+        if self.find_by_id(record.id) != None:
+            return False
+        new_recs: list[FeatherRecord] = self.records
+        new_recs.append(record.clone())
+        self.records = new_recs
+        return True
+
+    def find_by_id(self: FeatherRepository, id: str) -> FeatherRecord | None:
+        i: int = 0
+        while i < len(self.records):
+            if self.records[i].id == id:
+                return self.records[i].clone()
+            i = i + 1
+        return None
+
+    def update(self: FeatherRepository, record: FeatherRecord) -> bool:
+        i: int = 0
+        while i < len(self.records):
+            if self.records[i].id == record.id:
+                self.records[i] = record.clone()
+                return True
+            i = i + 1
+        return False
+
+    def upsert(self: FeatherRepository, record: FeatherRecord) -> bool:
+        if self.update(record):
+            return True
+        return self.insert(record)
+
+    def delete(self: FeatherRepository, id: str) -> bool:
+        i: int = 0
+        found_idx: int = -1
+        while i < len(self.records):
+            if self.records[i].id == id:
+                found_idx = i
+                break
+            i = i + 1
+        if found_idx < 0:
+            return False
+        new_recs: list[FeatherRecord] = []
+        j: int = 0
+        while j < len(self.records):
+            if j != found_idx:
+                new_recs.append(self.records[j])
+            j = j + 1
+        self.records = new_recs
+        return True
+
+    def count(self: FeatherRepository) -> int:
+        return len(self.records)
+
+    def all(self: FeatherRepository) -> list[FeatherRecord]:
+        out: list[FeatherRecord] = []
+        i: int = 0
+        while i < len(self.records):
+            out.append(self.records[i].clone())
+            i = i + 1
+        return out
+
+    def clear(self: FeatherRepository) -> None:
+        self.records = []
+
+    def create_snapshot(self: FeatherRepository) -> list[FeatherRecord]:
+        snap: list[FeatherRecord] = []
+        i: int = 0
+        while i < len(self.records):
+            snap.append(self.records[i].clone())
+            i = i + 1
+        return snap
+
+    def restore_snapshot(self: FeatherRepository, snapshot: list[FeatherRecord]) -> None:
+        restored: list[FeatherRecord] = []
+        i: int = 0
+        while i < len(snapshot):
+            restored.append(snapshot[i].clone())
+            i = i + 1
+        self.records = restored
+
+def verify_crud_lifecycle(
+    repo: FeatherRepository,
+    initial_record: FeatherRecord,
+    update_field: str,
+    updated_val: str
+) -> bool:
+    # Invariant: C-R-U-D sequence preserves consistency and returns to initial count
+    initial_count: int = repo.count()
+
+    # 1. Create
+    if not repo.insert(initial_record):
+        return False
+    if repo.count() != initial_count + 1:
+        return False
+
+    # 2. Read
+    fetched: FeatherRecord | None = repo.find_by_id(initial_record.id)
+    if fetched == None:
+        return False
+    f_rec: FeatherRecord = fetched
+    if not f_rec.equals(initial_record):
+        return False
+
+    # 3. Update
+    f_rec.set(update_field, updated_val)
+    if not repo.update(f_rec):
+        return False
+
+    fetched_updated: FeatherRecord | None = repo.find_by_id(initial_record.id)
+    if fetched_updated == None:
+        return False
+    fu_rec: FeatherRecord = fetched_updated
+    if fu_rec.get(update_field) != updated_val:
+        return False
+
+    # 4. Delete
+    if not repo.delete(initial_record.id):
+        return False
+    if repo.find_by_id(initial_record.id) != None:
+        return False
+    if repo.count() != initial_count:
+        return False
+
+    return True
+
+def verify_idempotent_upsert(repo: FeatherRepository, record: FeatherRecord) -> bool:
+    # Calling upsert twice leaves state bit-for-bit identical without duplicating records
+    repo.upsert(record)
+    c1: int = repo.count()
+    first_copy: FeatherRecord | None = repo.find_by_id(record.id)
+    if first_copy == None:
+        return False
+
+    # Second upsert
+    repo.upsert(record)
+    c2: int = repo.count()
+    if c1 != c2:
+        return False
+
+    second_copy: FeatherRecord | None = repo.find_by_id(record.id)
+    if second_copy == None:
+        return False
+
+    f_copy: FeatherRecord = first_copy
+    s_copy: FeatherRecord = second_copy
+    return f_copy.equals(s_copy)
+
+def verify_transaction_rollback(
+    repo: FeatherRepository,
+    mutation_fn: (FeatherRepository) -> None,
+    should_abort: bool
+) -> bool:
+    # Takes snapshot, executes mutations, and if aborted, restores and verifies pre-tx integrity
+    pre_snap: list[FeatherRecord] = repo.create_snapshot()
+    mutation_fn(repo)
+
+    if should_abort:
+        repo.restore_snapshot(pre_snap)
+        # Verify complete restoration
+        if repo.count() != len(pre_snap):
+            return False
+        i: int = 0
+        while i < len(pre_snap):
+            expected: FeatherRecord = pre_snap[i]
+            cur: FeatherRecord | None = repo.find_by_id(expected.id)
+            if cur == None:
+                return False
+            c_rec: FeatherRecord = cur
+            if not c_rec.equals(expected):
+                return False
+            i = i + 1
+
+    return True
+
+class FeatherFixture:
+    repo: FeatherRepository
+    snapshot: list[FeatherRecord]
+
+    def __init__(self: FeatherFixture, repo: FeatherRepository) -> None:
+        self.repo = repo
+        self.snapshot = []
+
+    def setup(self: FeatherFixture) -> None:
+        self.snapshot = self.repo.create_snapshot()
+
+    def teardown(self: FeatherFixture) -> None:
+        self.repo.restore_snapshot(self.snapshot)

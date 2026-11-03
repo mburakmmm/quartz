@@ -152,5 +152,17 @@ Quartz is designed as a standalone, zero-dependency testing framework for the NO
   1. Implement `core/snapshot.nox` with golden snapshot reference files (`__snapshots__/<name>.snap`). Normalize line endings (`\r\n` -> `\n`), strip trailing whitespace, and automatically redact secrets (`redact_secrets`). Provide line-by-line diff diagnostics upon mismatch and an `update_snapshots=True` flag for approved snapshot updates with atomic disk writes (`write_string_atomic`).
   2. Implement `fuzz/sequence.nox` with `FuzzAction`, `ActionSequence`, and `SequenceFuzzer` using Quartz explicit PRNG. State transition sequences are generated and mutated (insert, delete, swap, payload delta) against user-defined state invariants. Failing sequences are automatically shrunk via delta-debugging to isolate minimal reproducer action chains.
 
+### ADR-018: Ecosystem Adapters (Atlas & Feather), Tag Filtering & Crash Deduplication
+- **Context:**
+  1. Data science and persistence applications built on Atlas (tabular DataFrames) and Feather (ORM / persistence) require dedicated invariant verifiers (sort idempotence, CSV round-tripping, GroupBy conservation, CRUD lifecycles, and transaction rollbacks).
+  2. Test suites need fine-grained selective execution using tags (e.g., `@smoke`, `@property`, `@slow`) without hardcoded file splits.
+  3. Fuzzing campaigns produce hundreds of crashes that share the exact same root cause, cluttering reports and masking unique underlying defects.
+- **Decision:**
+  1. Implement `adapters/atlas.nox` providing `AtlasTable`, CSV escaping and state-machine parsing, `verify_sort_idempotence`, `verify_csv_roundtrip`, `verify_groupby_conservation`, and `mutate_csv` structure-aware mutations.
+  2. Implement `adapters/feather.nox` providing `FeatherRecord`, `FeatherRepository`, `FeatherFixture`, `verify_crud_lifecycle`, `verify_idempotent_upsert`, and `verify_transaction_rollback` with snapshot restoration.
+  3. Implement tag-based suite filtering in `core/types.nox` and `core/suite.nox` with `set_include_tag` and `set_exclude_tag`, allowing selective inclusion/exclusion of tagged test cases.
+  4. Implement `fuzz/cluster.nox` providing `CrashDeduplicator` and `CrashCluster`. Normalizes raw error signatures (stripping line numbers, memory pointers, and ephemeral IDs) to cluster identical failures together while tracking the globally minimal input reproducer for each defect cluster.
+
+
 
 

@@ -510,3 +510,57 @@ if result.found_failure:
     print("Minimal failing action sequence: " + result.shrunk_sequence.to_str())
 ```
 
+---
+
+## 17. Atlas Tabular Invariants and CSV Round-Trip Fuzzing
+
+Verify data science tables and DataFrames from the Atlas ecosystem with property invariants: sort idempotence (`sort(sort(T)) == sort(T)`), lossless CSV round-tripping with embedded quotes and newlines, and GroupBy row conservation.
+
+```nox
+from adapters.atlas import AtlasTable, parse_csv, verify_sort_idempotence, verify_csv_roundtrip, verify_groupby_conservation
+
+headers: list[str] = ["id", "dept", "salary"]
+rows: list[list[str]] = [
+    ["1", "Engineering", "95000"],
+    ["2", "Design", "82000"],
+    ["3", "Engineering", "105000"]
+]
+table: AtlasTable = AtlasTable(headers, rows)
+
+# 1. Verify sort idempotence
+assert verify_sort_idempotence(table, "salary", True, False)
+
+# 2. Verify CSV round-trip invariance
+assert verify_csv_roundtrip(table, ",", "\"")
+
+# 3. Verify GroupBy conservation
+assert verify_groupby_conservation(table, "dept")
+```
+
+---
+
+## 18. Feather ORM Ephemeral Transaction Rollback & CRUD Invariants
+
+Validate ORM entities and database operations from the Feather ecosystem with lifecycle invariants (C-R-U-D sequence), idempotent upserts, and guaranteed transaction rollback isolation without state leaks across tests.
+
+```nox
+from adapters.feather import FeatherRecord, FeatherRepository, FeatherFixture, verify_crud_lifecycle, verify_transaction_rollback
+
+repo: FeatherRepository = FeatherRepository("accounts")
+record: FeatherRecord = FeatherRecord("acc_101")
+record.set("owner", "alice")
+record.set("balance", "1500")
+
+# 1. Verify CRUD lifecycle
+assert verify_crud_lifecycle(repo, record, "balance", "2000")
+
+# 2. Verify ephemeral transaction rollback
+def aborted_transfer(r: FeatherRepository) -> None:
+    mod: FeatherRecord = FeatherRecord("acc_101")
+    mod.set("balance", "0")
+    r.update(mod)
+
+assert verify_transaction_rollback(repo, aborted_transfer, True)
+```
+
+

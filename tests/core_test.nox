@@ -88,6 +88,32 @@ def test_suite_filtering() -> None:
     assert_eq_int(suite.pass_count(), 2, "2 target checks passed")
     assert_eq_int(suite.skip_count(), 1, "1 non-target check skipped")
 
+def test_suite_tag_filtering() -> None:
+    suite: TestSuite = TestSuite("tag_filter_test")
+    suite.set_include_tag("smoke")
+    suite.set_exclude_tag("slow")
+
+    # 1. Matches smoke, not slow -> runs
+    suite.check_true("case_smoke_fast", True, ["smoke", "unit"])
+
+    # 2. Matches smoke, but also slow -> excluded
+    suite.check_true("case_smoke_slow", True, ["smoke", "slow"])
+
+    # 3. Does not match smoke -> excluded
+    suite.check_true("case_unit_only", True, ["unit"])
+
+    # 4. Untagged -> excluded because include_tags has "smoke"
+    suite.check_true("case_untagged", True)
+
+    assert_eq_int(suite.total_count(), 4, "4 total cases evaluated")
+    assert_eq_int(suite.pass_count(), 1, "only case_smoke_fast passed")
+    assert_eq_int(suite.skip_count(), 3, "3 cases skipped due to tag rules")
+
+    # Test clearing filters
+    suite.clear_tag_filters()
+    suite.check_true("case_runs_after_clear", True)
+    assert_eq_int(suite.pass_count(), 2, "runs after clearing tags")
+
 class TempFileFixture(Fixture):
     path: str
 
@@ -198,6 +224,7 @@ def run_all_core_tests() -> None:
     test_assertions()
     test_suite_runner()
     test_suite_filtering()
+    test_suite_tag_filtering()
     test_fixture_lifecycle()
     test_reports_and_redaction()
     print("quartz core MVP tests: ALL 25+ CHECKS PASSED")

@@ -727,6 +727,56 @@
 
 *Phase 13.2 Exit Gate:* PASSED. All Sol v0.9.9 findings resolved; snapshot security and strict mode verified; state-aware sequence fuzzing verified; 24/24 test suites passing cleanly; published as v0.9.10.
 
+## Phase 14: v0.9.11 — Ecosystem Adapters (Atlas & Feather), Tag-Based Suite Filtering & Crash Signature Deduplication
+*Objective: Deliver the remaining prioritized ecosystem adapters from AGENTS.md (Atlas for tabular/DataFrame invariants and Feather for ORM persistence/transaction rollback), implement tag-based suite filtering for fine-grained test execution, and add smart crash signature deduplication and defect clustering for fuzzing campaigns.*
+
+- [x] **14.1 Atlas Tabular & DataFrame Ecosystem Adapter (`adapters/atlas.nox`)**
+  - [x] Implement `AtlasTable` model with rows, columns, and cell retrieval.
+  - [x] Implement RFC-compliant CSV serialization (`to_csv`) with automated quoting and quote doubling (`""`).
+  - [x] Implement state-machine CSV parser (`parse_csv`) handling embedded delimiters, quotes, and newlines.
+  - [x] Implement `verify_sort_idempotence` verifying `sort(sort(T)) == sort(T)`.
+  - [x] Implement `verify_csv_roundtrip` asserting lossless serialization and deserialization.
+  - [x] Implement `verify_groupby_conservation` asserting row conservation across grouped aggregations.
+  - [x] Implement `verify_inner_join_conservation` asserting row count bounds and key equality.
+  - [x] Implement `mutate_csv` structure-aware fuzz mutator for parser stress testing.
+- [x] **14.2 Feather ORM & Persistence Ecosystem Adapter (`adapters/feather.nox`)**
+  - [x] Implement `FeatherRecord` and `FeatherField` modeling entity attributes with cloning and equality.
+  - [x] Implement `FeatherRepository` with primary key uniqueness, CRUD operations, and snapshot restoration.
+  - [x] Implement `verify_crud_lifecycle` asserting consistent C-R-U-D lifecycle transitions.
+  - [x] Implement `verify_idempotent_upsert` asserting calling upsert twice leaves state bit-for-bit identical.
+  - [x] Implement `verify_transaction_rollback` taking pre-transaction snapshots and restoring repository state upon abort.
+  - [x] Implement `FeatherFixture` for ephemeral test database lifecycle management with automatic rollback.
+- [x] **14.3 Tag-Based Suite Filtering (`core/types.nox` & `core/suite.nox`)**
+  - [x] Add `tags: list[str]` to `TestResult`.
+  - [x] Add `include_tags: list[str]` and `exclude_tags: list[str]` to `TestSuite`.
+  - [x] Implement `set_include_tag`, `set_exclude_tag`, and tag evaluation in `_should_run` and `_record`.
+  - [x] Add optional `tags: list[str] | None = None` parameter across all `check_*` assertion methods.
+  - [x] Support `--tag <tag>` and `--exclude-tag <tag>` command line arguments in `cli/main.nox`.
+- [x] **14.4 Crash Signature Deduplication & Defect Clustering (`fuzz/cluster.nox`)**
+  - [x] Implement `CrashCluster` tracking normalized signatures, occurrence counts, first seeds, and minimal input reproducers.
+  - [x] Implement `CrashDeduplicator` with `normalize_signature` stripping memory addresses (`0x<ADDR>`) and line numbers (`line <N>:`).
+  - [x] Implement automatic minimal counterexample tracking (updating `minimal_input` on smaller reproducer).
+  - [x] Implement `to_summary_json` emitting structured JSON defect cluster reports.
+- [x] **14.5 Documentation & Recipes**
+  - [x] Add Recipe 17 to `docs/recipes.md`: Atlas Tabular Invariants and CSV Round-Trip Fuzzing.
+  - [x] Add Recipe 18 to `docs/recipes.md`: Feather ORM Ephemeral Transaction Rollback & Invariants.
+  - [x] Add ADR-018 to `docs/architecture.md`.
+  - [x] Document complete APIs in `docs/api.md`.
+- [x] **14.6 Test Matrix Expansion & Verification**
+  - [x] `tests/atlas_adapter_test.nox`: 14/14 checks passing.
+  - [x] `tests/feather_adapter_test.nox`: 19/19 checks passing.
+  - [x] `tests/core_test.nox`: tag filtering tests passing.
+  - [x] `tests/fuzz_test.nox`: crash deduplication and clustering tests passing.
+  - [x] `tests/doc_examples_test.nox`: Recipes 17 and 18 passing.
+  - [x] `tests/backend_matrix_test.nox`: Atlas and Feather matrix checks passing.
+  - [x] Run full project test matrix: 26/26 test suites passing cleanly (100% pass rate).
+- [x] **14.7 Release Packaging (v0.9.11)**
+  - [x] Update facade `quartz.nox` to version `0.9.11`.
+  - [x] Update `CHANGELOG.md` with complete Phase 14 release notes.
+  - [x] Tag `v0.9.11`, push to GitHub, and publish to NOX package registry.
+
+*Phase 14 Exit Gate:* PASSED. 26/26 test suites pass cleanly; Atlas and Feather ecosystem adapters verified; tag-based suite filtering verified; crash clustering verified; published as v0.9.11.
+
 ---
 
 ## Execution Log & Audit Trail
@@ -806,3 +856,6 @@
 | 2026-11-03 | Phase 13 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 24/24 tests pass, recipes 15 & 16 pass, tagged `v0.9.9`, published | [x] DONE |
 | 2026-11-03 | Phase 13.2 | Bugfixes & Hardening | `core/`, `fuzz/`, `cli/` | Snapshot strict/security, state transition rules, JSON secret scan, CLI fail-closed | [x] DONE |
 | 2026-11-03 | Phase 13.2 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 24/24 tests pass, tagged `v0.9.10`, published | [x] DONE |
+| 2026-11-03 | Phase 14 | Ecosystem Adapters | `adapters/atlas.nox`, `adapters/feather.nox` | Atlas tabular/CSV invariants, Feather ORM CRUD & transaction rollback | [x] DONE |
+| 2026-11-03 | Phase 14 | Tag Filtering & Crash Clustering | `core/suite.nox`, `fuzz/cluster.nox` | Include/exclude tags, error normalization, minimal reproducer clustering | [x] DONE |
+| 2026-11-03 | Phase 14 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 26/26 tests pass, recipes 17 & 18 pass, tagged `v0.9.11`, published | [x] DONE |

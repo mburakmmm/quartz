@@ -38,6 +38,8 @@ from contract.mock import MockExchange, MockPlaybackHandler, create_mock_handler
 from core.regression import RunComparison, compare_runs
 from core.snapshot import assert_snapshot, compare_snapshot, SnapshotComparison
 from fuzz.sequence import FuzzAction, ActionSequence, SequenceFuzzer, SequenceFuzzResult, run_sequence_fuzz
+from adapters.atlas import AtlasTable, parse_csv, verify_sort_idempotence, verify_csv_roundtrip, verify_groupby_conservation
+from adapters.feather import FeatherRecord, FeatherRepository, FeatherFixture, verify_crud_lifecycle, verify_transaction_rollback
 
 def test_recipe_1_unit_and_fixtures() -> None:
     # Basic assertions
@@ -309,6 +311,33 @@ def test_recipe_16_sequence_fuzzing() -> None:
     res: SequenceFuzzResult = run_sequence_fuzz(fuzzer, counter_invariant, 20, False)
     assert_false(res.found_failure, "recipe 16 counter invariant holds")
 
+def test_recipe_17_atlas_adapter() -> None:
+    headers: list[str] = ["id", "dept", "salary"]
+    rows: list[list[str]] = [
+        ["1", "Engineering", "95000"],
+        ["2", "Design", "82000"],
+        ["3", "Engineering", "105000"]
+    ]
+    table: AtlasTable = AtlasTable(headers, rows)
+    assert_true(verify_sort_idempotence(table, "salary", True, False), "recipe 17 sort idempotence")
+    assert_true(verify_csv_roundtrip(table, ",", "\""), "recipe 17 csv roundtrip")
+    assert_true(verify_groupby_conservation(table, "dept"), "recipe 17 groupby conservation")
+
+def test_recipe_18_feather_adapter() -> None:
+    repo: FeatherRepository = FeatherRepository("accounts")
+    record: FeatherRecord = FeatherRecord("acc_101")
+    record.set("owner", "alice")
+    record.set("balance", "1500")
+
+    assert_true(verify_crud_lifecycle(repo, record, "balance", "2000"), "recipe 18 crud lifecycle")
+
+    def aborted_transfer(r: FeatherRepository) -> None:
+        mod: FeatherRecord = FeatherRecord("acc_101")
+        mod.set("balance", "0")
+        r.update(mod)
+
+    assert_true(verify_transaction_rollback(repo, aborted_transfer, True), "recipe 18 transaction rollback")
+
 def run_all_doc_examples_tests() -> None:
     test_recipe_1_unit_and_fixtures()
     test_recipe_2_property_and_shrinking()
@@ -326,6 +355,8 @@ def run_all_doc_examples_tests() -> None:
     test_recipe_14_regression_comparator()
     test_recipe_15_snapshot_testing()
     test_recipe_16_sequence_fuzzing()
+    test_recipe_17_atlas_adapter()
+    test_recipe_18_feather_adapter()
     print("quartz doc examples test: ALL PASS")
 
 run_all_doc_examples_tests()

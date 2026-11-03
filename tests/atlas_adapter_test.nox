@@ -1,0 +1,110 @@
+# Quartz Tests — Atlas Ecosystem Adapter & Tabular Invariant Tests
+from core.suite import TestSuite
+from core.prng import Prng
+from adapters.atlas import AtlasTable, parse_csv, sort_table, verify_sort_idempotence, verify_csv_roundtrip, verify_groupby_conservation, verify_inner_join_conservation, mutate_csv
+
+def run_atlas_adapter_tests() -> None:
+    suite: TestSuite = TestSuite("atlas_adapter_suite")
+
+    # 1. Basic AtlasTable operations
+    headers: list[str] = ["id", "name", "score"]
+    rows: list[list[str]] = [
+        ["1", "Alice", "95"],
+        ["2", "Bob", "82"],
+        ["3", "Charlie", "88"]
+    ]
+    table: AtlasTable = AtlasTable(headers, rows)
+    suite.check_eq_int("table_row_count", table.row_count(), 3)
+    suite.check_eq_int("table_col_count", table.col_count(), 3)
+    suite.check_eq_str("table_get_cell", table.get_cell(1, "name"), "Bob")
+    suite.check_eq_str("table_get_cell_score", table.get_cell(0, "score"), "95")
+
+    # 2. CSV Serialization and Escaping
+    complex_rows: list[list[str]] = [
+        ["10", "Doe, Jane", "Notes with \"quotes\""],
+        ["20", "Smith\nJohn", "Multi\nline\nvalue"],
+        ["30", "Simple", "Plain"]
+    ]
+    c_table: AtlasTable = AtlasTable(["id", "user", "notes"], complex_rows)
+    csv_out: str = c_table.to_csv()
+    suite.check_true("csv_serialization_not_empty", len(csv_out) > 0)
+
+    # 3. CSV Round-Trip Invariant
+    rt_ok: bool = verify_csv_roundtrip(c_table)
+    suite.check_true("csv_roundtrip_invariant_complex", rt_ok)
+
+    # 4. CSV Round-Trip with alternate delimiter (semicolon)
+    rt_semi_ok: bool = verify_csv_roundtrip(table, ";", "\"")
+    suite.check_true("csv_roundtrip_semicolon", rt_semi_ok)
+
+    # 5. Sort Idempotence Invariant
+    unsorted_rows: list[list[str]] = [
+        ["5", "Zara", "50"],
+        ["1", "Alice", "95"],
+        ["3", "Charlie", "88"],
+        ["2", "Bob", "82"],
+        ["4", "David", "70"]
+    ]
+    u_table: AtlasTable = AtlasTable(["id", "name", "score"], unsorted_rows)
+
+    sort_name_ok: bool = verify_sort_idempotence(u_table, "name", False, True)
+    suite.check_true("sort_idempotence_name_asc", sort_name_ok)
+
+    sort_score_ok: bool = verify_sort_idempotence(u_table, "score", True, False)
+    suite.check_true("sort_idempotence_score_desc", sort_score_ok)
+
+    # Verify actual sorted order
+    sorted_by_score: AtlasTable = sort_table(u_table, "score", True, False)
+    suite.check_eq_str("highest_score_top", sorted_by_score.get_cell(0, "name"), "Alice")
+    suite.check_eq_str("lowest_score_bottom", sorted_by_score.get_cell(4, "name"), "Zara")
+
+    # 6. GroupBy Row Conservation Invariant
+    sales_rows: list[list[str]] = [
+        ["1", "North", "100"],
+        ["2", "South", "200"],
+        ["3", "North", "150"],
+        ["4", "East", "50"],
+        ["5", "South", "300"],
+        ["6", "North", "120"]
+    ]
+    sales_table: AtlasTable = AtlasTable(["sale_id", "region", "amount"], sales_rows)
+    groupby_ok: bool = verify_groupby_conservation(sales_table, "region")
+    suite.check_true("groupby_conservation_sales", groupby_ok)
+
+    # 7. Inner Join Conservation Invariant
+    left_rows: list[list[str]] = [
+        ["1", "Electronics"],
+        ["2", "Books"],
+        ["3", "Clothing"]
+    ]
+    right_rows: list[list[str]] = [
+        ["101", "Laptop", "1"],
+        ["102", "Phone", "1"],
+        ["103", "Novel", "2"],
+        ["104", "Shirt", "3"],
+        ["105", "Pants", "3"]
+    ]
+    left_table: AtlasTable = AtlasTable(["cat_id", "cat_name"], left_rows)
+    right_table: AtlasTable = AtlasTable(["item_id", "item_name", "cat_id"], right_rows)
+
+    join_ok: bool = verify_inner_join_conservation(left_table, right_table, "cat_id", "cat_id")
+    suite.check_true("inner_join_conservation", join_ok)
+
+    # 8. CSV Mutation Fuzzer
+    prng: Prng = Prng(12345)
+    orig_csv: str = "id,name,val\n1,foo,10\n2,bar,20\n"
+    m_i: int = 0
+    mutations_count: int = 0
+    while m_i < 10:
+        mutated: str = mutate_csv(orig_csv, prng)
+        if len(mutated) > 0 and mutated != orig_csv:
+            mutations_count = mutations_count + 1
+        m_i = m_i + 1
+    suite.check_true("csv_mutation_fuzzing_generated", mutations_count > 0)
+
+    print("Atlas Adapter Invariant Tests: " + str(suite.pass_count()) + "/" + str(suite.total_count()) + " passed.")
+    if not suite.all_passed():
+        print("ERROR: Some Atlas adapter tests failed!")
+        assert False
+
+run_atlas_adapter_tests()

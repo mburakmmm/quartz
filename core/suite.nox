@@ -7,78 +7,131 @@ class TestSuite:
     name: str
     summary: RunSummary
     filter_pattern: str
+    include_tags: list[str]
+    exclude_tags: list[str]
 
     def __init__(self: TestSuite, name: str) -> None:
         self.name = name
         self.summary = RunSummary()
         self.filter_pattern = ""
+        self.include_tags = []
+        self.exclude_tags = []
 
     def set_filter(self: TestSuite, pattern: str) -> None:
         self.filter_pattern = pattern
 
-    def _should_run(self: TestSuite, case_name: str) -> bool:
-        if len(self.filter_pattern) == 0:
-            return True
-        return nox.strings.contains(case_name, self.filter_pattern)
+    def set_include_tag(self: TestSuite, tag: str) -> None:
+        tags: list[str] = self.include_tags
+        tags.append(tag)
+        self.include_tags = tags
 
-    def _record(self: TestSuite, case_name: str, passed: bool, expected: str, actual: str, message: str, duration_ms: int) -> None:
-        if not self._should_run(case_name):
+    def set_exclude_tag(self: TestSuite, tag: str) -> None:
+        tags: list[str] = self.exclude_tags
+        tags.append(tag)
+        self.exclude_tags = tags
+
+    def clear_tag_filters(self: TestSuite) -> None:
+        self.include_tags = []
+        self.exclude_tags = []
+
+    def _matches_tags(self: TestSuite, case_tags: list[str]) -> bool:
+        # Check exclusion first
+        if len(self.exclude_tags) > 0:
+            i: int = 0
+            while i < len(case_tags):
+                tag: str = case_tags[i]
+                j: int = 0
+                while j < len(self.exclude_tags):
+                    if tag == self.exclude_tags[j]:
+                        return False
+                    j = j + 1
+                i = i + 1
+
+        # Check inclusion
+        if len(self.include_tags) > 0:
+            matched: bool = False
+            k: int = 0
+            while k < len(case_tags):
+                ctag: str = case_tags[k]
+                m: int = 0
+                while m < len(self.include_tags):
+                    if ctag == self.include_tags[m]:
+                        matched = True
+                    m = m + 1
+                k = k + 1
+            if not matched:
+                return False
+
+        return True
+
+    def _should_run(self: TestSuite, case_name: str, case_tags: list[str]) -> bool:
+        if len(self.filter_pattern) > 0:
+            if not nox.strings.contains(case_name, self.filter_pattern):
+                return False
+        return self._matches_tags(case_tags)
+
+    def _record(self: TestSuite, case_name: str, passed: bool, expected: str, actual: str, message: str, duration_ms: int, tags: list[str] | None = None) -> None:
+        c_tags: list[str] = []
+        if tags != None:
+            c_tags = tags
+
+        if not self._should_run(case_name, c_tags):
             # Record as skipped
-            skip_res: TestResult = TestResult(case_name, case_name, STATUS_SKIP, 0, "filtered out", None)
+            skip_res: TestResult = TestResult(case_name, case_name, STATUS_SKIP, 0, "filtered out", None, c_tags)
             self.summary.record(skip_res)
             return
 
         if passed:
-            pass_res: TestResult = TestResult(case_name, case_name, STATUS_PASS, duration_ms, "", None)
+            pass_res: TestResult = TestResult(case_name, case_name, STATUS_PASS, duration_ms, "", None, c_tags)
             self.summary.record(pass_res)
         else:
             fail_info: Failure = Failure(message, expected, actual)
-            fail_res: TestResult = TestResult(case_name, case_name, STATUS_FAIL, duration_ms, message, fail_info)
+            fail_res: TestResult = TestResult(case_name, case_name, STATUS_FAIL, duration_ms, message, fail_info, c_tags)
             self.summary.record(fail_res)
 
-    def check_true(self: TestSuite, case_name: str, cond: bool) -> None:
+    def check_true(self: TestSuite, case_name: str, cond: bool, tags: list[str] | None = None) -> None:
         if cond:
-            self._record(case_name, True, "True", "True", "", 0)
+            self._record(case_name, True, "True", "True", "", 0, tags)
         else:
-            self._record(case_name, False, "True", "False", case_name + ": condition was False", 0)
+            self._record(case_name, False, "True", "False", case_name + ": condition was False", 0, tags)
 
-    def check_false(self: TestSuite, case_name: str, cond: bool) -> None:
+    def check_false(self: TestSuite, case_name: str, cond: bool, tags: list[str] | None = None) -> None:
         if not cond:
-            self._record(case_name, True, "False", "False", "", 0)
+            self._record(case_name, True, "False", "False", "", 0, tags)
         else:
-            self._record(case_name, False, "False", "True", case_name + ": condition was True (expected False)", 0)
+            self._record(case_name, False, "False", "True", case_name + ": condition was True (expected False)", 0, tags)
 
-    def check_eq_int(self: TestSuite, case_name: str, actual: int, expected: int) -> None:
+    def check_eq_int(self: TestSuite, case_name: str, actual: int, expected: int, tags: list[str] | None = None) -> None:
         if actual == expected:
-            self._record(case_name, True, str(expected), str(actual), "", 0)
+            self._record(case_name, True, str(expected), str(actual), "", 0, tags)
         else:
-            self._record(case_name, False, str(expected), str(actual), case_name + ": expected " + str(expected) + ", got " + str(actual), 0)
+            self._record(case_name, False, str(expected), str(actual), case_name + ": expected " + str(expected) + ", got " + str(actual), 0, tags)
 
-    def check_not_eq_int(self: TestSuite, case_name: str, actual: int, unexpected: int) -> None:
+    def check_not_eq_int(self: TestSuite, case_name: str, actual: int, unexpected: int, tags: list[str] | None = None) -> None:
         if actual != unexpected:
-            self._record(case_name, True, "not " + str(unexpected), str(actual), "", 0)
+            self._record(case_name, True, "not " + str(unexpected), str(actual), "", 0, tags)
         else:
-            self._record(case_name, False, "not " + str(unexpected), str(actual), case_name + ": value matched unexpected " + str(unexpected), 0)
+            self._record(case_name, False, "not " + str(unexpected), str(actual), case_name + ": value matched unexpected " + str(unexpected), 0, tags)
 
-    def check_eq_str(self: TestSuite, case_name: str, actual: str, expected: str) -> None:
+    def check_eq_str(self: TestSuite, case_name: str, actual: str, expected: str, tags: list[str] | None = None) -> None:
         if actual == expected:
-            self._record(case_name, True, expected, actual, "", 0)
+            self._record(case_name, True, expected, actual, "", 0, tags)
         else:
-            self._record(case_name, False, expected, actual, case_name + ": expected \"" + expected + "\", got \"" + actual + "\"", 0)
+            self._record(case_name, False, expected, actual, case_name + ": expected \"" + expected + "\", got \"" + actual + "\"", 0, tags)
 
-    def check_not_eq_str(self: TestSuite, case_name: str, actual: str, unexpected: str) -> None:
+    def check_not_eq_str(self: TestSuite, case_name: str, actual: str, unexpected: str, tags: list[str] | None = None) -> None:
         if actual != unexpected:
-            self._record(case_name, True, "not \"" + unexpected + "\"", actual, "", 0)
+            self._record(case_name, True, "not \"" + unexpected + "\"", actual, "", 0, tags)
         else:
-            self._record(case_name, False, "not \"" + unexpected + "\"", actual, case_name + ": value matched unexpected \"" + unexpected + "\"", 0)
+            self._record(case_name, False, "not \"" + unexpected + "\"", actual, case_name + ": value matched unexpected \"" + unexpected + "\"", 0, tags)
 
-    def check_eq_bool(self: TestSuite, case_name: str, actual: bool, expected: bool) -> None:
+    def check_eq_bool(self: TestSuite, case_name: str, actual: bool, expected: bool, tags: list[str] | None = None) -> None:
         if actual == expected:
-            self._record(case_name, True, str(expected), str(actual), "", 0)
+            self._record(case_name, True, str(expected), str(actual), "", 0, tags)
         else:
-            self._record(case_name, False, str(expected), str(actual), case_name + ": expected " + str(expected) + ", got " + str(actual), 0)
+            self._record(case_name, False, str(expected), str(actual), case_name + ": expected " + str(expected) + ", got " + str(actual), 0, tags)
 
-    def check_eq_float(self: TestSuite, case_name: str, actual: float, expected: float, abs_tol: float, rel_tol: float) -> None:
+    def check_eq_float(self: TestSuite, case_name: str, actual: float, expected: float, abs_tol: float, rel_tol: float, tags: list[str] | None = None) -> None:
         diff: float = actual - expected
         if diff < 0.0:
             diff = -diff
@@ -90,15 +143,15 @@ class TestSuite:
         if rel_margin > tol:
             tol = rel_margin
         if diff <= tol:
-            self._record(case_name, True, str(expected), str(actual), "", 0)
+            self._record(case_name, True, str(expected), str(actual), "", 0, tags)
         else:
-            self._record(case_name, False, str(expected), str(actual), case_name + ": expected " + str(expected) + " (tol " + str(tol) + "), got " + str(actual), 0)
+            self._record(case_name, False, str(expected), str(actual), case_name + ": expected " + str(expected) + " (tol " + str(tol) + "), got " + str(actual), 0, tags)
 
-    def check_contains_str(self: TestSuite, case_name: str, haystack: str, needle: str) -> None:
+    def check_contains_str(self: TestSuite, case_name: str, haystack: str, needle: str, tags: list[str] | None = None) -> None:
         if nox.strings.contains(haystack, needle):
-            self._record(case_name, True, "contains " + needle, haystack, "", 0)
+            self._record(case_name, True, "contains " + needle, haystack, "", 0, tags)
         else:
-            self._record(case_name, False, "contains " + needle, haystack, case_name + ": \"" + haystack + "\" does not contain \"" + needle + "\"", 0)
+            self._record(case_name, False, "contains " + needle, haystack, case_name + ": \"" + haystack + "\" does not contain \"" + needle + "\"", 0, tags)
 
     def total_count(self: TestSuite) -> int:
         return self.summary.total

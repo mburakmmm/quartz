@@ -15,6 +15,8 @@ from contract.schema import schema_object, schema_string, schema_integer, schema
 from contract.property_contract import run_property_contract_test, run_negative_property_contract_test, PropertyContractResult, generate_valid_json_payload, generate_invalid_json_payload
 from adapters.nyx import create_nyx_adapter, NyxAdapter
 from adapters.aether import create_aether_adapter, AetherAdapter
+from adapters.atlas import AtlasTable, verify_sort_idempotence, verify_csv_roundtrip
+from adapters.feather import FeatherRecord, FeatherRepository, verify_transaction_rollback
 
 def test_prng_golden_determinism() -> None:
     rng: Prng = Prng(42)
@@ -207,6 +209,30 @@ def test_nyx_and_aether_adapters() -> None:
     assert_eq_int(resp_rej.status, 401, "early return 401 status")
     assert_eq_str(resp_rej.headers["X-Trace-Id"], "trace-12345", "after middleware ran on early return")
 
+def test_atlas_and_feather_matrix() -> None:
+    # 1. Atlas sort and CSV roundtrip in matrix
+    tbl: AtlasTable = AtlasTable(["id", "score"], [["1", "50"], ["2", "100"], ["3", "20"]])
+    assert_true(verify_sort_idempotence(tbl, "score", True, False), "atlas matrix sort idempotence")
+    assert_true(verify_csv_roundtrip(tbl), "atlas matrix csv roundtrip")
+
+    # 2. Feather ephemeral rollback in matrix
+    repo: FeatherRepository = FeatherRepository("matrix_repo")
+    r1: FeatherRecord = FeatherRecord("rec1")
+    r1.set("val", "alpha")
+    repo.insert(r1)
+
+    def tx(r: FeatherRepository) -> None:
+        rx: FeatherRecord = FeatherRecord("rec1")
+        rx.set("val", "omega")
+        r.update(rx)
+
+    assert_true(verify_transaction_rollback(repo, tx, True), "feather matrix tx rollback")
+    fetched: FeatherRecord | None = repo.find_by_id("rec1")
+    if fetched != None:
+        assert_eq_str(fetched.get("val"), "alpha", "feather matrix state intact after rollback")
+    else:
+        assert False, "rec1 should exist"
+
 test_prng_golden_determinism()
 test_monotonic_clock_progress()
 test_json_and_schema_validation()
@@ -214,4 +240,5 @@ test_generator_array_bounds_and_invariants()
 test_zero_length_string_generator()
 test_property_driven_contract_execution()
 test_nyx_and_aether_adapters()
+test_atlas_and_feather_matrix()
 print("quartz backend matrix test: ALL PASS")

@@ -20,6 +20,7 @@ import fuzz.corpus
 import fuzz.minimize
 import fuzz.fuzzer
 import fuzz.sequence
+import fuzz.cluster
 import contract.types
 import contract.schema
 import contract.http
@@ -39,9 +40,11 @@ import load.executor
 import load.stages
 import adapters.nyx
 import adapters.aether
+import adapters.atlas
+import adapters.feather
 
 def version() -> str:
-    return "0.9.10"
+    return "0.9.11"
 
 def framework_info() -> str:
     return "Quartz Test Framework v" + version() + " for NOX Ecosystem"

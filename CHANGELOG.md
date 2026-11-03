@@ -3,6 +3,49 @@
 All notable changes to the Quartz test framework will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.11] - 2026-11-03 - Phase 14: Ecosystem Adapters (Atlas & Feather), Tag-Based Suite Filtering & Crash Signature Deduplication
+
+### Added
+- **Atlas Tabular & DataFrame Ecosystem Adapter (`adapters/atlas.nox`)**:
+  - Implemented `AtlasTable` data model supporting row and column indexing, headers, and cell queries.
+  - Implemented standard RFC-compliant CSV serialization (`to_csv`) with automated quoting and internal quote doubling (`""`), plus `parse_csv` state-machine parser handling commas, newlines, and escaped quotes within fields.
+  - Implemented `verify_sort_idempotence` verifying `sort(sort(T)) == sort(T)` across numeric and lexicographical columns.
+  - Implemented `verify_csv_roundtrip` asserting lossless serialization and deserialization of arbitrary tabular structures.
+  - Implemented `verify_groupby_conservation` asserting that the sum of grouped row counts strictly conserves total table row count.
+  - Implemented `verify_inner_join_conservation` asserting row count bounds and key equality across joined tables.
+  - Implemented `mutate_csv` structure-aware fuzzing mutator generating delimiter substitution, unclosed quotes, broken line breaks, and stray null bytes for robust parser testing.
+- **Feather ORM & Persistence Ecosystem Adapter (`adapters/feather.nox`)**:
+  - Implemented `FeatherRecord` and `FeatherField` modeling entity attributes with cloning and equality invariants.
+  - Implemented `FeatherRepository` with primary key uniqueness enforcement (`insert` fails on duplicate ID), `find_by_id`, `update`, `upsert`, and `delete`.
+  - Implemented `verify_crud_lifecycle` asserting consistent state transitions across Create-Read-Update-Delete cycles.
+  - Implemented `verify_idempotent_upsert` asserting calling upsert repeatedly leaves state bit-for-bit identical without duplicating records.
+  - Implemented `verify_transaction_rollback` taking pre-transaction snapshots and restoring repository state upon abort with zero data corruption.
+  - Implemented `FeatherFixture` for ephemeral test database lifecycle management with automatic rollback during test teardown.
+- **Tag-Based Suite Filtering (`core/types.nox` & `core/suite.nox`)**:
+  - Added `tags: list[str]` attribute to `TestResult`.
+  - Added `include_tags: list[str]` and `exclude_tags: list[str]` to `TestSuite`.
+  - Implemented `set_include_tag(tag)` and `set_exclude_tag(tag)` with tag-matching logic in `_should_run` and `_record`.
+  - Added optional `tags: list[str] | None = None` parameter across all `check_*` assertion methods.
+  - Supported `--tag <tag>` and `--exclude-tag <tag>` command line arguments in `cli/main.nox`.
+- **Crash Signature Deduplication & Clustering Engine (`fuzz/cluster.nox`)**:
+  - Implemented `CrashCluster` tracking normalized signatures, occurrence counts, first discovering seeds, and minimal reproducer inputs.
+  - Implemented `CrashDeduplicator` with `normalize_signature` stripping memory addresses (`0x<ADDR>`) and line numbers (`line <N>:`) to produce stable error fingerprints.
+  - Implemented automatic minimal counterexample tracking: when a duplicate crash signature occurs with a smaller input payload, `minimal_input` is updated to preserve the most concise reproducer.
+  - Implemented `to_summary_json` emitting structured JSON defect cluster reports.
+- **Documentation & Recipes**:
+  - Added Recipe 17 to `docs/recipes.md`: Atlas Tabular Invariants and CSV Round-Trip Fuzzing.
+  - Added Recipe 18 to `docs/recipes.md`: Feather ORM Ephemeral Transaction Rollback & CRUD Invariants.
+  - Added ADR-018 to `docs/architecture.md`.
+  - Documented complete APIs in `docs/api.md`.
+- **Test Matrix Expansion**:
+  - Added `tests/atlas_adapter_test.nox` (14/14 checks passed).
+  - Added `tests/feather_adapter_test.nox` (19/19 checks passed).
+  - Expanded `tests/core_test.nox` with tag filtering tests.
+  - Expanded `tests/fuzz_test.nox` with crash signature clustering tests.
+  - Expanded `tests/doc_examples_test.nox` with Recipes 17 and 18.
+  - Expanded `tests/backend_matrix_test.nox` with Atlas and Feather integration checks.
+  - All 26 test suites passing cleanly (100% pass rate).
+
 ## [0.9.10] - 2026-11-03 - Bugfix Release: Snapshot Security & Strict Mode, State-Aware Fuzzing, JSON Secret Redaction & CLI Fail-Closed
 
 ### Fixed & Hardened

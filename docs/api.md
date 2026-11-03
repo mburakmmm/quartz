@@ -582,6 +582,67 @@ Published as the `quartz` binary via `nox.json` and runnable via `noxc run cli/m
 - `shrink_failing_sequence(seq: ActionSequence, target_runner: (ActionSequence) -> bool, max_steps: int = 50) -> ActionSequence`: Delta-debugging minimizer for action sequences.
 - `run_sequence_fuzz(fuzzer: SequenceFuzzer, target_runner: (ActionSequence) -> bool, iterations: int = 100, shrink: bool = True) -> SequenceFuzzResult`: Executes bounded stateful fuzzing campaign.
 
+---
+
+## 35. Atlas Tabular & DataFrame Adapter (`adapters/atlas.nox`)
+
+- `AtlasTable(headers: list[str], rows: list[list[str]])`: Lightweight tabular data representation.
+  - `.row_count() -> int`
+  - `.col_count() -> int`
+  - `.col_index(col_name: str) -> int`
+  - `.get_cell(row_idx: int, col_name: str) -> str`
+  - `.to_csv(delimiter: str = ",", quote_char: str = "\"") -> str`: Formats table into standard CSV with automatic quoting and quote doubling.
+- `escape_csv_field(field: str, delimiter: str, quote_char: str) -> str`: Escapes internal quotes and wraps in quotes if delimiter/newline/quote is present.
+- `parse_csv(raw_csv: str, delimiter: str = ",", quote_char: str = "\"") -> AtlasTable`: Robust state-machine CSV parser handling embedded quotes, commas, CRLF/LF line breaks.
+- `sort_table(table: AtlasTable, sort_col: str, is_numeric: bool = False, ascending: bool = True) -> AtlasTable`: Stable insertion sort of tabular rows.
+- `verify_sort_idempotence(table: AtlasTable, sort_col: str, is_numeric: bool = False, ascending: bool = True) -> bool`: Verifies `sort(sort(T)) == sort(T)`.
+- `verify_csv_roundtrip(table: AtlasTable, delimiter: str = ",", quote_char: str = "\"") -> bool`: Verifies `parse_csv(to_csv(T)) == T` without corruption.
+- `verify_groupby_conservation(table: AtlasTable, group_col: str) -> bool`: Verifies that the sum of grouped row counts equals the original table row count.
+- `verify_inner_join_conservation(left: AtlasTable, right: AtlasTable, left_key: str, right_key: str) -> bool`: Verifies row count bounds and join key integrity.
+- `mutate_csv(raw_csv: str, prng: Prng) -> str`: Fuzzing mutator generating delimiter swaps, unclosed quotes, broken line endings, null bytes, and mid-stream truncations.
+
+---
+
+## 36. Feather ORM & Persistence Adapter (`adapters/feather.nox`)
+
+- `FeatherField(name: str, value: str)`: Name-value attribute descriptor.
+- `FeatherRecord(id: str)`: Data record representing an entity instance.
+  - `.set(name: str, value: str) -> None`
+  - `.get(name: str) -> str`
+  - `.has(name: str) -> bool`
+  - `.clone() -> FeatherRecord`
+  - `.equals(other: FeatherRecord) -> bool`
+- `FeatherRepository(table_name: str)`: In-memory ephemeral repository with snapshot capabilities.
+  - `.insert(record: FeatherRecord) -> bool`: Enforces primary key uniqueness (fails if ID exists).
+  - `.find_by_id(id: str) -> FeatherRecord | None`
+  - `.update(record: FeatherRecord) -> bool`
+  - `.upsert(record: FeatherRecord) -> bool`: Idempotent insert-or-update.
+  - `.delete(id: str) -> bool`
+  - `.count() -> int`
+  - `.all() -> list[FeatherRecord]`
+  - `.clear() -> None`
+  - `.create_snapshot() -> list[FeatherRecord]`
+  - `.restore_snapshot(snapshot: list[FeatherRecord]) -> None`
+- `verify_crud_lifecycle(repo: FeatherRepository, initial_record: FeatherRecord, update_field: str, updated_val: str) -> bool`: Asserts full Create-Read-Update-Delete sequence consistency.
+- `verify_idempotent_upsert(repo: FeatherRepository, record: FeatherRecord) -> bool`: Asserts calling upsert twice leaves state bit-for-bit identical without duplicating records.
+- `verify_transaction_rollback(repo: FeatherRepository, mutation_fn: (FeatherRepository) -> None, should_abort: bool) -> bool`: Asserts pre-transaction state is restored upon abort.
+- `FeatherFixture(repo: FeatherRepository)`: Test fixture taking snapshot on `.setup()` and restoring on `.teardown()`.
+
+---
+
+## 37. Crash Signature Deduplication & Clustering (`fuzz/cluster.nox`)
+
+- `CrashCluster`: Group of crashes sharing the same underlying normalized root cause.
+  - `signature: str`, `count: int`, `first_seed: int`, `first_case_index: int`, `minimal_input: str`, `sample_inputs: list[str]`
+- `CrashDeduplicator()`: Engine that clusters crashes into defect groups.
+  - `.normalize_signature(raw_error: str) -> str`: Normalizes line numbers (`line <N>:`) and memory addresses (`0x<ADDR>:`) to produce stable fingerprints.
+  - `.record_crash(raw_error: str, input_payload: str, seed: int, case_index: int) -> CrashCluster`: Groups matching crash and updates `minimal_input` if a shorter reproducer is found.
+  - `.unique_cluster_count() -> int`
+  - `.total_crashes() -> int`
+  - `.find_cluster(signature: str) -> CrashCluster | None`
+  - `.to_summary_json() -> str`: Emits machine-readable defect clustering report.
+
+
 
 
 
