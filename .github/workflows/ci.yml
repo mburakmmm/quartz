@@ -13,7 +13,6 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       NOX_VERSION: v2.0.123
-      QUARTZ_REQUIRE_SQLITE: "${{ runner.os != 'Windows' && '1' || '0' }}"
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     strategy:
       fail-fast: false
@@ -62,6 +61,8 @@ jobs:
           noxc check quartz.nox
 
       - name: Run Quartz test suite
+        env:
+          QUARTZ_REQUIRE_SQLITE: ${{ runner.os != 'Windows' && '1' || '0' }}
         run: |
           noxc test
 
