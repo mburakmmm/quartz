@@ -925,6 +925,47 @@
 
 ---
 
+## Phase 14.6: v0.9.16 — Concurrent VU Callback Coroutines, Parallel HTTP Load, SQL NULL Semantics & Replay Versioning
+*Objective: Implement concurrent Virtual User callback coroutines, parallel HTTP network load, SQL NULL semantics, replay schema versioning & semantic JSON state comparator.*
+
+- [x] **14.6.1 Coroutine-based VU lifecycle & Wave Scope (`load/executor.nox`)**
+  - [x] Per-VU coroutines with two-phase enter/execute stepping.
+- [x] **14.6.2 Circuit Breaker Network Load Negative Runner (`load/executor.nox`, `tests/load_scheduler_test.nox`)**
+  - [x] Unreachable target circuit breaker triggering and error counting.
+- [x] **14.6.3 CI Step-Level SQLite Environment & Multi-Platform Matrix (`.github/workflows/ci.yml`)**
+  - [x] Move `QUARTZ_REQUIRE_SQLITE` to test step level across all 4 platforms (Windows x64, Linux x64, Linux ARM64, macOS ARM64).
+- [x] **14.6.4 Release Packaging (`v0.9.16`)**
+  - [x] Tagged `v0.9.16`, passed 26/26 tests across 4 platforms, published to Registry (awaiting approval).
+
+*Phase 14.6 Exit Gate:* PASSED CI (26/26), but audit by GPT-6 Sol identified concurrency regression in network executor (synchronous `send(1)` stepping), lack of server-side concurrency proof, and need for real callback overlap verification.
+
+---
+
+## Phase 15: v0.9.17 — Real OS-Thread Concurrency, Verified In-Flight Overlap & Individual Latency Tracking
+*Objective: Resolve ALL findings from GPT-6 Sol's evaluation of Quartz v0.9.16 without omission. Achieve genuine concurrent execution for both task callbacks and HTTP network load with undeniable atomic proof on both client and server sides, individual request latency feeding into the 136-bucket histogram, and clean release engineering for v0.9.17. Never label 1.0 without explicit user authorization.*
+
+- [x] **15.1 [P1] Real Concurrent HTTP Network Load Overlap with Server-Side Proof (`load/executor.nox`, `tests/load_scheduler_test.nox`)**
+  - [x] Replace synchronous generator stepping (`send(1)`) in `run_network_load_test()` with truly concurrent Virtual User execution across OS worker threads (`_net_vu_thread_worker` launched via `nox.thread.start`).
+  - [x] Reinstate and upgrade `test_network_load_concurrent_http_server()`: A local HTTP test server with multiple worker threads on `nox.http.listen()` measures simultaneous in-flight requests via atomic counters (`srv_peak >= 2`), proving real concurrent HTTP overlap on the server side without thread starvation or blocking.
+  - [x] Verify both `srv_peak >= 2` on the server and `metrics.peak_concurrency >= 2` on the client across 4 concurrent VUs.
+- [x] **15.2 [P1] Real User Callback Overlap & Concurrency Verification (`load/executor.nox`, `tests/load_scheduler_test.nox`)**
+  - [x] Ensure multi-VU task execution runs across concurrent OS worker threads where user callbacks execute in parallel.
+  - [x] Add explicit concurrency overlap test in `tests/load_scheduler_test.nox` (`test_task_callback_real_concurrency`) proving via an atomic in-flight counter directly inside user callbacks that at least 2 callbacks execute concurrently (`callback_observed_peak >= 2` across 4 VUs).
+- [x] **15.3 [P1] Accurate Individual Request Latency Measurements (`load/executor.nox`)**
+  - [x] Measure and record each request's actual elapsed execution time individually via monotonic `Instant`, feeding each into `LoadMetrics.record_result()` and the 136-bucket latency histogram for accurate p50/p95/p99 calculations (never clamping or averaging across waves).
+  - [x] Verify that histogram metrics (p50, p95, p99) reflect true individual request latencies (`p50 >= 15ms`).
+- [x] **15.4 [P2] Release Engineering & Version Management (`v0.9.17`)**
+  - [x] Create a fresh new patch release `v0.9.17` without modifying or overwriting existing tags (`v0.9.16` preserved).
+  - [x] Maintain strict non-1.0 numbering (never label 1.0 without explicit user authorization).
+  - [x] Update `CHANGELOG.md`, `README.md`, `docs/api.md`, `quartz.nox`, and `todo.md`.
+  - [x] Commit, tag `v0.9.17`, push to GitHub, create GitHub Release `v0.9.17`, and publish to NOX Registry with accurate status (`awaiting approval`).
+
+*Phase 15 Exit Gate:* PASSED. Real OS-thread concurrent HTTP load execution with server-side overlap proof (`srv_peak >= 2`), real callback in-flight concurrency verification (`callback_observed_peak >= 2`), individual request monotonic latency feeding into 136-bucket histogram, and clean v0.9.17 release packaging verified across all 26 test suites.
+
+---
+
+---
+
 ## Execution Log & Audit Trail
 
 | Date | Phase | Task | Action / Command | Result / Evidence | Status |
@@ -1013,3 +1054,7 @@
 | 2026-11-03 | Phase 14.4 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 26/26 tests pass, dynamic CLI E2E in CI, tagged `v0.9.14`, published | [x] DONE |
 | 2026-11-03 | Phase 14.5 | Bugfixes & Hardening | `load/`, `adapters/`, `property/`, `fuzz/`, `core/` | Real concurrent task/HTTP load callbacks (`ConcurrentWaveScope`), ref-counted atomic lifetime safety, real `nox.sqlite` + `nox.orm` integration & `COMMIT` recovery rollback, Atlas `NULL` vs `""` preservation, escaped replay artifact paths + custom generators, negative tag tests, `StateModelStr` & `ModelStepOutcome` | [x] DONE |
 | 2026-11-03 | Phase 14.5 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 26/26 tests pass, tagged `v0.9.15`, published | [x] DONE |
+| 2026-11-03 | Phase 14.6 | Bugfixes & Hardening | `load/`, `adapters/`, `.github/` | Concurrency lifecycle coroutines, circuit breaker network load test, CI step-level SQLite env | [x] DONE |
+| 2026-11-03 | Phase 14.6 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 26/26 tests pass across 4 platforms, tagged `v0.9.16`, published | [x] DONE |
+| 2026-11-03 | Phase 15 | Real Concurrency & Latency | `load/executor.nox`, `tests/load_scheduler_test.nox` | Real OS-thread concurrent network load (`_net_vu_thread_worker`), server-side verified HTTP overlap (`srv_peak >= 2`), user callback concurrency proof (`callback_observed_peak >= 2`), individual request latency histogram tracking | [x] DONE |
+| 2026-11-03 | Phase 15 | Verification & Release | `noxc test`, `ci.yml`, `noxc publish` | 26/26 tests pass, tagged `v0.9.17`, ready for publish | [x] DONE |

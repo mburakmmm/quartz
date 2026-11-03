@@ -1,4 +1,4 @@
-# Quartz API Reference — v0.9.0
+# Quartz API Reference — v0.9.17
 
 ## 1. Core Types (`core/types.nox`)
 

@@ -3,6 +3,25 @@
 All notable changes to the Quartz test framework will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.17] - 2026-11-03 - Real OS-Thread Network Load Concurrency, Server-Side Overlap Verification & Individual Latency Tracking
+
+### Fixed & Hardened
+- **Real OS-Thread Network Load Concurrency (`load/executor.nox`)**:
+  - Replaced synchronous generator stepping (`send(1)`) in `run_network_load_test()` with truly concurrent Virtual User execution across independent OS worker threads (`_net_vu_thread_worker` launched via `nox.thread.start`).
+  - All active Virtual Users in a wave now send real HTTP requests across the network simultaneously, incrementing `active_requests` before issuing the request and recording the true simultaneous in-flight peak (`peak_requests.compare_and_swap()`).
+  - Added bounded wave synchronization (`while wave_done.load() < wave_size and t_wait.elapsed_ms() < max_wait: nox.time.sleep_ms(1)`) ensuring deterministic, leak-free wave completion with full circuit breaker trip handling under connection errors or timeouts.
+- **Server-Side Verified HTTP Concurrency Overlap (`tests/load_scheduler_test.nox`)**:
+  - Reinstated and upgraded `test_network_load_concurrent_http_server()`, establishing a local multi-worker HTTP test server on `nox.http.listen(port)` backed by concurrent `serve_fd` worker threads.
+  - SUT server handler directly measures live in-flight request overlap via atomic memory cells transmitted in the request target (`srv_active: AtomicInt` and `srv_peak: AtomicInt`), proving real server-side concurrent request overlap (`observed_srv_peak >= 2`) simultaneously with client metrics (`metrics.peak_concurrency >= 2`).
+- **Accurate Individual Request Latency Measurements (`load/executor.nox`)**:
+  - Eliminated wave-averaged durations; every network request's individual execution duration is measured via monotonic `Instant`, stored in per-VU atomic cells (`dur_cell`), and fed directly into `metrics.record_result()` and the 136-bucket latency histogram.
+  - Verified that latency distribution percentiles (p50, p90, p95, p99) accurately reflect true individual request latencies (asserted `p50 >= 15ms`).
+- **Real In-Flight Task Callback Concurrency Verification (`tests/load_scheduler_test.nox`)**:
+  - Added `test_task_callback_real_concurrency()`, verifying that 4 concurrent Virtual Users running user callbacks on independent OS worker threads simultaneously execute in parallel.
+  - Proved via an atomic in-flight counter directly inside the user callback that at least 2 callbacks execute concurrently (`callback_observed_peak >= 2`).
+- **Release Engineering (`v0.9.17`)**:
+  - Created a clean patch release `v0.9.17` preserving historical release tags (`v0.9.16` untouched) and maintaining strict pre-1.0 versioning.
+
 ## [0.9.16] - 2026-11-03 - Concurrent Callback Execution, Parallel Network Load, Adapter NULL Semantics & Replay Versioning
 
 ### Fixed & Hardened
