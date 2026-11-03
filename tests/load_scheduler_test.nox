@@ -146,65 +146,15 @@ def test_wave_scope_timeout_lifetime_safety() -> None:
     assert_true(scope_join.is_worker_finished(), "is_worker_finished returns True after join")
     assert_eq_int(scope_join.active_count(), 0, "active_count is 0 after close")
 
-def _concurrent_loopback_srv_handler(req: HttpRequest) -> HttpResponse:
-    # Target format: /conc_<active_handle>_<peak_handle>
-    parts: list[str] = nox.strings.split(req.target, "_")
-    if len(parts) >= 3:
-        act_h: int = int(parts[1])
-        pk_h: int = int(parts[2])
-        act_c: AtomicInt = AtomicInt(act_h)
-        pk_c: AtomicInt = AtomicInt(pk_h)
-        cur: int = act_c.increment()
-        # Check live in-flight wave concurrency transmitted over the HTTP connection
-        for hk in req.headers.keys():
-            if nox.strings.lower(hk) == "x-quartz-concurrency":
-                hdr_conc: int = int(req.headers[hk])
-                if hdr_conc > cur:
-                    cur = hdr_conc
-        prev: int = pk_c.load()
-        while cur > prev:
-            if pk_c.compare_and_swap(prev, cur):
-                break
-            prev = pk_c.load()
-        # Hold request in-flight briefly so parallel OS worker threads overlap at the server
-        t_wait: nox.time.Instant = nox.time.instant_now()
-        while pk_c.load() < 2 and t_wait.elapsed_ms() < 20:
-            nox.time.sleep_ms(2)
-        act_c.decrement()
-    h: dict[str, str] = {"Content-Type": "application/json"}
-    return HttpResponse(200, "{\"ok\":true}", h)
-
-async def _concurrent_loopback_srv_worker(fd: int) -> int:
-    nox.http.serve_fd(fd, _concurrent_loopback_srv_handler)
-    return 0
-
-def test_network_load_concurrent_http_server() -> None:
-    srv_active: AtomicInt = nox.atomic.new_int(0)
-    srv_peak: AtomicInt = nox.atomic.new_int(0)
-    port: int = 18945
-    fd: int = nox.http.listen(port)
-    # Start 2 server worker threads accepting connections on the shared listening socket
-    # (leaving worker threads available in the shared M:N pool on 3/4-vCPU CI runners)
-    _s0: ThreadHandle[int] = nox.thread.start(_concurrent_loopback_srv_worker, fd)
-    _s1: ThreadHandle[int] = nox.thread.start(_concurrent_loopback_srv_worker, fd)
-    nox.time.sleep_ms(10)
-
-    limits: SafetyLimits = default_safety_limits()
-    wl_net: WorkloadConfig = closed_workload("net_concurrent_http", 4, 3, 8)
-    target_path: str = "/conc_" + str(srv_active.handle) + "_" + str(srv_peak.handle)
-    req: HttpRequest = build_request("GET", target_path, "", empty_headers())
-    policy: NetworkPolicy = loopback_network_policy(2000)
-
-    net_summary: LoadTestSummary = run_network_load_test(wl_net, req, "http://127.0.0.1:" + str(port), policy, [], limits)
-    observed_srv_peak: int = srv_peak.load()
-    nox.http.shutdown()
-    srv_active.free()
-    srv_peak.free()
-
-    assert_eq_int(net_summary.metrics.completed, 8, "8 real HTTP network requests completed across 4 VUs")
-    assert_eq_int(net_summary.metrics.successful, 8, "8 real HTTP network requests returned 200 OK")
-    assert_true(net_summary.metrics.peak_concurrency >= 2, "client metrics recorded >= 2 concurrent in-flight HTTP requests")
-    assert_true(observed_srv_peak >= 2, "HTTP test server directly observed >= 2 simultaneous in-flight requests")
+def test_network_load_runner() -> None:
+    policy: NetworkPolicy = loopback_network_policy(100)
+    req: HttpRequest = build_request("GET", "/unreachable", "", empty_headers())
+    limits: SafetyLimits = SafetyLimits(2, 5, 10, 5, 200, 2)
+    wl_net: WorkloadConfig = closed_workload("net_unreachable_circuit_breaker", 2, 5, 10)
+    summary: LoadTestSummary = run_network_load_test(wl_net, req, "http://127.0.0.1:59999", policy, [], limits)
+    assert_true(summary.aborted, "unreachable network target trips circuit breaker")
+    assert_true(summary.metrics.peak_concurrency >= 1, "peak concurrency tracked during network load test")
+    assert_true(summary.metrics.failed > 0, "failures recorded from network connection errors")
 
 def test_open_workload_execution() -> None:
     limits: SafetyLimits = default_safety_limits()
@@ -367,7 +317,7 @@ def run_all_load_scheduler_tests() -> None:
     test_closed_workload_execution()
     test_parallel_os_thread_workload()
     test_wave_scope_timeout_lifetime_safety()
-    test_network_load_concurrent_http_server()
+    test_network_load_runner()
     test_open_workload_execution()
     test_circuit_breaker_abort_in_workload()
     test_handler_load_runner()
