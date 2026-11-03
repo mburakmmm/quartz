@@ -53,9 +53,11 @@ class RunComparison:
     duration_pct_change: float
     has_regressions: bool
     has_performance_regression: bool
+    has_unresolved_skipped: bool
+    treat_skipped_as_regression: bool
     max_duration_pct_increase: float
 
-    def __init__(self: RunComparison, baseline_total: int, current_total: int, new_failures: list[TestRegressionItem], fixed_tests: list[TestRegressionItem], persistent_failures: list[TestRegressionItem], skipped_failures: list[TestRegressionItem], new_tests: list[TestResult], removed_tests: list[str], total_duration_delta_ms: int, duration_pct_change: float, max_duration_pct_increase: float = 0.0) -> None:
+    def __init__(self: RunComparison, baseline_total: int, current_total: int, new_failures: list[TestRegressionItem], fixed_tests: list[TestRegressionItem], persistent_failures: list[TestRegressionItem], skipped_failures: list[TestRegressionItem], new_tests: list[TestResult], removed_tests: list[str], total_duration_delta_ms: int, duration_pct_change: float, max_duration_pct_increase: float = 0.0, treat_skipped_as_regression: bool = False) -> None:
         self.baseline_total = baseline_total
         self.current_total = current_total
         self.new_failures = new_failures
@@ -67,8 +69,10 @@ class RunComparison:
         self.total_duration_delta_ms = total_duration_delta_ms
         self.duration_pct_change = duration_pct_change
         self.max_duration_pct_increase = max_duration_pct_increase
+        self.treat_skipped_as_regression = treat_skipped_as_regression
         self.has_performance_regression = (max_duration_pct_increase > 0.0 and duration_pct_change > max_duration_pct_increase)
-        self.has_regressions = (len(new_failures) > 0 or self.has_performance_regression)
+        self.has_unresolved_skipped = (len(skipped_failures) > 0)
+        self.has_regressions = (len(new_failures) > 0 or self.has_performance_regression or (treat_skipped_as_regression and self.has_unresolved_skipped))
 
     def to_json(self: RunComparison) -> str:
         s: str = "{\n"
@@ -79,6 +83,7 @@ class RunComparison:
         s = s + "  \"current_total\": " + str(self.current_total) + ",\n"
         s = s + "  \"has_regressions\": " + ("true" if self.has_regressions else "false") + ",\n"
         s = s + "  \"has_performance_regression\": " + ("true" if self.has_performance_regression else "false") + ",\n"
+        s = s + "  \"has_unresolved_skipped\": " + ("true" if self.has_unresolved_skipped else "false") + ",\n"
         s = s + "  \"new_failures_count\": " + str(len(self.new_failures)) + ",\n"
         s = s + "  \"fixed_count\": " + str(len(self.fixed_tests)) + ",\n"
         s = s + "  \"persistent_failures_count\": " + str(len(self.persistent_failures)) + ",\n"
@@ -158,6 +163,20 @@ class RunComparison:
                 item: TestRegressionItem = self.new_failures[i]
                 s = s + "  - " + item.test_id + " (was " + item.baseline_status + ", now " + item.current_status + "): " + item.failure_message + "\n"
                 i = i + 1
+            if self.has_unresolved_skipped:
+                s = s + "  [UNRESOLVED SKIPPED FAILURES]:\n"
+                k2: int = 0
+                while k2 < len(self.skipped_failures):
+                    sk2: TestRegressionItem = self.skipped_failures[k2]
+                    s = s + "    - " + sk2.test_id + " (was " + sk2.baseline_status + ", now SKIP): " + sk2.failure_message + "\n"
+                    k2 = k2 + 1
+        elif self.has_unresolved_skipped:
+            s = s + "[WARN] Unresolved skipped failures detected (failing tests were skipped instead of resolved):\n"
+            k3: int = 0
+            while k3 < len(self.skipped_failures):
+                sk3: TestRegressionItem = self.skipped_failures[k3]
+                s = s + "  - " + sk3.test_id + " (was " + sk3.baseline_status + ", now SKIP): " + sk3.failure_message + "\n"
+                k3 = k3 + 1
         else:
             s = s + "[OK] Zero regressions detected compared to baseline.\n"
         return s
@@ -174,7 +193,7 @@ def find_result_by_id(results: list[TestResult], test_id: str) -> TestResult | N
 def is_failing_status(status: str) -> bool:
     return status == STATUS_FAIL or status == STATUS_ERROR or status == STATUS_TIMEOUT
 
-def compare_runs(baseline: RunSummary, current: RunSummary, max_duration_pct_increase: float = 0.0) -> RunComparison:
+def compare_runs(baseline: RunSummary, current: RunSummary, max_duration_pct_increase: float = 0.0, treat_skipped_as_regression: bool = False) -> RunComparison:
     new_failures: list[TestRegressionItem] = []
     fixed_tests: list[TestRegressionItem] = []
     persistent_failures: list[TestRegressionItem] = []
@@ -270,7 +289,8 @@ def compare_runs(baseline: RunSummary, current: RunSummary, max_duration_pct_inc
         removed_tests,
         duration_delta,
         pct_change,
-        max_duration_pct_increase
+        max_duration_pct_increase,
+        treat_skipped_as_regression
     )
 
 def parse_run_summary_json(content: str) -> RunSummary:
@@ -313,15 +333,15 @@ def parse_run_summary_json(content: str) -> RunSummary:
 
     return summary
 
-def compare_current_with_baseline_json(baseline_json_str: str, current: RunSummary, max_duration_pct_increase: float = 0.0) -> RunComparison:
+def compare_current_with_baseline_json(baseline_json_str: str, current: RunSummary, max_duration_pct_increase: float = 0.0, treat_skipped_as_regression: bool = False) -> RunComparison:
     baseline: RunSummary = parse_run_summary_json(baseline_json_str)
-    return compare_runs(baseline, current, max_duration_pct_increase)
+    return compare_runs(baseline, current, max_duration_pct_increase, treat_skipped_as_regression)
 
-def compare_current_with_baseline_file(baseline_path: str, current: RunSummary, strict: bool = False, max_duration_pct_increase: float = 0.0) -> RunComparison:
+def compare_current_with_baseline_file(baseline_path: str, current: RunSummary, strict: bool = False, max_duration_pct_increase: float = 0.0, treat_skipped_as_regression: bool = False) -> RunComparison:
     if not nox.fs.exists(baseline_path):
         if strict:
             raise AssertionError("Regression baseline file not found: " + baseline_path)
         empty_baseline: RunSummary = RunSummary()
-        return compare_runs(empty_baseline, current, max_duration_pct_increase)
+        return compare_runs(empty_baseline, current, max_duration_pct_increase, treat_skipped_as_regression)
     content: str = nox.fs.read_to_string(baseline_path)
-    return compare_current_with_baseline_json(content, current, max_duration_pct_increase)
+    return compare_current_with_baseline_json(content, current, max_duration_pct_increase, treat_skipped_as_regression)

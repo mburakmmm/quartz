@@ -116,6 +116,15 @@ def test_fail_to_skip_is_skipped_failure_not_fixed() -> None:
     assert_eq_str(comp.skipped_failures[0].test_id, "t_bug", "test_id matches")
     assert_contains_str(comp.skipped_failures[0].failure_message, "skipped (not resolved)", "skipped failure message")
 
+    # Ensure to_summary_text alerts with [WARN] and does NOT falsely report zero regressions [OK]
+    summary_txt: str = comp.to_summary_text()
+    assert_contains_str(summary_txt, "WARN", "summary text emits warning for unresolved skipped failure")
+    assert_false(nox.strings.contains(summary_txt, "Zero regressions detected"), "summary text does NOT claim zero regressions when failures were skipped")
+
+    # Strict mode treats skipped failure as regression
+    comp_strict: RunComparison = compare_runs(baseline, current, 0.0, True)
+    assert_true(comp_strict.has_regressions, "treat_skipped_as_regression=True triggers has_regressions")
+
 def test_strict_missing_baseline_file_raises() -> None:
     current: RunSummary = RunSummary()
     current.record(TestResult("t1", "test_1", STATUS_PASS, 10, "", None))

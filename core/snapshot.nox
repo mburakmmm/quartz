@@ -94,14 +94,29 @@ def ensure_snapshot_dir(dir_path: str) -> None:
     if not nox.fs.exists(dir_path):
         nox.fs.create_dir(dir_path)
 
-def compare_snapshot(snapshot_name: str, actual_content: str, snapshot_dir: str = "__snapshots__", update_snapshots: bool = False) -> SnapshotComparison:
+def sanitize_snapshot_name(name: str) -> str:
+    if nox.strings.contains(name, "..") or nox.strings.contains(name, "/") or nox.strings.contains(name, "\\"):
+        raise AssertionError("SecurityError: snapshot name contains invalid path traversal characters: " + name)
+    s: str = nox.strings.replace(name, " ", "_")
+    s = nox.strings.replace(s, ":", "_")
+    return s
+
+def compare_snapshot(snapshot_name: str, actual_content: str, snapshot_dir: str = "__snapshots__", update_snapshots: bool = False, create_missing: bool = False) -> SnapshotComparison:
     ensure_snapshot_dir(snapshot_dir)
-    clean_name: str = nox.strings.replace(snapshot_name, " ", "_")
+    clean_name: str = sanitize_snapshot_name(snapshot_name)
     snapshot_path: str = snapshot_dir + "/" + clean_name + ".snap"
 
     norm_actual: str = normalize_snapshot_content(actual_content)
 
-    if not nox.fs.exists(snapshot_path) or update_snapshots:
+    if not nox.fs.exists(snapshot_path):
+        if update_snapshots or create_missing:
+            nox.fs.write_string_atomic(snapshot_path, norm_actual)
+            return SnapshotComparison(True, snapshot_path, norm_actual, norm_actual, "", True)
+        else:
+            diff_msg: str = "Snapshot not found: " + snapshot_path + " (missing golden reference file; set create_missing=True or update_snapshots=True to generate)"
+            return SnapshotComparison(False, snapshot_path, "", norm_actual, diff_msg, False)
+
+    if update_snapshots:
         nox.fs.write_string_atomic(snapshot_path, norm_actual)
         return SnapshotComparison(True, snapshot_path, norm_actual, norm_actual, "", True)
 
@@ -114,7 +129,7 @@ def compare_snapshot(snapshot_name: str, actual_content: str, snapshot_dir: str 
     diff: str = compute_line_diff(norm_expected, norm_actual)
     return SnapshotComparison(False, snapshot_path, norm_expected, norm_actual, diff, False)
 
-def assert_snapshot(snapshot_name: str, actual_content: str, snapshot_dir: str = "__snapshots__", update_snapshots: bool = False) -> None:
-    comp: SnapshotComparison = compare_snapshot(snapshot_name, actual_content, snapshot_dir, update_snapshots)
+def assert_snapshot(snapshot_name: str, actual_content: str, snapshot_dir: str = "__snapshots__", update_snapshots: bool = False, create_missing: bool = False) -> None:
+    comp: SnapshotComparison = compare_snapshot(snapshot_name, actual_content, snapshot_dir, update_snapshots, create_missing)
     if not comp.is_match:
         raise AssertionError("Snapshot mismatch for '" + snapshot_name + "' (" + comp.snapshot_path + "):\n" + comp.diff_message)

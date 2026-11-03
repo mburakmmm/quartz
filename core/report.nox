@@ -18,8 +18,47 @@ def escape_json(s: str) -> str:
     s4: str = nox.strings.replace(s3, "\r", "")
     return nox.strings.replace(s4, "\t", "\\t")
 
+def skip_leading_spaces(s: str) -> str:
+    i: int = 0
+    while i < len(s):
+        ch: str = s[i:i + 1]
+        if ch == " " or ch == "\t" or ch == "\n" or ch == "\r":
+            i = i + 1
+        else:
+            break
+    if i == 0:
+        return s
+    return s[i:len(s)]
+
+def redact_json_field(text: str, field_name: str) -> str:
+    target: str = "\"" + field_name + "\""
+    if not nox.strings.contains(text, target):
+        return text
+    parts: list[str] = nox.strings.split(text, target)
+    acc: str = parts[0]
+    i: int = 1
+    while i < len(parts):
+        chunk: str = parts[i]
+        if nox.strings.contains(chunk, ":"):
+            sub_parts: list[str] = nox.strings.splitn(chunk, ":", 2)
+            prefix_space: str = sub_parts[0]
+            rest: str = sub_parts[1]
+            trimmed_rest: str = skip_leading_spaces(rest)
+            if len(trimmed_rest) > 0 and trimmed_rest[0:1] == "\"":
+                val_parts: list[str] = nox.strings.splitn(trimmed_rest[1:len(trimmed_rest)], "\"", 2)
+                if len(val_parts) > 1:
+                    acc = acc + target + prefix_space + ": \"[REDACTED]\"" + val_parts[1]
+                else:
+                    acc = acc + target + chunk
+            else:
+                acc = acc + target + chunk
+        else:
+            acc = acc + target + chunk
+        i = i + 1
+    return acc
+
 def redact_secrets(text: str) -> str:
-    # Basic redaction for common secret indicators
+    # 1. Bearer token redaction
     r1: str = text
     if nox.strings.contains(r1, "Bearer "):
         parts: list[str] = nox.strings.split(r1, "Bearer ")
@@ -33,6 +72,18 @@ def redact_secrets(text: str) -> str:
                 acc = acc + "Bearer [REDACTED]"
             i = i + 1
         r1 = acc
+
+    # 2. General JSON secret keys scanner
+    secret_keys: list[str] = [
+        "api_key", "apiKey", "password", "secret",
+        "access_token", "accessToken", "client_secret",
+        "token", "private_key"
+    ]
+    s_i: int = 0
+    while s_i < len(secret_keys):
+        r1 = redact_json_field(r1, secret_keys[s_i])
+        s_i = s_i + 1
+
     return r1
 
 def format_junit_xml(suite_name: str, summary: RunSummary) -> str:

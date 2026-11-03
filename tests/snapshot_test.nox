@@ -31,46 +31,68 @@ def test_snapshot_lifecycle_and_matching() -> None:
     if nox.fs.exists(target_file):
         nox.fs.remove_file(target_file)
 
-    # 1. Initial snapshot generation
+    # 1. Initial snapshot generation with create_missing=False fails in strict CI mode
     content_v1: str = "server: 127.0.0.1\nport: 8080\nworkers: 4\n"
-    comp1: SnapshotComparison = compare_snapshot(snap_name, content_v1, test_dir, False)
-    assert_true(comp1.is_match, "new snapshot matches immediately")
+    comp_missing: SnapshotComparison = compare_snapshot(snap_name, content_v1, test_dir, False, False)
+    assert_false(comp_missing.is_match, "missing snapshot fails when create_missing=False")
+    assert_contains_str(comp_missing.diff_message, "Snapshot not found", "diff explains missing file")
+
+    # 2. Generating with create_missing=True succeeds
+    comp1: SnapshotComparison = compare_snapshot(snap_name, content_v1, test_dir, False, True)
+    assert_true(comp1.is_match, "new snapshot created when create_missing=True")
     assert_true(comp1.was_created_or_updated, "was created on first run")
     assert_true(nox.fs.exists(target_file), "snapshot file written to disk")
 
-    # 2. Subsequent match with identical content
-    comp2: SnapshotComparison = compare_snapshot(snap_name, content_v1, test_dir, False)
+    # 3. Subsequent match with identical content
+    comp2: SnapshotComparison = compare_snapshot(snap_name, content_v1, test_dir, False, False)
     assert_true(comp2.is_match, "matching snapshot passes")
     assert_false(comp2.was_created_or_updated, "not rewritten when matching")
 
-    # 3. Mismatch detection
+    # 4. Mismatch detection
     content_v2: str = "server: 127.0.0.1\nport: 9090\nworkers: 4\n"
-    comp3: SnapshotComparison = compare_snapshot(snap_name, content_v2, test_dir, False)
+    comp3: SnapshotComparison = compare_snapshot(snap_name, content_v2, test_dir, False, False)
     assert_false(comp3.is_match, "mismatched content detected")
     assert_contains_str(comp3.diff_message, "Line 2 differs", "line 2 diff reported")
 
-    # 4. assert_snapshot raises on mismatch
+    # 5. assert_snapshot raises on mismatch
     raised: bool = False
     try:
-        assert_snapshot(snap_name, content_v2, test_dir, False)
+        assert_snapshot(snap_name, content_v2, test_dir, False, False)
     except AssertionError as e:
         raised = True
     assert_true(raised, "assert_snapshot raised AssertionError on mismatch")
 
-    # 5. Update flag overwrites snapshot
-    comp_update: SnapshotComparison = compare_snapshot(snap_name, content_v2, test_dir, True)
+    # 6. Update flag overwrites snapshot
+    comp_update: SnapshotComparison = compare_snapshot(snap_name, content_v2, test_dir, True, False)
     assert_true(comp_update.is_match, "update marks match True")
     assert_true(comp_update.was_created_or_updated, "marked updated")
 
     # Now content_v2 matches
-    comp4: SnapshotComparison = compare_snapshot(snap_name, content_v2, test_dir, False)
+    comp4: SnapshotComparison = compare_snapshot(snap_name, content_v2, test_dir, False, False)
     assert_true(comp4.is_match, "updated snapshot now matches v2")
 
     # Clean up
     if nox.fs.exists(target_file):
         nox.fs.remove_file(target_file)
 
+def test_snapshot_path_traversal_protection() -> None:
+    test_dir: str = "fixtures/snapshots_test_dir"
+    traversal_raised: bool = False
+    try:
+        compare_snapshot("../../escape_target", "data", test_dir, False, True)
+    except AssertionError as e:
+        traversal_raised = True
+    assert_true(traversal_raised, "path traversal .. in snapshot name was rejected")
+
+    slash_raised: bool = False
+    try:
+        compare_snapshot("sub/folder/file", "data", test_dir, False, True)
+    except AssertionError as e:
+        slash_raised = True
+    assert_true(slash_raised, "forward slash in snapshot name was rejected")
+
 test_snapshot_normalization()
 test_compute_line_diff()
 test_snapshot_lifecycle_and_matching()
+test_snapshot_path_traversal_protection()
 print("quartz snapshot test: ALL PASS")

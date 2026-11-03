@@ -145,6 +145,14 @@ def test_reports_and_redaction() -> None:
     assert_false(nox.strings.contains(redacted, "secret_token_xyz"), "secret token must be redacted")
     assert_contains_str(redacted, "Bearer [REDACTED]", "token must be replaced with [REDACTED]")
 
+    # 1b. JSON secret keys scanner test
+    json_sensitive: str = "{\"api_key\": \"secret123\", \"password\": \"my_pass\", \"user\": \"bob\"}"
+    json_redacted: str = redact_secrets(json_sensitive)
+    assert_false(nox.strings.contains(json_redacted, "secret123"), "api_key value must be redacted")
+    assert_false(nox.strings.contains(json_redacted, "my_pass"), "password value must be redacted")
+    assert_contains_str(json_redacted, "\"api_key\": \"[REDACTED]\"", "api_key must be replaced with [REDACTED]")
+    assert_contains_str(json_redacted, "\"user\": \"bob\"", "non-sensitive user field preserved")
+
     # 2. Summary JSON report formatting
     summary: RunSummary = RunSummary()
     res1: TestResult = TestResult("c1", "test_addition", STATUS_PASS, 12, "", None)

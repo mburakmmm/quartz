@@ -96,33 +96,63 @@ class ActionSequence:
         s = s + "]"
         return s
 
+class TransitionRule:
+    from_action: str
+    allowed_next: list[str]
+
+    def __init__(self: TransitionRule, from_action: str, allowed_next: list[str]) -> None:
+        self.from_action = from_action
+        self.allowed_next = allowed_next
+
 class SequenceFuzzer:
     prng: Prng
     action_names: list[str]
     min_length: int
     max_length: int
+    rules: list[TransitionRule]
 
     def __init__(self: SequenceFuzzer, seed: int, action_names: list[str], min_length: int = 1, max_length: int = 10) -> None:
         self.prng = Prng(seed)
         self.action_names = action_names
         self.min_length = min_length
         self.max_length = max_length
+        self.rules = []
 
-    def generate_random_action(self: SequenceFuzzer) -> FuzzAction:
-        if len(self.action_names) == 0:
+    def add_transition_rule(self: SequenceFuzzer, from_action: str, allowed_next: list[str]) -> None:
+        self.rules.append(TransitionRule(from_action, allowed_next))
+
+    def get_allowed_next(self: SequenceFuzzer, from_action: str) -> list[str]:
+        i: int = 0
+        while i < len(self.rules):
+            if self.rules[i].from_action == from_action:
+                return self.rules[i].allowed_next
+            i = i + 1
+        return self.action_names
+
+    def generate_action_for_prev(self: SequenceFuzzer, prev_name: str) -> FuzzAction:
+        pool: list[str] = self.action_names
+        if len(prev_name) > 0:
+            pool = self.get_allowed_next(prev_name)
+        if len(pool) == 0:
             return FuzzAction("noop")
-        idx: int = self.prng.choose_index(len(self.action_names))
-        name: str = self.action_names[idx]
+        idx: int = self.prng.choose_index(len(pool))
+        name: str = pool[idx]
         val_int: int = self.prng.next_int_range(0, 100)
         val_str: str = "item_" + str(val_int)
         return FuzzAction(name, val_str, val_int)
 
+    def generate_random_action(self: SequenceFuzzer) -> FuzzAction:
+        return self.generate_action_for_prev("")
+
     def generate_random_sequence(self: SequenceFuzzer) -> ActionSequence:
         count: int = self.prng.next_int_range(self.min_length, self.max_length)
         res: ActionSequence = ActionSequence([])
+        prev_act: str = ""
         i: int = 0
         while i < count:
-            res.append(self.generate_random_action())
+            act: FuzzAction = self.generate_action_for_prev(prev_act)
+            res.append(act)
+            prev_act = act.name
             i = i + 1
         return res
 
@@ -131,9 +161,12 @@ class SequenceFuzzer:
         mode: int = self.prng.next_int_range(0, 3)
 
         if mode == 0 and mutated.len() < self.max_length:
-            # 1. Insert action
+            # 1. Insert action respecting predecessor
             pos: int = self.prng.next_int_range(0, mutated.len())
-            new_act: FuzzAction = self.generate_random_action()
+            prev_n: str = ""
+            if pos > 0:
+                prev_n = mutated.get(pos - 1).name
+            new_act: FuzzAction = self.generate_action_for_prev(prev_n)
             new_list: list[FuzzAction] = []
             k: int = 0
             while k < mutated.len():
@@ -193,17 +226,54 @@ class SequenceFuzzResult:
         s = s + "}"
         return s
 
-def shrink_failing_sequence(seq: ActionSequence, target_runner: (ActionSequence) -> bool, max_steps: int = 50) -> ActionSequence:
+def shrink_failing_sequence(seq: ActionSequence, target_runner: (ActionSequence) -> bool, max_steps: int = 100) -> ActionSequence:
     curr: ActionSequence = seq.clone()
     step: int = 0
 
+    # Phase 1: Delta-debugging chunk deletion
+    # Try halving: remove first half, remove second half
+    if curr.len() >= 4 and step < max_steps:
+        mid: int = curr.len() // 2
+        # Try second half only
+        cand_half2: list[FuzzAction] = []
+        h_i: int = mid
+        while h_i < curr.len():
+            cand_half2.append(curr.get(h_i).clone())
+            h_i = h_i + 1
+        seq_half2: ActionSequence = ActionSequence(cand_half2)
+        step = step + 1
+        passed_h2: bool = True
+        try:
+            passed_h2 = target_runner(seq_half2)
+        except Exception as e:
+            passed_h2 = False
+        if not passed_h2:
+            curr = seq_half2
+
+        if curr.len() >= 4 and step < max_steps:
+            # Try first half only
+            cand_half1: list[FuzzAction] = []
+            h_j: int = 0
+            while h_j < mid:
+                cand_half1.append(curr.get(h_j).clone())
+                h_j = h_j + 1
+            seq_half1: ActionSequence = ActionSequence(cand_half1)
+            step = step + 1
+            passed_h1: bool = True
+            try:
+                passed_h1 = target_runner(seq_half1)
+            except Exception as e:
+                passed_h1 = False
+            if not passed_h1:
+                curr = seq_half1
+
+    # Phase 2: Single action deletion (1-by-1 from right to left)
     improved: bool = True
     while improved and step < max_steps:
         improved = False
         if curr.len() <= 1:
             break
 
-        # Try removing each action from right to left
         i: int = curr.len() - 1
         while i >= 0 and step < max_steps:
             candidate: ActionSequence = curr.remove_at(i)
@@ -216,11 +286,41 @@ def shrink_failing_sequence(seq: ActionSequence, target_runner: (ActionSequence)
                 passed = False
 
             if not passed:
-                # Still fails! Accept candidate as smaller reproducer
                 curr = candidate
                 improved = True
                 break
             i = i - 1
+
+    # Phase 3: Payload integer shrinking towards 0
+    p_i: int = 0
+    while p_i < curr.len() and step < max_steps:
+        act: FuzzAction = curr.get(p_i)
+        if act.payload_int != 0:
+            orig_val: int = act.payload_int
+            # Try setting payload_int to 0
+            act.payload_int = 0
+            step = step + 1
+            passed_zero: bool = True
+            try:
+                passed_zero = target_runner(curr)
+            except Exception as e:
+                passed_zero = False
+
+            if passed_zero:
+                # 0 did not fail; try halving (binary search towards 0)
+                half_val: int = orig_val // 2
+                act.payload_int = half_val
+                step = step + 1
+                passed_half: bool = True
+                try:
+                    passed_half = target_runner(curr)
+                except Exception as e:
+                    passed_half = False
+
+                if passed_half:
+                    # Restore original
+                    act.payload_int = orig_val
+        p_i = p_i + 1
 
     return curr
 

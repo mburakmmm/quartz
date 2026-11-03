@@ -3,6 +3,27 @@
 All notable changes to the Quartz test framework will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.10] - 2026-11-03 - Bugfix Release: Snapshot Security & Strict Mode, State-Aware Fuzzing, JSON Secret Redaction & CLI Fail-Closed
+
+### Fixed & Hardened
+- **Snapshot Engine Path Traversal Protection & Strict Mode (`core/snapshot.nox`)**:
+  - **Path Traversal Guard (`sanitize_snapshot_name`)**: Enforced strict sanitization of snapshot names, explicitly rejecting path traversal attempts (`..`, `/`, `\`) to prevent directory traversal and arbitrary file write vulnerabilities.
+  - **Strict Missing Snapshot Mode (`create_missing`)**: Separated snapshot creation from comparison. In strict/CI runs (`create_missing=False`, `update_snapshots=False`), a missing snapshot file is reported as a test failure rather than silently passing by auto-generating reference files.
+- **Regression Comparator Skipped Failures Policy (`core/regression.nox`)**:
+  - **Unresolved Skipped Failures Warning**: When failing tests transition to `SKIP`, `to_summary_text()` now outputs an explicit `[WARN]` banner listing all skipped failures and strictly suppresses false `[OK] Zero regressions detected` claims.
+  - **Strict Skip Policy (`treat_skipped_as_regression`)**: Added configuration to treat unresolved skipped tests as regressions (`has_regressions=True`) for zero-tolerance CI quality gates.
+- **General JSON Secret Scanner (`core/report.nox`)**:
+  - Enhanced `redact_secrets()` with recursive JSON key detection, masking sensitive fields (`api_key`, `apiKey`, `password`, `secret`, `access_token`, `accessToken`, `client_secret`, `token`, `private_key`) as `"[REDACTED]"` in addition to standard Bearer tokens.
+- **State-Aware Sequence Fuzzer & Multi-Stage Shrinking (`fuzz/sequence.nox`)**:
+  - **Precondition & Transition Guards**: Added `TransitionRule` and `SequenceFuzzer.add_transition_rule(from_action, allowed_next)`. Sequences and mutations now strictly respect state transition constraints, preventing invalid sequences from causing false test failures.
+  - **Delta-Debugging Chunk Elimination**: Upgraded `shrink_failing_sequence` to perform binary chunk elimination (halving sequence length) before single-element reduction.
+  - **Payload Integer Shrinking**: Added binary search payload reduction, shrinking integer payloads toward zero while verifying invariant reproduction.
+- **CLI Fail-Closed Policy on Dynamic Test Execution (`cli/main.nox`)**:
+  - Hardened `quartz test` to fail-closed with exit code `1` if child test execution fails or compiler backend environment is unavailable, unless explicitly overridden via `--allow-static-only` or `--allow-static`.
+- **Test Suite & Verification Matrix**:
+  - Added test coverage for missing snapshot rejection, path traversal rejection, skipped failure warnings, transition rule adherence, payload shrinking, and JSON secret masking.
+  - All 24 test suites passing cleanly (100% pass rate).
+
 ## [0.9.9] - 2026-11-03 - Phase 13: Golden Reference Snapshot Testing & Stateful Sequence Fuzzing
 
 ### Added

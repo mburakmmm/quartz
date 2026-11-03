@@ -110,8 +110,53 @@ def test_safe_state_machine_clean_fuzz() -> None:
     res: SequenceFuzzResult = run_sequence_fuzz(fuzzer, evaluate_safe_wallet, 30, False)
     assert_false(res.found_failure, "safe state machine survives all sequence mutations without error")
 
+def test_sequence_transition_rules() -> None:
+    actions: list[str] = ["connect", "auth", "query", "disconnect"]
+    fuzzer: SequenceFuzzer = SequenceFuzzer(777, actions, 4, 8)
+    fuzzer.add_transition_rule("connect", ["auth"])
+    fuzzer.add_transition_rule("auth", ["query", "disconnect"])
+    fuzzer.add_transition_rule("query", ["query", "disconnect"])
+    fuzzer.add_transition_rule("disconnect", ["connect"])
+
+    # Generate sequences and verify transitions conform to rules
+    t: int = 0
+    while t < 10:
+        seq: ActionSequence = fuzzer.generate_random_sequence()
+        k: int = 0
+        while k + 1 < seq.len():
+            curr_a: str = seq.get(k).name
+            next_a: str = seq.get(k + 1).name
+            if curr_a == "connect":
+                assert_eq_str(next_a, "auth", "connect must be followed by auth")
+            elif curr_a == "auth":
+                assert_true(next_a == "query" or next_a == "disconnect", "auth must be followed by query or disconnect")
+            elif curr_a == "query":
+                assert_true(next_a == "query" or next_a == "disconnect", "query must be followed by query or disconnect")
+            elif curr_a == "disconnect":
+                assert_eq_str(next_a, "connect", "disconnect must be followed by connect")
+            k = k + 1
+        t = t + 1
+
+def test_sequence_payload_shrinking() -> None:
+    # Target invariant: fails when payload_int >= 10
+    def fail_on_large_payload(seq: ActionSequence) -> bool:
+        i: int = 0
+        while i < seq.len():
+            if seq.get(i).payload_int >= 10:
+                return False
+            i = i + 1
+        return True
+
+    # Action sequence starting with large payload 80
+    seq: ActionSequence = ActionSequence([FuzzAction("test_act", "val", 80)])
+    shrunk: ActionSequence = shrink_failing_sequence(seq, fail_on_large_payload)
+    assert_true(shrunk.get(0).payload_int < 80, "payload was shrunk below original 80")
+    assert_false(fail_on_large_payload(shrunk), "shrunk sequence still triggers failure")
+
 test_action_and_sequence_basics()
 test_sequence_generator_and_mutation()
 test_sequence_fuzzing_and_shrinking()
 test_safe_state_machine_clean_fuzz()
+test_sequence_transition_rules()
+test_sequence_payload_shrinking()
 print("quartz sequence fuzz test: ALL PASS")

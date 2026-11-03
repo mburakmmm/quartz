@@ -697,6 +697,38 @@
 
 ---
 
+## Phase 13.2: v0.9.10 — Bugfix & Reliability Hardening Release
+*Objective: Address all architectural and security audit findings from GPT-6 Sol's evaluation of v0.9.9: prevent snapshot directory traversal, enforce strict mode for missing golden files in CI, prevent false [OK] for skipped failures in regression comparator, enhance general JSON secret scanner, add sequence fuzzer transition rules & multi-stage delta shrinking, and enforce CLI fail-closed behavior on dynamic test execution.*
+
+- [x] **13.2.1 Snapshot Engine Security & Strict Mode (`core/snapshot.nox`)**
+  - [x] Implement `sanitize_snapshot_name(name: str) -> str`: strictly reject path traversal characters (`..`, `/`, `\`) to prevent escaping target snapshot directories.
+  - [x] Add `create_missing: bool = False` flag to `compare_snapshot` and `assert_snapshot`: fail with explicit missing file error in CI when golden reference file is absent.
+- [x] **13.2.2 Regression Comparator Skipped Failure Policy (`core/regression.nox`)**
+  - [x] Prevent false `[OK] Zero regressions detected` in `to_summary_text()` when `len(skipped_failures) > 0`; output prominent `[WARN]` banner listing skipped tests.
+  - [x] Add `treat_skipped_as_regression: bool = False` flag to `compare_runs`, `compare_current_with_baseline_json`, and `compare_current_with_baseline_file` to enforce zero-tolerance CI gates.
+- [x] **13.2.3 General JSON Secret Scanner (`core/report.nox`)**
+  - [x] Enhance `redact_secrets()` with recursive JSON key detection: mask sensitive fields (`api_key`, `apiKey`, `password`, `secret`, `access_token`, `accessToken`, `client_secret`, `token`, `private_key`) as `"[REDACTED]"` in addition to Bearer tokens.
+- [x] **13.2.4 Stateful Sequence Fuzzer Transition Rules & Advanced Shrinking (`fuzz/sequence.nox`)**
+  - [x] Implement `TransitionRule` and `SequenceFuzzer.add_transition_rule(from_action, allowed_next)`: ensure generated/mutated sequences strictly obey valid state machine transitions.
+  - [x] Implement delta-debugging chunk elimination (halving sequence length) in `shrink_failing_sequence()`.
+  - [x] Implement payload integer binary shrinking towards zero while maintaining invariant failure reproduction.
+- [x] **13.2.5 CLI Fail-Closed Execution (`cli/main.nox`)**
+  - [x] Enforce fail-closed exit code `1` in `cmd_test()` when child process dynamic execution fails or compiler environment is missing, unless `--allow-static-only` or `--allow-static` is explicitly passed.
+- [x] **13.2.6 Test Matrix Expansion & Verification**
+  - [x] `tests/snapshot_test.nox`: verify strict missing file failure and path traversal rejection.
+  - [x] `tests/regression_comparator_test.nox`: verify `[WARN]` on skipped failures and `treat_skipped_as_regression`.
+  - [x] `tests/sequence_fuzz_test.nox`: verify transition rule conformity and payload shrinking.
+  - [x] `tests/core_test.nox`: verify JSON secret key redaction.
+  - [x] Run full project test matrix: verify 24/24 test suites passing cleanly (100% pass rate).
+- [x] **13.2.7 Release Packaging (v0.9.10)**
+  - [x] Update facade `quartz.nox` to version `0.9.10`.
+  - [x] Update `CHANGELOG.md` with complete v0.9.10 release notes.
+  - [x] Tag `v0.9.10`, push to GitHub, and publish to NOX package registry.
+
+*Phase 13.2 Exit Gate:* PASSED. All Sol v0.9.9 findings resolved; snapshot security and strict mode verified; state-aware sequence fuzzing verified; 24/24 test suites passing cleanly; published as v0.9.10.
+
+---
+
 ## Execution Log & Audit Trail
 
 | Date | Phase | Task | Action / Command | Result / Evidence | Status |
@@ -772,3 +804,5 @@
 | 2026-11-03 | Phase 12.2 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 22/22 tests pass, CI release gate added, tagged `v0.9.8`, published | [x] DONE |
 | 2026-11-03 | Phase 13 | Snapshot & Sequence Fuzz | `core/snapshot.nox`, `fuzz/sequence.nox` | Golden snapshots, line diffs, state machine action sequence fuzzing | [x] DONE |
 | 2026-11-03 | Phase 13 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 24/24 tests pass, recipes 15 & 16 pass, tagged `v0.9.9`, published | [x] DONE |
+| 2026-11-03 | Phase 13.2 | Bugfixes & Hardening | `core/`, `fuzz/`, `cli/` | Snapshot strict/security, state transition rules, JSON secret scan, CLI fail-closed | [x] DONE |
+| 2026-11-03 | Phase 13.2 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 24/24 tests pass, tagged `v0.9.10`, published | [x] DONE |

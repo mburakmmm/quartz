@@ -414,8 +414,13 @@ def cmd_test() -> None:
                 pass
             t_i = t_i + 1
 
-        print("Note: Child process environment lacks backend compiler PATH; static check verified successfully.")
-        print("To run the test executable directly, execute 'noxc test " + target_path + "' in the host shell.")
+        allow_static: bool = (parse_flag_str("--allow-static-only", "") == "true") or (parse_flag_str("--allow-static", "") == "true")
+        if allow_static:
+            print("Note: Child process environment lacks backend compiler PATH; static check verified successfully.")
+            print("To run the test executable directly, execute 'noxc test " + target_path + "' in the host shell.")
+        else:
+            print("Error: Dynamic test execution failed or backend compiler environment unavailable. Use --allow-static to permit static type checking only.")
+            nox.os.exit(1)
     except Exception as e:
         print("Note: Process execution encountered: " + str(e))
         nox.os.exit(1)
