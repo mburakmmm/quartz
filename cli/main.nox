@@ -35,6 +35,7 @@ def print_usage() -> None:
     print("Commands:")
     print("  version              Print version and framework details")
     print("  test [path]          Run test suites with optional path filter")
+    print("                       Options: --tag <tag>, --exclude-tag <tag>, --allow-static")
     print("  property [target]    Run property-based invariant checks")
     print("                       Options: --seed <int>, --cases <int>")
     print("  fuzz [target]        Run mutation fuzzer on sample target")
@@ -331,10 +332,17 @@ def is_binary_not_found(err: str, status: int) -> bool:
 
 def cmd_test() -> None:
     target_path: str = "quartz.nox"
-    if nox.os.arg_count() >= 3:
+    if nox.os.arg_count() >= 3 and not nox.strings.starts_with(nox.os.arg(2), "-"):
         target_path = nox.os.arg(2)
 
+    tag_filter: str = parse_flag_str("--tag", "")
+    exclude_tag: str = parse_flag_str("--exclude-tag", "")
+
     print("Executing Quartz test runner on: " + target_path)
+    if len(tag_filter) > 0:
+        print("Tag filter active: include [" + tag_filter + "]")
+    if len(exclude_tag) > 0:
+        print("Tag filter active: exclude [" + exclude_tag + "]")
     try:
         candidate_bins: list[str] = []
         try:

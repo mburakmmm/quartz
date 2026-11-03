@@ -79,7 +79,19 @@ def run_feather_adapter_tests() -> None:
     else:
         suite.check_true("t1_missing_fail", False)
 
-    # 6. Ephemeral FeatherFixture Lifecycle
+    # 5.b Exception-Safe Rollback Invariant
+    def tx_mutation_throwing_exception(r: FeatherRepository) -> None:
+        r_temp: FeatherRecord = FeatherRecord("t_crash")
+        r_temp.set("val", "should_never_persist")
+        r.insert(r_temp)
+        raise ValueError("simulated unexpected database error during transaction")
+
+    exception_rollback_ok: bool = verify_transaction_rollback(repo, tx_mutation_throwing_exception, False)
+    suite.check_true("exception_safe_transaction_rollback", exception_rollback_ok)
+    suite.check_eq_int("count_restored_after_exception", repo.count(), 2)
+    suite.check_true("crash_record_not_persisted", repo.find_by_id("t_crash") == None)
+
+    # 6. Ephemeral FeatherFixture Lifecycle (Manual Setup/Teardown)
     fixture: FeatherFixture = FeatherFixture(repo)
     fixture.setup()
 
@@ -93,6 +105,29 @@ def run_feather_adapter_tests() -> None:
     fixture.teardown()
     suite.check_eq_int("fixture_count_after_teardown", repo.count(), 2)
     suite.check_true("temp_item_cleaned_up", repo.find_by_id("temp_item") == None)
+
+    # 7. FeatherFixture Context Manager (with statement)
+    with fixture as f:
+        suite.check_true("fixture_is_active_inside_with", f.is_active)
+        rec_ctx: FeatherRecord = FeatherRecord("ctx_item")
+        rec_ctx.set("k", "v")
+        repo.insert(rec_ctx)
+        suite.check_eq_int("count_inside_ctx", repo.count(), 3)
+
+    suite.check_false("fixture_is_inactive_outside_with", fixture.is_active)
+    suite.check_eq_int("count_after_ctx_exit", repo.count(), 2)
+    suite.check_true("ctx_item_cleaned_up", repo.find_by_id("ctx_item") == None)
+
+    # 8. FeatherFixture run_isolated wrapper
+    def isolated_mutation() -> None:
+        rec_iso: FeatherRecord = FeatherRecord("iso_item")
+        rec_iso.set("status", "ephemeral")
+        repo.insert(rec_iso)
+        suite.check_eq_int("count_inside_isolated", repo.count(), 3)
+
+    fixture.run_isolated(isolated_mutation)
+    suite.check_eq_int("count_after_isolated_run", repo.count(), 2)
+    suite.check_true("iso_item_cleaned_up", repo.find_by_id("iso_item") == None)
 
     print("Feather Adapter Invariant Tests: " + str(suite.pass_count()) + "/" + str(suite.total_count()) + " passed.")
     if not suite.all_passed():

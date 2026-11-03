@@ -37,38 +37,54 @@ class CrashDeduplicator:
         self.total_recorded = 0
 
     def normalize_signature(self: CrashDeduplicator, raw_error: str) -> str:
-        # Strip memory addresses like 0x7ffd... or 0x0000...
         cleaned: str = raw_error
-        # Normalize line numbers: e.g. "line 42:" -> "line <N>:"
+
+        # Normalize all occurrences of "line <digits>" across entire stack trace
         if nox.strings.contains(cleaned, "line "):
-            # Split and normalize
             parts: list[str] = nox.strings.split(cleaned, "line ")
             if len(parts) >= 2:
-                # Find space or colon after number
-                rest: str = parts[1]
-                idx_colon: int = 0
-                while idx_colon < len(rest):
-                    ch: str = rest[idx_colon:idx_colon+1]
-                    if ch == ":" or ch == " " or ch == ")":
-                        rest = "<N>" + rest[idx_colon:]
-                        break
-                    idx_colon = idx_colon + 1
-                cleaned = parts[0] + "line " + rest
+                res: str = parts[0]
+                p_i: int = 1
+                while p_i < len(parts):
+                    segment: str = parts[p_i]
+                    idx_term: int = 0
+                    found_term: bool = False
+                    while idx_term < len(segment):
+                        ch: str = segment[idx_term:idx_term+1]
+                        if ch == ":" or ch == " " or ch == ")" or ch == "," or ch == "\n":
+                            segment = "<N>" + segment[idx_term:]
+                            found_term = True
+                            break
+                        idx_term = idx_term + 1
+                    if not found_term:
+                        segment = "<N>"
+                    res = res + "line " + segment
+                    p_i = p_i + 1
+                cleaned = res
 
-        # Normalize hexadecimal pointer addresses (e.g. 0x...)
+        # Normalize all occurrences of "0x<hex>" across entire stack trace
         if nox.strings.contains(cleaned, "0x"):
             parts_hex: list[str] = nox.strings.split(cleaned, "0x")
             if len(parts_hex) >= 2:
-                rest_hex: str = parts_hex[1]
-                idx_h: int = 0
-                while idx_h < len(rest_hex):
-                    ch2: str = rest_hex[idx_h:idx_h+1]
-                    is_hex_char: bool = (ch2 >= "0" and ch2 <= "9") or (ch2 >= "a" and ch2 <= "f") or (ch2 >= "A" and ch2 <= "F")
-                    if not is_hex_char:
-                        rest_hex = "<ADDR>" + rest_hex[idx_h:]
-                        break
-                    idx_h = idx_h + 1
-                cleaned = parts_hex[0] + "0x" + rest_hex
+                res_hex: str = parts_hex[0]
+                h_i: int = 1
+                while h_i < len(parts_hex):
+                    seg_hex: str = parts_hex[h_i]
+                    idx_h: int = 0
+                    found_non_hex: bool = False
+                    while idx_h < len(seg_hex):
+                        ch2: str = seg_hex[idx_h:idx_h+1]
+                        is_hex_char: bool = (ch2 >= "0" and ch2 <= "9") or (ch2 >= "a" and ch2 <= "f") or (ch2 >= "A" and ch2 <= "F")
+                        if not is_hex_char:
+                            seg_hex = "<ADDR>" + seg_hex[idx_h:]
+                            found_non_hex = True
+                            break
+                        idx_h = idx_h + 1
+                    if not found_non_hex:
+                        seg_hex = "<ADDR>"
+                    res_hex = res_hex + "0x" + seg_hex
+                    h_i = h_i + 1
+                cleaned = res_hex
 
         return nox.strings.trim(cleaned)
 

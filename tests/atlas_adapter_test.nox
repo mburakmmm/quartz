@@ -1,7 +1,7 @@
 # Quartz Tests — Atlas Ecosystem Adapter & Tabular Invariant Tests
 from core.suite import TestSuite
 from core.prng import Prng
-from adapters.atlas import AtlasTable, parse_csv, sort_table, verify_sort_idempotence, verify_csv_roundtrip, verify_groupby_conservation, verify_inner_join_conservation, mutate_csv
+from adapters.atlas import AtlasTable, parse_csv, sort_table, verify_sort_idempotence, verify_csv_roundtrip, groupby_count, verify_groupby_contract, verify_groupby_conservation, inner_join_tables, verify_inner_join_contract, verify_inner_join_conservation, mutate_csv
 
 def run_atlas_adapter_tests() -> None:
     suite: TestSuite = TestSuite("atlas_adapter_suite")
@@ -58,7 +58,7 @@ def run_atlas_adapter_tests() -> None:
     suite.check_eq_str("highest_score_top", sorted_by_score.get_cell(0, "name"), "Alice")
     suite.check_eq_str("lowest_score_bottom", sorted_by_score.get_cell(4, "name"), "Zara")
 
-    # 6. GroupBy Row Conservation Invariant
+    # 6. GroupBy Row Conservation & Contract Invariant
     sales_rows: list[list[str]] = [
         ["1", "North", "100"],
         ["2", "South", "200"],
@@ -71,7 +71,15 @@ def run_atlas_adapter_tests() -> None:
     groupby_ok: bool = verify_groupby_conservation(sales_table, "region")
     suite.check_true("groupby_conservation_sales", groupby_ok)
 
-    # 7. Inner Join Conservation Invariant
+    # Verify true groupby contract on reference table
+    ref_grouped: AtlasTable = groupby_count(sales_table, "region")
+    suite.check_true("groupby_contract_valid", verify_groupby_contract(sales_table, "region", ref_grouped))
+
+    # Verify corrupted groupby is caught and rejected by contract
+    bad_grouped: AtlasTable = AtlasTable(["region", "count"], [["North", "999"], ["South", "1"]])
+    suite.check_false("groupby_contract_catches_corruption", verify_groupby_contract(sales_table, "region", bad_grouped))
+
+    # 7. Inner Join Conservation & Contract Invariant
     left_rows: list[list[str]] = [
         ["1", "Electronics"],
         ["2", "Books"],
@@ -90,7 +98,33 @@ def run_atlas_adapter_tests() -> None:
     join_ok: bool = verify_inner_join_conservation(left_table, right_table, "cat_id", "cat_id")
     suite.check_true("inner_join_conservation", join_ok)
 
-    # 8. CSV Mutation Fuzzer
+    # Verify true inner join contract on merged table
+    joined_res: AtlasTable = inner_join_tables(left_table, right_table, "cat_id", "cat_id")
+    suite.check_true("inner_join_contract_valid", verify_inner_join_contract(left_table, right_table, "cat_id", "cat_id", joined_res))
+    suite.check_eq_int("inner_join_row_count_exact", joined_res.row_count(), 5)
+
+    # Verify corrupted join table (wrong row count or mismatched keys) is rejected
+    bad_join: AtlasTable = AtlasTable(joined_res.headers, [["1", "Electronics", "101", "Laptop", "999"]])
+    suite.check_false("inner_join_contract_catches_corruption", verify_inner_join_contract(left_table, right_table, "cat_id", "cat_id", bad_join))
+
+    # 8. CSV Edge-Case Parsing
+    # Unclosed quote at EOF
+    unclosed_csv: str = "id,name\n1,\"Alice in wonderland"
+    unclosed_table: AtlasTable = parse_csv(unclosed_csv)
+    suite.check_eq_int("unclosed_quote_row_count", unclosed_table.row_count(), 1)
+    suite.check_eq_str("unclosed_quote_cell", unclosed_table.get_cell(0, "name"), "Alice in wonderland")
+
+    # Mismatched column row (short row padded to rect)
+    short_row_csv: str = "id,col_a,col_b\n1,val_a\n2,val_x,val_y\n"
+    padded_table: AtlasTable = parse_csv(short_row_csv)
+    suite.check_eq_int("padded_table_row_count", padded_table.row_count(), 2)
+    suite.check_eq_str("padded_table_empty_cell", padded_table.get_cell(0, "col_b"), "")
+
+    # Empty CSV string
+    empty_table: AtlasTable = parse_csv("")
+    suite.check_eq_int("empty_table_rows", empty_table.row_count(), 0)
+
+    # 9. CSV Mutation Fuzzer
     prng: Prng = Prng(12345)
     orig_csv: str = "id,name,val\n1,foo,10\n2,bar,20\n"
     m_i: int = 0

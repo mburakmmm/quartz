@@ -114,6 +114,25 @@ def test_suite_tag_filtering() -> None:
     suite.check_true("case_runs_after_clear", True)
     assert_eq_int(suite.pass_count(), 2, "runs after clearing tags")
 
+def test_lazy_test_execution() -> None:
+    suite: TestSuite = TestSuite("lazy_suite")
+    suite.set_include_tag("fast")
+
+    def slow_fn() -> bool:
+        # Deliberately fail if invoked
+        assert False, "slow_fn should NEVER be invoked when filtered out!"
+        return True
+
+    def fast_fn() -> bool:
+        return True
+
+    suite.run_test("skipped_slow_test", slow_fn, ["slow"])
+    suite.run_test("active_fast_test", fast_fn, ["fast"])
+
+    assert_eq_int(suite.total_count(), 2, "2 total cases in lazy suite")
+    assert_eq_int(suite.pass_count(), 1, "active fast test passed")
+    assert_eq_int(suite.skip_count(), 1, "slow test was lazily skipped without invocation")
+
 class TempFileFixture(Fixture):
     path: str
 
@@ -225,6 +244,7 @@ def run_all_core_tests() -> None:
     test_suite_runner()
     test_suite_filtering()
     test_suite_tag_filtering()
+    test_lazy_test_execution()
     test_fixture_lifecycle()
     test_reports_and_redaction()
     print("quartz core MVP tests: ALL 25+ CHECKS PASSED")

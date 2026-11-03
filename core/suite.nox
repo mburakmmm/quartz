@@ -153,6 +153,60 @@ class TestSuite:
         else:
             self._record(case_name, False, "contains " + needle, haystack, case_name + ": \"" + haystack + "\" does not contain \"" + needle + "\"", 0, tags)
 
+    def run_test(self: TestSuite, case_name: str, test_fn: () -> bool, tags: list[str] | None = None) -> None:
+        c_tags: list[str] = []
+        if tags != None:
+            c_tags = tags
+
+        if not self._should_run(case_name, c_tags):
+            skip_res: TestResult = TestResult(case_name, case_name, STATUS_SKIP, 0, "filtered out", None, c_tags)
+            self.summary.record(skip_res)
+            return
+
+        t0: nox.time.Instant = nox.time.instant_now()
+        passed: bool = False
+        err_msg: str = ""
+        try:
+            passed = test_fn()
+        except Exception as e:
+            passed = False
+            err_msg = str(e)
+        dur: int = t0.elapsed_ms()
+
+        if passed:
+            self._record(case_name, True, "True", "True", "", dur, c_tags)
+        else:
+            msg: str = case_name + ": test returned False"
+            if len(err_msg) > 0:
+                msg = case_name + ": raised exception: " + err_msg
+            self._record(case_name, False, "True", "False", msg, dur, c_tags)
+
+    def run_case(self: TestSuite, case_name: str, test_fn: () -> None, tags: list[str] | None = None) -> None:
+        c_tags: list[str] = []
+        if tags != None:
+            c_tags = tags
+
+        if not self._should_run(case_name, c_tags):
+            skip_res: TestResult = TestResult(case_name, case_name, STATUS_SKIP, 0, "filtered out", None, c_tags)
+            self.summary.record(skip_res)
+            return
+
+        t0: nox.time.Instant = nox.time.instant_now()
+        passed: bool = True
+        err_msg: str = ""
+        try:
+            test_fn()
+        except Exception as e:
+            passed = False
+            err_msg = str(e)
+        dur: int = t0.elapsed_ms()
+
+        if passed:
+            self._record(case_name, True, "PASS", "PASS", "", dur, c_tags)
+        else:
+            msg: str = case_name + ": raised exception: " + err_msg
+            self._record(case_name, False, "PASS", "FAIL", msg, dur, c_tags)
+
     def total_count(self: TestSuite) -> int:
         return self.summary.total
 

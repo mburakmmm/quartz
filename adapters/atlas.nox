@@ -118,7 +118,7 @@ def parse_csv(raw_csv: str, delimiter: str = ",", quote_char: str = "\"") -> Atl
                 current_field = current_field + ch
         i = i + 1
 
-    # End of text
+    # End of text — handle trailing fields or unclosed quote gracefully
     if len(current_field) > 0 or len(current_row) > 0:
         current_row.append(current_field)
         rows.append(current_row)
@@ -127,10 +127,15 @@ def parse_csv(raw_csv: str, delimiter: str = ",", quote_char: str = "\"") -> Atl
         return AtlasTable([], [])
 
     headers: list[str] = rows[0]
+    expected_cols: int = len(headers)
     data_rows: list[list[str]] = []
     r: int = 1
     while r < len(rows):
-        data_rows.append(rows[r])
+        d_row: list[str] = rows[r]
+        # Pad short rows with empty strings to guarantee rectangular integrity
+        while len(d_row) < expected_cols:
+            d_row.append("")
+        data_rows.append(d_row)
         r = r + 1
 
     return AtlasTable(headers, data_rows)
@@ -231,45 +236,125 @@ def verify_csv_roundtrip(table: AtlasTable, delimiter: str = ",", quote_char: st
 
     return True
 
-def verify_groupby_conservation(table: AtlasTable, group_col: str) -> bool:
+def groupby_count(table: AtlasTable, group_col: str, count_col: str = "count") -> AtlasTable:
     idx: int = table.col_index(group_col)
     if idx < 0:
-        return False
+        return AtlasTable([group_col, count_col], [])
 
-    group_counts: list[int] = []
-    group_keys: list[str] = []
+    keys: list[str] = []
+    counts: list[int] = []
 
     r: int = 0
     while r < table.row_count():
-        key: str = table.get_cell(r, group_col)
+        k_val: str = table.get_cell(r, group_col)
         found: bool = False
         k: int = 0
-        while k < len(group_keys):
-            if group_keys[k] == key:
-                group_counts[k] = group_counts[k] + 1
+        while k < len(keys):
+            if keys[k] == k_val:
+                counts[k] = counts[k] + 1
                 found = True
                 break
             k = k + 1
         if not found:
-            group_keys.append(key)
-            group_counts.append(1)
+            keys.append(k_val)
+            counts.append(1)
         r = r + 1
 
-    total_grouped: int = 0
+    out_rows: list[list[str]] = []
+    i: int = 0
+    while i < len(keys):
+        out_rows.append([keys[i], str(counts[i])])
+        i = i + 1
+
+    return AtlasTable([group_col, count_col], out_rows)
+
+def verify_groupby_contract(
+    input_table: AtlasTable,
+    group_col: str,
+    grouped_table: AtlasTable,
+    count_col: str = "count"
+) -> bool:
+    # Ground-truth verification of an externally produced GroupBy table
+    gt_keys: list[str] = []
+    gt_counts: list[int] = []
+
+    r: int = 0
+    while r < input_table.row_count():
+        k_val: str = input_table.get_cell(r, group_col)
+        found: bool = False
+        k: int = 0
+        while k < len(gt_keys):
+            if gt_keys[k] == k_val:
+                gt_counts[k] = gt_counts[k] + 1
+                found = True
+                break
+            k = k + 1
+        if not found:
+            gt_keys.append(k_val)
+            gt_counts.append(1)
+        r = r + 1
+
+    if grouped_table.row_count() != len(gt_keys):
+        return False
+
+    # Check each row in grouped_table matches exact ground truth
+    total_in_grouped: int = 0
     g: int = 0
-    while g < len(group_counts):
-        total_grouped = total_grouped + group_counts[g]
+    while g < grouped_table.row_count():
+        group_key: str = grouped_table.get_cell(g, group_col)
+        count_str: str = grouped_table.get_cell(g, count_col)
+        actual_cnt: int = 0
+        try:
+            actual_cnt = int(count_str)
+        except Exception as e:
+            return False
+
+        # Find in ground truth
+        matched_gt: bool = False
+        m: int = 0
+        while m < len(gt_keys):
+            if gt_keys[m] == group_key:
+                if gt_counts[m] != actual_cnt:
+                    return False
+                matched_gt = True
+                break
+            m = m + 1
+
+        if not matched_gt:
+            return False
+
+        total_in_grouped = total_in_grouped + actual_cnt
         g = g + 1
 
-    return total_grouped == table.row_count()
+    return total_in_grouped == input_table.row_count()
 
-def verify_inner_join_conservation(left: AtlasTable, right: AtlasTable, left_key: str, right_key: str) -> bool:
+def verify_groupby_conservation(table: AtlasTable, group_col: str) -> bool:
+    ref_grouped: AtlasTable = groupby_count(table, group_col)
+    return verify_groupby_contract(table, group_col, ref_grouped)
+
+def inner_join_tables(left: AtlasTable, right: AtlasTable, left_key: str, right_key: str) -> AtlasTable:
     l_idx: int = left.col_index(left_key)
     r_idx: int = right.col_index(right_key)
     if l_idx < 0 or r_idx < 0:
-        return False
+        return AtlasTable([], [])
 
-    matches: int = 0
+    # Compose output headers
+    out_headers: list[str] = []
+    h1: int = 0
+    while h1 < len(left.headers):
+        out_headers.append(left.headers[h1])
+        h1 = h1 + 1
+
+    h2: int = 0
+    while h2 < len(right.headers):
+        r_head: str = right.headers[h2]
+        if left.col_index(r_head) >= 0:
+            out_headers.append("right_" + r_head)
+        else:
+            out_headers.append(r_head)
+        h2 = h2 + 1
+
+    out_rows: list[list[str]] = []
     i: int = 0
     while i < left.row_count():
         l_val: str = left.get_cell(i, left_key)
@@ -277,12 +362,70 @@ def verify_inner_join_conservation(left: AtlasTable, right: AtlasTable, left_key
         while j < right.row_count():
             r_val: str = right.get_cell(j, right_key)
             if l_val == r_val:
-                matches = matches + 1
+                # Merge row
+                merged: list[str] = []
+                c1: int = 0
+                while c1 < left.col_count():
+                    merged.append(left.get_cell(i, left.headers[c1]))
+                    c1 = c1 + 1
+                c2: int = 0
+                while c2 < right.col_count():
+                    merged.append(right.get_cell(j, right.headers[c2]))
+                    c2 = c2 + 1
+                out_rows.append(merged)
             j = j + 1
         i = i + 1
 
-    max_possible: int = left.row_count() * right.row_count()
-    return matches >= 0 and matches <= max_possible
+    return AtlasTable(out_headers, out_rows)
+
+def verify_inner_join_contract(
+    left: AtlasTable,
+    right: AtlasTable,
+    left_key: str,
+    right_key: str,
+    joined_table: AtlasTable
+) -> bool:
+    # Ground truth verification of inner join results
+    l_idx: int = left.col_index(left_key)
+    r_idx: int = right.col_index(right_key)
+    if l_idx < 0 or r_idx < 0:
+        return False
+
+    # 1. Compute exact expected count: sum(count_left(k) * count_right(k))
+    expected_matches: int = 0
+    i: int = 0
+    while i < left.row_count():
+        l_val: str = left.get_cell(i, left_key)
+        j: int = 0
+        while j < right.row_count():
+            if l_val == right.get_cell(j, right_key):
+                expected_matches = expected_matches + 1
+            j = j + 1
+        i = i + 1
+
+    if joined_table.row_count() != expected_matches:
+        return False
+
+    # 2. Check key equality across all joined rows
+    r_key_in_joined: str = right_key
+    if left.col_index(right_key) >= 0 and left_key != right_key:
+        r_key_in_joined = "right_" + right_key
+
+    row_i: int = 0
+    while row_i < joined_table.row_count():
+        val_l: str = joined_table.get_cell(row_i, left_key)
+        val_r: str = joined_table.get_cell(row_i, r_key_in_joined)
+        if len(val_r) == 0:
+            val_r = joined_table.get_cell(row_i, "right_" + right_key)
+        if len(val_r) > 0 and val_l != val_r:
+            return False
+        row_i = row_i + 1
+
+    return True
+
+def verify_inner_join_conservation(left: AtlasTable, right: AtlasTable, left_key: str, right_key: str) -> bool:
+    joined: AtlasTable = inner_join_tables(left, right, left_key, right_key)
+    return verify_inner_join_contract(left, right, left_key, right_key, joined)
 
 def mutate_csv(raw_csv: str, prng: Prng) -> str:
     # Deterministic structure-aware CSV mutations for parser fuzzing

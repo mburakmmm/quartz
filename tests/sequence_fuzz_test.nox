@@ -135,6 +135,22 @@ def test_sequence_transition_rules() -> None:
             elif curr_a == "disconnect":
                 assert_eq_str(next_a, "connect", "disconnect must be followed by connect")
             k = k + 1
+
+        # Verify mutated sequence also maintains transition rules via validate_and_repair_transitions
+        mut: ActionSequence = fuzzer.mutate_sequence(seq)
+        m_k: int = 0
+        while m_k + 1 < mut.len():
+            c_a: str = mut.get(m_k).name
+            n_a: str = mut.get(m_k + 1).name
+            if c_a == "connect":
+                assert_eq_str(n_a, "auth", "mutated connect must be followed by auth")
+            elif c_a == "auth":
+                assert_true(n_a == "query" or n_a == "disconnect", "mutated auth must be followed by query or disconnect")
+            elif c_a == "query":
+                assert_true(n_a == "query" or n_a == "disconnect", "mutated query must be followed by query or disconnect")
+            elif c_a == "disconnect":
+                assert_eq_str(n_a, "connect", "mutated disconnect must be followed by connect")
+            m_k = m_k + 1
         t = t + 1
 
 def test_sequence_payload_shrinking() -> None:

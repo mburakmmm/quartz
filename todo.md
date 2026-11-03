@@ -779,6 +779,39 @@
 
 ---
 
+## Phase 14.2: v0.9.12 — Bugfix & Ecosystem Hardening Release
+*Objective: Address all architectural and correctness audit findings from GPT-6 Sol's evaluation of v0.9.11: replace tautological Atlas join/groupby invariants with ground-truth contract verifiers, handle CSV edge cases gracefully, guarantee Feather transaction rollback on exceptions, add context manager support to FeatherFixture, implement lazy test execution in TestSuite to prevent executing skipped tests, wire CLI --tag and --exclude-tag options in main.nox, integrate CrashDeduplicator into run_fuzz(), and normalize all line/hex occurrences across multi-line stack traces.*
+
+- [x] **14.2.1 Atlas Join & GroupBy Ground-Truth Contract Verification (`adapters/atlas.nox`)**
+  - [x] Replace self-proving `matches >= 0 and matches <= max_possible` in `verify_inner_join_conservation` with true contract verification: check exact expected row count $\sum (count_L(k) \times count_R(k))$, key consistency across all joined rows, and completeness.
+  - [x] Implement `verify_groupby_contract`: assert that output groups match unique keys and aggregate metrics match independently computed ground truth.
+  - [x] Harden `parse_csv` for edge-case inputs: unclosed quotes at EOF, missing trailing newlines, stray delimiters, and empty rows.
+- [x] **14.2.2 Feather Exception-Safe Rollback & Context Manager (`adapters/feather.nox`)**
+  - [x] Enforce exception-safe rollback in `verify_transaction_rollback`: wrap `mutation_fn(repo)` in `try / except Exception as e / finally` and verify that snapshot is restored even when `mutation_fn` raises an exception.
+  - [x] Add `__enter__` and `__exit__` context manager methods to `FeatherFixture`, plus `run_isolated(fn: () -> None)` with `try / finally` cleanup guarantee.
+- [x] **14.2.3 Core Suite Lazy Test Execution & CLI Flags (`core/suite.nox` & `cli/main.nox`)**
+  - [x] Implement lazy test runner `run_test(case_name, test_fn, tags)` in `TestSuite`: if filtered out by pattern or tags, `test_fn` is strictly NOT called.
+  - [x] Wire `--tag <tag>` and `--exclude-tag <tag>` into `cli/main.nox` `cmd_test()` and print active tag filtering parameters.
+- [x] **14.2.4 Fuzzer Clustering Integration & Global Stack Normalization (`fuzz/cluster.nox` & `fuzz/fuzzer.nox`)**
+  - [x] Integrate `CrashDeduplicator` into `run_fuzz()` in `fuzz/fuzzer.nox` and expose clusters in `FuzzSummary`.
+  - [x] Enhance `normalize_signature()` in `fuzz/cluster.nox` to loop and replace all occurrences of `line <digits>` and `0x<hex>` across multi-line stack traces.
+- [x] **14.2.5 Sequence Fuzzer Post-Mutation Rule Validation (`fuzz/sequence.nox`)**
+  - [x] Enforce transition rule re-validation post-mutation in `SequenceFuzzer.mutate_sequence`, repairing or rejecting transitions that violate state machine rules.
+- [x] **14.2.6 Test Matrix Expansion & Verification**
+  - [x] `tests/atlas_adapter_test.nox`: verify strict join/groupby contracts and CSV edge-case handling.
+  - [x] `tests/feather_adapter_test.nox`: verify exception-triggered transaction rollback and `FeatherFixture` context manager.
+  - [x] `tests/core_test.nox`: verify lazy test execution skipping expensive callbacks.
+  - [x] `tests/fuzz_test.nox`: verify multi-line stack normalization and automated `run_fuzz` clustering.
+  - [x] Run full project test matrix: verify 26/26 test suites passing cleanly (100% pass rate).
+- [x] **14.2.7 Release Packaging (v0.9.12)**
+  - [x] Update facade `quartz.nox` to version `0.9.12`.
+  - [x] Update `CHANGELOG.md` with complete v0.9.12 release notes.
+  - [x] Tag `v0.9.12`, push to GitHub, and publish to NOX package registry.
+
+*Phase 14.2 Exit Gate:* PASSED. All Sol v0.9.11 findings resolved; Atlas ground-truth join/groupby contracts verified; exception-safe rollback verified; lazy test execution verified; fuzzer clustering integrated; 26/26 test suites passing cleanly; published as v0.9.12.
+
+---
+
 ## Execution Log & Audit Trail
 
 | Date | Phase | Task | Action / Command | Result / Evidence | Status |
@@ -859,3 +892,5 @@
 | 2026-11-03 | Phase 14 | Ecosystem Adapters | `adapters/atlas.nox`, `adapters/feather.nox` | Atlas tabular/CSV invariants, Feather ORM CRUD & transaction rollback | [x] DONE |
 | 2026-11-03 | Phase 14 | Tag Filtering & Crash Clustering | `core/suite.nox`, `fuzz/cluster.nox` | Include/exclude tags, error normalization, minimal reproducer clustering | [x] DONE |
 | 2026-11-03 | Phase 14 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 26/26 tests pass, recipes 17 & 18 pass, tagged `v0.9.11`, published | [x] DONE |
+| 2026-11-03 | Phase 14.2 | Bugfixes & Hardening | `adapters/`, `core/`, `fuzz/`, `cli/` | Atlas/Feather contracts, exception rollback, lazy tag suite, fuzzer clustering | [x] DONE |
+| 2026-11-03 | Phase 14.2 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 26/26 tests pass, tagged `v0.9.12`, published | [x] DONE |

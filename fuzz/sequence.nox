@@ -195,7 +195,40 @@ class SequenceFuzzer:
                 target_act.payload_int = target_act.payload_int + delta
                 target_act.payload_str = "item_" + str(target_act.payload_int)
 
-        return mutated
+        return self.validate_and_repair_transitions(mutated)
+
+    def is_valid_transition(self: SequenceFuzzer, from_action: str, to_action: str) -> bool:
+        if len(self.rules) == 0:
+            return True
+        allowed: list[str] = self.get_allowed_next(from_action)
+        i: int = 0
+        while i < len(allowed):
+            if allowed[i] == to_action:
+                return True
+            i = i + 1
+        return False
+
+    def validate_and_repair_transitions(self: SequenceFuzzer, seq: ActionSequence) -> ActionSequence:
+        if len(self.rules) == 0 or seq.len() <= 1:
+            return seq
+
+        repaired: ActionSequence = ActionSequence([])
+        repaired.append(seq.get(0))
+        prev_name: str = seq.get(0).name
+
+        step: int = 1
+        while step < seq.len():
+            act: FuzzAction = seq.get(step)
+            if self.is_valid_transition(prev_name, act.name):
+                repaired.append(act)
+                prev_name = act.name
+            else:
+                replacement: FuzzAction = self.generate_action_for_prev(prev_name)
+                repaired.append(replacement)
+                prev_name = replacement.name
+            step = step + 1
+
+        return repaired
 
 class SequenceFuzzResult:
     found_failure: bool

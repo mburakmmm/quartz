@@ -165,6 +165,16 @@ def test_crash_clustering() -> None:
     sig2: str = dedup.normalize_signature("NullPointer at 0x7ffd12ab: memory faulted")
     assert_contains_str(sig2, "0x<ADDR>:", "memory address normalized")
 
+    # Multi-occurrence normalization across stack frames
+    multi_stack: str = "Error in foo (line 12): at 0xdeadbeef\nCalled by bar (line 88): at 0xcafe1234"
+    sig_multi: str = dedup.normalize_signature(multi_stack)
+    assert_false(nox.strings.contains(sig_multi, "12"), "first line number replaced")
+    assert_false(nox.strings.contains(sig_multi, "88"), "second line number replaced")
+    assert_false(nox.strings.contains(sig_multi, "deadbeef"), "first hex address replaced")
+    assert_false(nox.strings.contains(sig_multi, "cafe1234"), "second hex address replaced")
+    assert_contains_str(sig_multi, "line <N>", "multi-line line marker")
+    assert_contains_str(sig_multi, "0x<ADDR>", "multi-line addr marker")
+
     # 2. Crash recording and clustering
     # First crash with division by zero
     c1: CrashCluster = dedup.record_crash("Crash at 0x1111: division by zero", "123456789", 101, 1)
@@ -191,6 +201,14 @@ def test_crash_clustering() -> None:
     assert_contains_str(summary_json, "\"unique_clusters\": 2", "summary json unique clusters")
     assert_contains_str(summary_json, "\"total_crashes\": 4", "summary json total crashes")
     assert_contains_str(summary_json, "\"minimal_input\": \"12\"", "summary json minimal input")
+
+    # 3. Automated clustering inside run_fuzz()
+    cfg_auto: CorpusConfig = default_corpus_config()
+    cm_auto: CorpusManager = CorpusManager("auto_cluster_test", "fixtures/corpus", cfg_auto)
+    auto_summary: FuzzSummary = run_fuzz("auto_cluster_test", target_unexpected_error_with_word, ["trigger"], 20, 999, cm_auto, 64)
+    assert_true(auto_summary.crashes_found > 0, "run_fuzz found simulated crashes")
+    assert_true(auto_summary.cluster_count() >= 1, "run_fuzz cluster_count automatically available")
+    assert_true(auto_summary.deduplicator.total_crashes() > 0, "deduplicator embedded in FuzzSummary")
 
 def cleanup_dir(path: str) -> None:
     if nox.fs.exists(path):

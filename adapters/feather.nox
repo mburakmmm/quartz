@@ -231,11 +231,15 @@ def verify_transaction_rollback(
     mutation_fn: (FeatherRepository) -> None,
     should_abort: bool
 ) -> bool:
-    # Takes snapshot, executes mutations, and if aborted, restores and verifies pre-tx integrity
+    # Takes snapshot, executes mutations with exception-safety, and restores pre-tx integrity upon abort or error
     pre_snap: list[FeatherRecord] = repo.create_snapshot()
-    mutation_fn(repo)
+    threw_exception: bool = False
+    try:
+        mutation_fn(repo)
+    except Exception as e:
+        threw_exception = True
 
-    if should_abort:
+    if should_abort or threw_exception:
         repo.restore_snapshot(pre_snap)
         # Verify complete restoration
         if repo.count() != len(pre_snap):
@@ -256,13 +260,31 @@ def verify_transaction_rollback(
 class FeatherFixture:
     repo: FeatherRepository
     snapshot: list[FeatherRecord]
+    is_active: bool
 
     def __init__(self: FeatherFixture, repo: FeatherRepository) -> None:
         self.repo = repo
         self.snapshot = []
+        self.is_active = False
 
     def setup(self: FeatherFixture) -> None:
         self.snapshot = self.repo.create_snapshot()
+        self.is_active = True
 
     def teardown(self: FeatherFixture) -> None:
         self.repo.restore_snapshot(self.snapshot)
+        self.is_active = False
+
+    def __enter__(self: FeatherFixture) -> FeatherFixture:
+        self.setup()
+        return self
+
+    def __exit__(self: FeatherFixture) -> None:
+        self.teardown()
+
+    def run_isolated(self: FeatherFixture, fn: () -> None) -> None:
+        self.setup()
+        try:
+            fn()
+        finally:
+            self.teardown()

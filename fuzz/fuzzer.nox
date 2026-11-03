@@ -4,6 +4,7 @@ from fuzz.harness import run_in_process, FuzzOutcome
 from fuzz.mutation import mutate
 from fuzz.corpus import CorpusManager
 from fuzz.minimize import minimize_crash, MinimizationResult
+from fuzz.cluster import CrashDeduplicator, CrashCluster
 
 class FuzzSummary:
     target_name: str
@@ -11,17 +12,23 @@ class FuzzSummary:
     crashes_found: int
     unique_crashes: int
     duration_ms: int
+    deduplicator: CrashDeduplicator
 
-    def __init__(self: FuzzSummary, target: str, cases: int, crashes: int, unique: int, duration_ms: int) -> None:
+    def __init__(self: FuzzSummary, target: str, cases: int, crashes: int, unique: int, duration_ms: int, deduplicator: CrashDeduplicator) -> None:
         self.target_name = target
         self.total_cases = cases
         self.crashes_found = crashes
         self.unique_crashes = unique
         self.duration_ms = duration_ms
+        self.deduplicator = deduplicator
+
+    def cluster_count(self: FuzzSummary) -> int:
+        return self.deduplicator.unique_cluster_count()
 
 def run_fuzz(target_name: str, target_func: (str) -> None, initial_seeds: list[str], iterations: int, seed: int, corpus: CorpusManager, max_len: int, timeout_ms: int = 0, fail_on_bug: bool = False) -> FuzzSummary:
     t0_ms: int = nox.time.now_ms()
     prng: Prng = Prng(seed)
+    deduplicator: CrashDeduplicator = CrashDeduplicator()
 
     # Initialize corpus with initial seeds
     i: int = 0
@@ -52,6 +59,7 @@ def run_fuzz(target_name: str, target_func: (str) -> None, initial_seeds: list[s
 
         if outcome.is_failure():
             crashes_total = crashes_total + 1
+            deduplicator.record_crash(outcome.message, candidate, seed, case_idx)
             if corpus.is_new_signature(outcome.signature):
                 unique_crashes = unique_crashes + 1
                 # Minimize candidate
@@ -72,4 +80,4 @@ def run_fuzz(target_name: str, target_func: (str) -> None, initial_seeds: list[s
     if fail_on_bug and unique_crashes > 0:
         raise AssertionError("fuzzer target '" + target_name + "' discovered " + str(unique_crashes) + " crash signature(s)")
 
-    return FuzzSummary(target_name, case_idx, crashes_total, unique_crashes, elapsed)
+    return FuzzSummary(target_name, case_idx, crashes_total, unique_crashes, elapsed, deduplicator)

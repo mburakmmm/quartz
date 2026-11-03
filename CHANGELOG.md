@@ -3,6 +3,32 @@
 All notable changes to the Quartz test framework will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.12] - 2026-11-03 - Bugfix Release: Ecosystem Contract Hardening, Exception-Safe Rollback, Lazy Tag Execution & Fuzzer Clustering Integration
+
+### Fixed & Hardened
+- **Atlas Join & GroupBy Ground-Truth Contract Verification (`adapters/atlas.nox`)**:
+  - **Ground-Truth Inner Join Verification (`verify_inner_join_contract`)**: Replaced self-proving bounds with true mathematical contract verification. Asserts that joined table row count matches exact theoretical count $\sum (count_L(k) \times count_R(k))$, all joined rows have identical join keys, and all columns are mapped without data loss. Added reference `inner_join_tables()`.
+  - **Ground-Truth GroupBy Verification (`verify_groupby_contract`)**: Asserts that externally produced or engine-grouped tables contain distinct group keys and that aggregation counts match independently computed ground-truth frequencies. Added reference `groupby_count()`.
+  - **CSV Edge-Case Hardening (`parse_csv`)**: Handled unclosed quotes at EOF gracefully without infinite loops or unhandled exceptions, padded short rows to guarantee rectangular table integrity, and returned empty tables safely on zero-length CSV input.
+- **Feather Exception-Safe Rollback & Context Manager (`adapters/feather.nox`)**:
+  - **Exception-Triggered Rollback Guarantee (`verify_transaction_rollback`)**: Wrapped transaction execution in `try / except Exception as e / finally`. Rollback and snapshot restoration are now strictly guaranteed when mutations throw unhandled errors or abort.
+  - **FeatherFixture Context Manager & Isolated Execution**: Added `__enter__` and `__exit__` context manager methods, plus `run_isolated()` with `try / finally` cleanup guarantee under deliberate failure.
+- **Core Suite Lazy Test Execution & CLI Flags (`core/suite.nox` & `cli/main.nox`)**:
+  - **Lazy Test Runner (`run_test` & `run_case`)**: Added deferred callback test runners in `TestSuite`. If a test is skipped via name patterns or `--tag`/`--exclude-tag` filters, the test function is strictly NOT invoked, preventing slow calculations and unexpected side effects.
+  - **CLI Tag Flags**: Wired `--tag <tag>` and `--exclude-tag <tag>` into `cli/main.nox` `cmd_test()`, outputting active filter diagnostic banners.
+- **Fuzzer Clustering Integration & Multi-Line Stack Normalization (`fuzz/cluster.nox` & `fuzz/fuzzer.nox`)**:
+  - **Automated Fuzzer Clustering**: Integrated `CrashDeduplicator` directly into `run_fuzz()`. Every discovered crash is automatically recorded, clustered, and accessible via `FuzzSummary.deduplicator` and `.cluster_count()`.
+  - **Global Stack Trace Normalization**: Enhanced `normalize_signature()` in `fuzz/cluster.nox` to loop and replace all occurrences of `line <digits>` and `0x<hex>` across multi-frame stack traces.
+- **Sequence Fuzzer Post-Mutation Rule Validation (`fuzz/sequence.nox`)**:
+  - Added `validate_and_repair_transitions()` in `SequenceFuzzer.mutate_sequence()`, ensuring that sequences after insert, delete, or swap mutations continue to conform strictly to declared `TransitionRule` preconditions.
+- **Test Matrix Expansion**:
+  - Expanded `tests/atlas_adapter_test.nox` with join/groupby contract corruption tests and CSV edge cases (24/24 checks passed).
+  - Expanded `tests/feather_adapter_test.nox` with exception-triggered rollback, context manager, and isolated runner tests (30/30 checks passed).
+  - Expanded `tests/core_test.nox` with lazy test execution skipping tests (ALL 25+ CHECKS PASSED).
+  - Expanded `tests/fuzz_test.nox` with multi-frame stack normalization and `run_fuzz` auto-clustering (ALL PASS).
+  - Expanded `tests/sequence_fuzz_test.nox` with mutated sequence transition rule verification (ALL PASS).
+  - All 26 test suites passing cleanly (100% pass rate).
+
 ## [0.9.11] - 2026-11-03 - Phase 14: Ecosystem Adapters (Atlas & Feather), Tag-Based Suite Filtering & Crash Signature Deduplication
 
 ### Added
