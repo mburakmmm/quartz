@@ -1,0 +1,117 @@
+# Quartz Tests — Stateful Sequence Fuzzing Suite
+# Validates action sequence modeling, mutations, state machine fuzzing, and counterexample shrinking.
+
+from core.assert import assert_eq_int, assert_eq_str, assert_true, assert_false, assert_contains_str
+from fuzz.sequence import FuzzAction, ActionSequence, SequenceFuzzer, SequenceFuzzResult, run_sequence_fuzz, shrink_failing_sequence
+
+def test_action_and_sequence_basics() -> None:
+    act1: FuzzAction = FuzzAction("push", "alpha", 10)
+    act2: FuzzAction = FuzzAction("pop", "", 0)
+    act3: FuzzAction = FuzzAction("peek", "beta", 20)
+
+    seq: ActionSequence = ActionSequence([act1, act2, act3])
+    assert_eq_int(seq.len(), 3, "initial length 3")
+    assert_eq_str(seq.get(0).name, "push", "first action is push")
+
+    # Clone
+    seq_cloned: ActionSequence = seq.clone()
+    assert_eq_int(seq_cloned.len(), 3, "cloned length 3")
+
+    # Swap
+    seq_cloned.swap(0, 2)
+    assert_eq_str(seq_cloned.get(0).name, "peek", "swapped peek to index 0")
+    assert_eq_str(seq_cloned.get(2).name, "push", "swapped push to index 2")
+
+    # Remove at
+    seq_shrunk: ActionSequence = seq.remove_at(1)
+    assert_eq_int(seq_shrunk.len(), 2, "length after remove is 2")
+    assert_eq_str(seq_shrunk.get(0).name, "push", "index 0 is push")
+    assert_eq_str(seq_shrunk.get(1).name, "peek", "index 1 is peek")
+
+    # String & JSON representations
+    txt: str = seq.to_str()
+    assert_contains_str(txt, "push", "contains push")
+    assert_contains_str(txt, "pop", "contains pop")
+    assert_contains_str(txt, "->", "contains transition arrow")
+
+    j: str = seq.to_json()
+    assert_contains_str(j, "\"name\":\"push\"", "JSON contains push")
+    assert_contains_str(j, "\"payload_int\":10", "JSON contains payload")
+
+def test_sequence_generator_and_mutation() -> None:
+    actions: list[str] = ["deposit", "withdraw", "transfer", "check_balance"]
+    fuzzer: SequenceFuzzer = SequenceFuzzer(42, actions, 2, 8)
+
+    # Generate
+    seq: ActionSequence = fuzzer.generate_random_sequence()
+    assert_true(seq.len() >= 2 and seq.len() <= 8, "sequence length bounded within [2, 8]")
+
+    # Mutate
+    mutated: ActionSequence = fuzzer.mutate_sequence(seq)
+    assert_true(mutated.len() >= 1, "mutated sequence has at least 1 action")
+
+# Model state machine: Wallet with balance starting at 50.
+# Invariant: balance must never be negative!
+def evaluate_wallet_invariant(seq: ActionSequence) -> bool:
+    balance: int = 50
+    i: int = 0
+    while i < seq.len():
+        act: FuzzAction = seq.get(i)
+        if act.name == "deposit":
+            balance = balance + act.payload_int
+        elif act.name == "withdraw":
+            # Deliberate bug in target: no overdraft protection!
+            balance = balance - act.payload_int
+            if balance < 0:
+                return False # Invariant broken!
+        i = i + 1
+    return True
+
+def test_sequence_fuzzing_and_shrinking() -> None:
+    actions: list[str] = ["deposit", "withdraw"]
+    # Seed chosen to reliably generate withdraw actions
+    fuzzer: SequenceFuzzer = SequenceFuzzer(1337, actions, 3, 10)
+
+    res: SequenceFuzzResult = run_sequence_fuzz(fuzzer, evaluate_wallet_invariant, 50, True)
+    assert_true(res.found_failure, "sequence fuzzer found overdraft invariant failure")
+
+    failing: ActionSequence | None = res.failing_sequence
+    assert_true(failing is not None, "failing sequence recorded")
+
+    shrunk: ActionSequence | None = res.shrunk_sequence
+    assert_true(shrunk is not None, "shrunk sequence recorded")
+
+    # Invariant failure must still be reproduced by shrunk sequence
+    if shrunk is not None:
+        reproduced: bool = evaluate_wallet_invariant(shrunk)
+        assert_false(reproduced, "shrunk sequence still triggers invariant violation")
+        if failing is not None:
+            assert_true(shrunk.len() <= failing.len(), "shrunk sequence is less than or equal to original length")
+
+# Safe state machine with proper bounds: invariant is NEVER broken
+def evaluate_safe_wallet(seq: ActionSequence) -> bool:
+    balance: int = 50
+    i: int = 0
+    while i < seq.len():
+        act: FuzzAction = seq.get(i)
+        if act.name == "deposit":
+            balance = balance + act.payload_int
+        elif act.name == "withdraw":
+            if balance >= act.payload_int:
+                balance = balance - act.payload_int
+            # otherwise reject cleanly without underflow
+        i = i + 1
+    return balance >= 0
+
+def test_safe_state_machine_clean_fuzz() -> None:
+    actions: list[str] = ["deposit", "withdraw"]
+    fuzzer: SequenceFuzzer = SequenceFuzzer(999, actions, 2, 8)
+
+    res: SequenceFuzzResult = run_sequence_fuzz(fuzzer, evaluate_safe_wallet, 30, False)
+    assert_false(res.found_failure, "safe state machine survives all sequence mutations without error")
+
+test_action_and_sequence_basics()
+test_sequence_generator_and_mutation()
+test_sequence_fuzzing_and_shrinking()
+test_safe_state_machine_clean_fuzz()
+print("quartz sequence fuzz test: ALL PASS")

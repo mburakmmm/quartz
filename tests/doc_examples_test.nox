@@ -36,6 +36,8 @@ from adapters.nyx import create_nyx_adapter, NyxAdapter
 from adapters.aether import create_aether_adapter, AetherAdapter
 from contract.mock import MockExchange, MockPlaybackHandler, create_mock_handler
 from core.regression import RunComparison, compare_runs
+from core.snapshot import assert_snapshot, compare_snapshot, SnapshotComparison
+from fuzz.sequence import FuzzAction, ActionSequence, SequenceFuzzer, SequenceFuzzResult, run_sequence_fuzz
 
 def test_recipe_1_unit_and_fixtures() -> None:
     # Basic assertions
@@ -283,6 +285,30 @@ def test_recipe_14_regression_comparator() -> None:
     assert_false(comp.has_regressions, "recipe 14 no regressions")
     assert_eq_int(comp.total_duration_delta_ms, 2, "recipe 14 duration delta")
 
+def test_recipe_15_snapshot_testing() -> None:
+    test_dir: str = "fixtures/snapshots_test_dir"
+    content: str = "service: auth\nversion: 1.0\nstatus: ready\n"
+    comp: SnapshotComparison = compare_snapshot("auth_service_cfg", content, test_dir, False)
+    assert_true(comp.is_match, "recipe 15 snapshot matches")
+
+def test_recipe_16_sequence_fuzzing() -> None:
+    actions: list[str] = ["inc", "dec"]
+    fuzzer: SequenceFuzzer = SequenceFuzzer(1234, actions, 2, 5)
+
+    def counter_invariant(seq: ActionSequence) -> bool:
+        c: int = 0
+        i: int = 0
+        while i < seq.len():
+            if seq.get(i).name == "inc":
+                c = c + 1
+            else:
+                c = c - 1
+            i = i + 1
+        return c < 1000 # Invariant always holds for short sequences
+
+    res: SequenceFuzzResult = run_sequence_fuzz(fuzzer, counter_invariant, 20, False)
+    assert_false(res.found_failure, "recipe 16 counter invariant holds")
+
 def run_all_doc_examples_tests() -> None:
     test_recipe_1_unit_and_fixtures()
     test_recipe_2_property_and_shrinking()
@@ -298,6 +324,8 @@ def run_all_doc_examples_tests() -> None:
     test_recipe_12_generator_combinators()
     test_recipe_13_mock_playback()
     test_recipe_14_regression_comparator()
+    test_recipe_15_snapshot_testing()
+    test_recipe_16_sequence_fuzzing()
     print("quartz doc examples test: ALL PASS")
 
 run_all_doc_examples_tests()

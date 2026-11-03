@@ -6,6 +6,7 @@ import core.fixture
 import core.report
 import core.report_html
 import core.regression
+import core.snapshot
 import core.prng
 import property.generator
 import property.shrink
@@ -18,6 +19,7 @@ import fuzz.mutation
 import fuzz.corpus
 import fuzz.minimize
 import fuzz.fuzzer
+import fuzz.sequence
 import contract.types
 import contract.schema
 import contract.http
@@ -39,7 +41,7 @@ import adapters.nyx
 import adapters.aether
 
 def version() -> str:
-    return "0.9.8"
+    return "0.9.9"
 
 def framework_info() -> str:
     return "Quartz Test Framework v" + version() + " for NOX Ecosystem"

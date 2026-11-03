@@ -3,6 +3,30 @@
 All notable changes to the Quartz test framework will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.9] - 2026-11-03 - Phase 13: Golden Reference Snapshot Testing & Stateful Sequence Fuzzing
+
+### Added
+- **Golden Reference Snapshot Testing Engine (`core/snapshot.nox`)**:
+  - Implemented `SnapshotComparison` data model capturing match status, snapshot path, expected/actual payloads, and line diffs.
+  - Implemented `normalize_snapshot_content` performing cross-platform line ending normalization (`\r\n` -> `\n`), trailing whitespace trimming, and automatic credential/secret redaction via `redact_secrets()`.
+  - Implemented `compute_line_diff` providing human-readable line-by-line diff diagnostics highlighting exact line numbers, expected values, actual values, and contextual lines.
+  - Implemented `compare_snapshot` and `assert_snapshot` with atomic reference fixture creation and update workflow (`update_snapshots=True`) using `nox.fs.write_string_atomic()`.
+- **Stateful Sequence & State Machine Fuzzing Engine (`fuzz/sequence.nox`)**:
+  - Implemented `FuzzAction` data model capturing action names with string and integer parameters.
+  - Implemented `ActionSequence` modeling ordered state transitions with clone, append, delete, swap, string formatting (`->`), and JSON serialization.
+  - Implemented `SequenceFuzzer` using Quartz deterministic PRNG for generating random valid sequences from action schemas and applying multi-strategy mutations (insert random action, delete action, swap adjacent actions, mutate action payload values).
+  - Implemented `run_sequence_fuzz` evaluating user-defined state machine invariants across bounded iterations.
+  - Implemented `shrink_failing_sequence` with delta-debugging minimizer reducing failing action sequences to minimal reproducer chains.
+- **Dedicated Test Suites (`tests/snapshot_test.nox`, `tests/sequence_fuzz_test.nox`)**:
+  - Total test suites expanded to **24/24 passing cleanly** (100% pass rate).
+  - Verified snapshot creation, matching, line diff reporting, secret masking, and update flags.
+  - Verified action modeling, state machine fuzzing, overdraft invariant discovery, and sequence shrinking.
+  - Verified Recipes 15 & 16 in `tests/doc_examples_test.nox` (all 16 recipes passing).
+- **Documentation & Recipes (`docs/recipes.md`, `docs/api.md`, `docs/architecture.md`)**:
+  - Added Recipe 15 (Golden Reference Snapshot Testing) and Recipe 16 (Stateful Sequence & State Machine Fuzzing) in `docs/recipes.md`.
+  - Added Section 33 and Section 34 in `docs/api.md`.
+  - Added ADR-017 in `docs/architecture.md`.
+
 ## [0.9.8] - 2026-11-03 - Bugfix Release: Regression Comparator Hardening, Mock Secret Redaction & CI Release Gate
 
 ### Fixed & Hardened

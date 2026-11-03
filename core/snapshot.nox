@@ -1,0 +1,120 @@
+# Quartz Core — Snapshot Testing Engine
+# Provides golden reference snapshot matching, line-by-line diff diagnostics,
+# automatic line ending and whitespace normalization, and secret redaction.
+
+import nox.fs
+import nox.strings
+from core.report import redact_secrets
+
+def trim_trailing_spaces(line: str) -> str:
+    n: int = len(line)
+    if n == 0:
+        return ""
+    end: int = n
+    while end > 0:
+        ch: str = line[end - 1:end]
+        if ch == " " or ch == "\t":
+            end = end - 1
+        else:
+            break
+    if end == n:
+        return line
+    return line[0:end]
+
+def normalize_snapshot_content(raw: str) -> str:
+    # 1. Normalize line endings: \r\n and \r -> \n
+    s1: str = nox.strings.replace(raw, "\r\n", "\n")
+    s2: str = nox.strings.replace(s1, "\r", "\n")
+
+    # 2. Redact sensitive patterns (tokens, secrets)
+    redacted: str = redact_secrets(s2)
+
+    # 3. Trim trailing whitespace per line
+    lines: list[str] = nox.strings.split(redacted, "\n")
+    res: list[str] = []
+    i: int = 0
+    while i < len(lines):
+        res.append(trim_trailing_spaces(lines[i]))
+        i = i + 1
+
+    return nox.strings.join(res, "\n")
+
+def compute_line_diff(expected: str, actual: str) -> str:
+    exp_lines: list[str] = nox.strings.split(expected, "\n")
+    act_lines: list[str] = nox.strings.split(actual, "\n")
+
+    min_len: int = len(exp_lines)
+    if len(act_lines) < min_len:
+        min_len = len(act_lines)
+
+    diff_out: str = ""
+    first_diff_idx: int = -1
+
+    k: int = 0
+    while k < min_len:
+        if exp_lines[k] != act_lines[k]:
+            first_diff_idx = k
+            break
+        k = k + 1
+
+    if first_diff_idx != -1:
+        line_num: int = first_diff_idx + 1
+        diff_out = diff_out + "Line " + str(line_num) + " differs:\n"
+        diff_out = diff_out + "  - expected: \"" + exp_lines[first_diff_idx] + "\"\n"
+        diff_out = diff_out + "  + actual:   \"" + act_lines[first_diff_idx] + "\"\n"
+        # Context lines if available
+        if first_diff_idx + 1 < min_len:
+            diff_out = diff_out + "Context (next line):\n"
+            diff_out = diff_out + "  expected:   \"" + exp_lines[first_diff_idx + 1] + "\"\n"
+            diff_out = diff_out + "  actual:     \"" + act_lines[first_diff_idx + 1] + "\"\n"
+    elif len(exp_lines) != len(act_lines):
+        diff_out = diff_out + "Line count mismatch:\n"
+        diff_out = diff_out + "  - expected: " + str(len(exp_lines)) + " lines\n"
+        diff_out = diff_out + "  + actual:   " + str(len(act_lines)) + " lines\n"
+
+    return diff_out
+
+class SnapshotComparison:
+    is_match: bool
+    snapshot_path: str
+    expected: str
+    actual: str
+    diff_message: str
+    was_created_or_updated: bool
+
+    def __init__(self: SnapshotComparison, is_match: bool, snapshot_path: str, expected: str, actual: str, diff_message: str, was_created_or_updated: bool) -> None:
+        self.is_match = is_match
+        self.snapshot_path = snapshot_path
+        self.expected = expected
+        self.actual = actual
+        self.diff_message = diff_message
+        self.was_created_or_updated = was_created_or_updated
+
+def ensure_snapshot_dir(dir_path: str) -> None:
+    if not nox.fs.exists(dir_path):
+        nox.fs.create_dir(dir_path)
+
+def compare_snapshot(snapshot_name: str, actual_content: str, snapshot_dir: str = "__snapshots__", update_snapshots: bool = False) -> SnapshotComparison:
+    ensure_snapshot_dir(snapshot_dir)
+    clean_name: str = nox.strings.replace(snapshot_name, " ", "_")
+    snapshot_path: str = snapshot_dir + "/" + clean_name + ".snap"
+
+    norm_actual: str = normalize_snapshot_content(actual_content)
+
+    if not nox.fs.exists(snapshot_path) or update_snapshots:
+        nox.fs.write_string_atomic(snapshot_path, norm_actual)
+        return SnapshotComparison(True, snapshot_path, norm_actual, norm_actual, "", True)
+
+    raw_expected: str = nox.fs.read_to_string(snapshot_path)
+    norm_expected: str = normalize_snapshot_content(raw_expected)
+
+    if norm_expected == norm_actual:
+        return SnapshotComparison(True, snapshot_path, norm_expected, norm_actual, "", False)
+
+    diff: str = compute_line_diff(norm_expected, norm_actual)
+    return SnapshotComparison(False, snapshot_path, norm_expected, norm_actual, diff, False)
+
+def assert_snapshot(snapshot_name: str, actual_content: str, snapshot_dir: str = "__snapshots__", update_snapshots: bool = False) -> None:
+    comp: SnapshotComparison = compare_snapshot(snapshot_name, actual_content, snapshot_dir, update_snapshots)
+    if not comp.is_match:
+        raise AssertionError("Snapshot mismatch for '" + snapshot_name + "' (" + comp.snapshot_path + "):\n" + comp.diff_message)

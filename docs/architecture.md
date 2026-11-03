@@ -144,4 +144,13 @@ Quartz is designed as a standalone, zero-dependency testing framework for the NO
   1. Implement `contract/mock.nox` providing `MockExchange`, `MockPlaybackHandler`, and `MockRecorder`. Requests are matched deterministically in-memory by HTTP method and target path (with optional header and body matching), falling back to a strict 404 response when unmatched. Exchanges roundtrip cleanly to disk as standard JSON fixtures.
   2. Implement `core/regression.nox` providing `RunComparison` and `compare_runs()`. Automatically computes newly failing tests (`new_failures`), resolved tests (`fixed_tests`), persistent failures, and total execution duration delta percentages, serializing to machine-readable JSON and console alerts.
 
+### ADR-017: Deterministic Snapshot Persistence & Stateful Sequence Fuzzing
+- **Context:**
+  1. Regression testing of complex structured strings (JSON, XML, formatted reports, AST outputs) becomes brittle when hardcoded inline in test files. Changes across lines require tedious manual assertion updates.
+  2. Protocol parsers, caches, and state machines fail not on isolated mutated inputs, but on specific sequences of actions (e.g., `push -> pop -> pop` underflow or `auth -> logout -> view` state leaks).
+- **Decision:**
+  1. Implement `core/snapshot.nox` with golden snapshot reference files (`__snapshots__/<name>.snap`). Normalize line endings (`\r\n` -> `\n`), strip trailing whitespace, and automatically redact secrets (`redact_secrets`). Provide line-by-line diff diagnostics upon mismatch and an `update_snapshots=True` flag for approved snapshot updates with atomic disk writes (`write_string_atomic`).
+  2. Implement `fuzz/sequence.nox` with `FuzzAction`, `ActionSequence`, and `SequenceFuzzer` using Quartz explicit PRNG. State transition sequences are generated and mutated (insert, delete, swap, payload delta) against user-defined state invariants. Failing sequences are automatically shrunk via delta-debugging to isolate minimal reproducer action chains.
+
+
 

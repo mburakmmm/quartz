@@ -455,3 +455,58 @@ assert not comparison.has_regressions
 print(comparison.to_summary_text())
 ```
 
+---
+
+## 15. Golden Reference Snapshot Testing
+
+Capture, version-control, and verify formatted text, reports, ASTs, and JSON responses against golden snapshot references with line-by-line diff diagnostics and automated secret redaction.
+
+```nox
+from core.snapshot import assert_snapshot, compare_snapshot, SnapshotComparison
+
+# 1. Output from compiler, formatter, or API
+report_output: str = "service: auth\nversion: 1.0\nstatus: ready\n"
+
+# 2. Compare against saved snapshot file in __snapshots__/ (or create if missing)
+comp: SnapshotComparison = compare_snapshot("auth_service_cfg", report_output, "__snapshots__", False)
+assert comp.is_match
+
+# 3. Direct assertion (raises AssertionError with line diff on mismatch)
+assert_snapshot("auth_service_cfg", report_output, "__snapshots__", False)
+```
+
+---
+
+## 16. Stateful Sequence & State Machine Fuzzing
+
+Fuzz stateful components (protocols, caches, buffers, queues) by synthesizing and mutating ordered action sequences, asserting state invariants at each step, and shrinking failing action sequences down to minimal reproducers.
+
+```nox
+from fuzz.sequence import FuzzAction, ActionSequence, SequenceFuzzer, SequenceFuzzResult, run_sequence_fuzz
+
+# 1. Configure state machine action schema
+actions: list[str] = ["push", "pop", "peek"]
+fuzzer: SequenceFuzzer = SequenceFuzzer(1234, actions, 2, 8)
+
+# 2. Define state invariant checker
+def queue_invariant(seq: ActionSequence) -> bool:
+    queue_size: int = 0
+    i: int = 0
+    while i < seq.len():
+        act: FuzzAction = seq.get(i)
+        if act.name == "push":
+            queue_size = queue_size + 1
+        elif act.name == "pop":
+            if queue_size > 0:
+                queue_size = queue_size - 1
+            else:
+                return False # Underflow invariant violation!
+        i = i + 1
+    return True
+
+# 3. Run sequence fuzzing with automated counterexample shrinking
+result: SequenceFuzzResult = run_sequence_fuzz(fuzzer, queue_invariant, 50, True)
+if result.found_failure:
+    print("Minimal failing action sequence: " + result.shrunk_sequence.to_str())
+```
+

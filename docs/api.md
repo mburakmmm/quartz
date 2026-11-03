@@ -544,6 +544,44 @@ Published as the `quartz` binary via `nox.json` and runnable via `noxc run cli/m
 - `compare_current_with_baseline_json(baseline_json_str: str, current: RunSummary) -> RunComparison`: Compares current execution against a baseline JSON report.
 - `compare_current_with_baseline_file(baseline_path: str, current: RunSummary) -> RunComparison`: Reads baseline file from disk and evaluates regressions.
 
+---
+
+## 33. Golden Reference Snapshot Testing (`core/snapshot.nox`)
+
+- `SnapshotComparison`: Result descriptor from snapshot comparison.
+  - `is_match: bool`, `snapshot_path: str`, `expected: str`, `actual: str`, `diff_message: str`, `was_created_or_updated: bool`
+- `normalize_snapshot_content(raw: str) -> str`: Normalizes line endings (`\r\n` -> `\n`), trims trailing whitespace per line, and masks sensitive secrets via `redact_secrets()`.
+- `compute_line_diff(expected: str, actual: str) -> str`: Generates human-readable line-by-line diff pinpointing line number and expected vs actual content.
+- `compare_snapshot(snapshot_name: str, actual_content: str, snapshot_dir: str = "__snapshots__", update_snapshots: bool = False) -> SnapshotComparison`: Evaluates snapshot without raising; writes reference file if absent or `update_snapshots=True`.
+- `assert_snapshot(snapshot_name: str, actual_content: str, snapshot_dir: str = "__snapshots__", update_snapshots: bool = False) -> None`: Asserts snapshot match, raising `AssertionError` with line diff if mismatched.
+
+---
+
+## 34. Stateful Sequence & State Machine Fuzzing (`fuzz/sequence.nox`)
+
+- `FuzzAction(name: str, payload_str: str = "", payload_int: int = 0)`: Single state transition action model with payload parameters.
+  - `.clone() -> FuzzAction`
+  - `.to_str() -> str`
+  - `.to_json() -> str`
+- `ActionSequence(actions: list[FuzzAction] | None = None)`: Ordered sequence of transitions executed against a stateful system.
+  - `.len() -> int`
+  - `.append(act: FuzzAction) -> None`
+  - `.get(idx: int) -> FuzzAction`
+  - `.clone() -> ActionSequence`
+  - `.remove_at(idx: int) -> ActionSequence`
+  - `.swap(i: int, j: int) -> None`
+  - `.to_str() -> str`
+  - `.to_json() -> str`
+- `SequenceFuzzer(seed: int, action_names: list[str], min_length: int = 1, max_length: int = 10)`: Explicit-PRNG generator and mutator for state transition sequences.
+  - `.generate_random_action() -> FuzzAction`
+  - `.generate_random_sequence() -> ActionSequence`
+  - `.mutate_sequence(seq: ActionSequence) -> ActionSequence`: Mutates via insert, delete, swap, or payload shift.
+- `SequenceFuzzResult`: Fuzz outcome containing failure status and minimal sequence counterexample.
+  - `found_failure: bool`, `iterations_run: int`, `failing_sequence: ActionSequence | None`, `shrunk_sequence: ActionSequence | None`
+  - `.to_json() -> str`
+- `shrink_failing_sequence(seq: ActionSequence, target_runner: (ActionSequence) -> bool, max_steps: int = 50) -> ActionSequence`: Delta-debugging minimizer for action sequences.
+- `run_sequence_fuzz(fuzzer: SequenceFuzzer, target_runner: (ActionSequence) -> bool, iterations: int = 100, shrink: bool = True) -> SequenceFuzzResult`: Executes bounded stateful fuzzing campaign.
+
 
 
 

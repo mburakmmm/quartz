@@ -1,0 +1,76 @@
+# Quartz Tests — Snapshot Testing Suite
+# Validates golden reference snapshot creation, matching, line diff reporting,
+# secret redaction, and update flag behavior.
+
+import nox.fs
+from core.assert import assert_eq_int, assert_eq_str, assert_true, assert_false, assert_contains_str
+from core.snapshot import normalize_snapshot_content, compute_line_diff, compare_snapshot, assert_snapshot, SnapshotComparison
+
+def test_snapshot_normalization() -> None:
+    raw: str = "line 1   \r\nline 2 with Bearer secret-tok-12345  \r\nline 3"
+    norm: str = normalize_snapshot_content(raw)
+    assert_contains_str(norm, "Bearer [REDACTED]", "secret redacted")
+    assert_false(nox.strings.contains(norm, "secret-tok-12345"), "raw secret removed")
+    assert_false(nox.strings.contains(norm, "\r"), "CR stripped")
+    assert_eq_str(norm, "line 1\nline 2 with Bearer [REDACTED]\nline 3", "exact normalized output")
+
+def test_compute_line_diff() -> None:
+    exp: str = "item: apple\nprice: 10\nstatus: active"
+    act: str = "item: apple\nprice: 15\nstatus: active"
+    diff: str = compute_line_diff(exp, act)
+    assert_contains_str(diff, "Line 2 differs", "diff identifies line 2")
+    assert_contains_str(diff, "price: 10", "expected value shown")
+    assert_contains_str(diff, "price: 15", "actual value shown")
+
+def test_snapshot_lifecycle_and_matching() -> None:
+    test_dir: str = "fixtures/snapshots_test_dir"
+    snap_name: str = "sample_config"
+    target_file: str = test_dir + "/" + snap_name + ".snap"
+
+    # Clean up any leftover from previous runs
+    if nox.fs.exists(target_file):
+        nox.fs.remove_file(target_file)
+
+    # 1. Initial snapshot generation
+    content_v1: str = "server: 127.0.0.1\nport: 8080\nworkers: 4\n"
+    comp1: SnapshotComparison = compare_snapshot(snap_name, content_v1, test_dir, False)
+    assert_true(comp1.is_match, "new snapshot matches immediately")
+    assert_true(comp1.was_created_or_updated, "was created on first run")
+    assert_true(nox.fs.exists(target_file), "snapshot file written to disk")
+
+    # 2. Subsequent match with identical content
+    comp2: SnapshotComparison = compare_snapshot(snap_name, content_v1, test_dir, False)
+    assert_true(comp2.is_match, "matching snapshot passes")
+    assert_false(comp2.was_created_or_updated, "not rewritten when matching")
+
+    # 3. Mismatch detection
+    content_v2: str = "server: 127.0.0.1\nport: 9090\nworkers: 4\n"
+    comp3: SnapshotComparison = compare_snapshot(snap_name, content_v2, test_dir, False)
+    assert_false(comp3.is_match, "mismatched content detected")
+    assert_contains_str(comp3.diff_message, "Line 2 differs", "line 2 diff reported")
+
+    # 4. assert_snapshot raises on mismatch
+    raised: bool = False
+    try:
+        assert_snapshot(snap_name, content_v2, test_dir, False)
+    except AssertionError as e:
+        raised = True
+    assert_true(raised, "assert_snapshot raised AssertionError on mismatch")
+
+    # 5. Update flag overwrites snapshot
+    comp_update: SnapshotComparison = compare_snapshot(snap_name, content_v2, test_dir, True)
+    assert_true(comp_update.is_match, "update marks match True")
+    assert_true(comp_update.was_created_or_updated, "marked updated")
+
+    # Now content_v2 matches
+    comp4: SnapshotComparison = compare_snapshot(snap_name, content_v2, test_dir, False)
+    assert_true(comp4.is_match, "updated snapshot now matches v2")
+
+    # Clean up
+    if nox.fs.exists(target_file):
+        nox.fs.remove_file(target_file)
+
+test_snapshot_normalization()
+test_compute_line_diff()
+test_snapshot_lifecycle_and_matching()
+print("quartz snapshot test: ALL PASS")

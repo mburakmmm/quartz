@@ -665,6 +665,38 @@
 
 ---
 
+## Phase 13: v0.9.9 — Snapshot Testing Engine & Stateful Sequence Fuzzing
+*Objective: Implement golden reference snapshot testing (`core/snapshot.nox`) with line-by-line diffs, secret redaction, and update flags; and implement stateful sequence/state machine fuzzing (`fuzz/sequence.nox`) with action sequence mutations, invariant verification, and counterexample sequence shrinking.*
+
+- [x] **13.1 Golden Snapshot Testing Engine (`core/snapshot.nox`)**
+  - [x] Implement `normalize_snapshot_content(raw: str) -> str`: line ending normalization (`\r\n` -> `\n`), trailing whitespace trimming, secret redaction.
+  - [x] Implement `compute_line_diff(expected: str, actual: str) -> str`: contextual line-by-line diff identifying exact line mismatch with line numbers.
+  - [x] Implement `assert_snapshot(snapshot_name: str, actual_content: str, snapshot_dir: str = "__snapshots__", update_snapshots: bool = False) -> None`.
+  - [x] Atomic persistence: write snapshots using `nox.fs.write_string_atomic()` on creation or update.
+- [x] **13.2 Stateful Sequence Fuzzing Engine (`fuzz/sequence.nox`)**
+  - [x] Implement `FuzzAction(name: str, payload_str: str, payload_int: int)` data model.
+  - [x] Implement `ActionSequence(actions: list[FuzzAction])` with clone, append, delete, swap, and payload mutation capabilities.
+  - [x] Implement `SequenceFuzzer` using explicit Quartz PRNG: sequence generation from action schemas and multi-operation mutations.
+  - [x] Implement `run_sequence_fuzz(fuzzer, target_runner, iterations: int)` detecting broken state invariants.
+  - [x] Implement sequence shrinking (`shrink_failing_sequence`) with delta debugging to minimize action sequences to the minimal reproducer.
+- [x] **13.3 Dedicated Test Suites (`tests/snapshot_test.nox`, `tests/sequence_fuzz_test.nox`)**
+  - [x] Write `tests/snapshot_test.nox` verifying snapshot creation, match, mismatch diffs, secret masking, and update flags.
+  - [x] Write `tests/sequence_fuzz_test.nox` testing stateful protocol/buffer sequence fuzzing and minimal sequence shrinking.
+  - [x] Update `tests/doc_examples_test.nox` with Recipe 15 (Snapshot Testing) and Recipe 16 (Sequence Fuzzing).
+  - [x] Run full project test matrix: verify 24/24 test suites passing cleanly (100% pass rate).
+- [x] **13.4 Documentation Updates (`docs/recipes.md`, `docs/api.md`, `docs/architecture.md`)**
+  - [x] Add Recipe 15 (Golden Reference Snapshot Testing) and Recipe 16 (Stateful Sequence Fuzzing) to `docs/recipes.md`.
+  - [x] Add Sections 33 & 34 to `docs/api.md`.
+  - [x] Add ADR-017 to `docs/architecture.md`.
+- [x] **13.5 Release Packaging (v0.9.9)**
+  - [x] Update facade `quartz.nox` to version `0.9.9`.
+  - [x] Update `CHANGELOG.md` with complete Phase 13 release notes.
+  - [x] Tag `v0.9.9`, push to GitHub, and publish to NOX package registry.
+
+*Phase 13 Exit Gate:* PASSED. 24/24 test suites pass cleanly; snapshot diffs and state machine sequence fuzzer verified; published as v0.9.9.
+
+---
+
 ## Execution Log & Audit Trail
 
 | Date | Phase | Task | Action / Command | Result / Evidence | Status |
@@ -738,3 +770,5 @@
 | 2026-11-03 | Phase 12 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 22/22 tests pass, recipes 13 & 14 pass, tagged `v0.9.7`, ready for publish | [x] DONE |
 | 2026-11-03 | Phase 12.2 | Bugfixes & Hardening | `core/regression.nox`, `contract/mock.nox` | New failure tracking, skip handling, secret redaction, body disambiguation | [x] DONE |
 | 2026-11-03 | Phase 12.2 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 22/22 tests pass, CI release gate added, tagged `v0.9.8`, published | [x] DONE |
+| 2026-11-03 | Phase 13 | Snapshot & Sequence Fuzz | `core/snapshot.nox`, `fuzz/sequence.nox` | Golden snapshots, line diffs, state machine action sequence fuzzing | [x] DONE |
+| 2026-11-03 | Phase 13 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 24/24 tests pass, recipes 15 & 16 pass, tagged `v0.9.9`, published | [x] DONE |

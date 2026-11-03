@@ -1,0 +1,250 @@
+# Quartz Fuzz — Stateful Sequence Fuzzing Engine
+# Generates and mutates ordered action sequences to fuzz state machines,
+# protocols, and data structures, and shrinks failing sequences to minimal reproducers.
+
+import nox.strings
+from core.prng import Prng
+from core.report import escape_json
+
+class FuzzAction:
+    name: str
+    payload_str: str
+    payload_int: int
+
+    def __init__(self: FuzzAction, name: str, payload_str: str = "", payload_int: int = 0) -> None:
+        self.name = name
+        self.payload_str = payload_str
+        self.payload_int = payload_int
+
+    def clone(self: FuzzAction) -> FuzzAction:
+        return FuzzAction(self.name, self.payload_str, self.payload_int)
+
+    def to_str(self: FuzzAction) -> str:
+        s: str = self.name + "("
+        has_str: bool = len(self.payload_str) > 0
+        if has_str:
+            s = s + "\"" + self.payload_str + "\""
+            if self.payload_int != 0:
+                s = s + ", " + str(self.payload_int)
+        elif self.payload_int != 0:
+            s = s + str(self.payload_int)
+        s = s + ")"
+        return s
+
+    def to_json(self: FuzzAction) -> str:
+        return "{\"name\":\"" + escape_json(self.name) + "\",\"payload_str\":\"" + escape_json(self.payload_str) + "\",\"payload_int\":" + str(self.payload_int) + "}"
+
+class ActionSequence:
+    actions: list[FuzzAction]
+
+    def __init__(self: ActionSequence, actions: list[FuzzAction] | None = None) -> None:
+        if actions is None:
+            self.actions = []
+        else:
+            self.actions = actions
+
+    def len(self: ActionSequence) -> int:
+        return len(self.actions)
+
+    def append(self: ActionSequence, act: FuzzAction) -> None:
+        self.actions.append(act)
+
+    def get(self: ActionSequence, idx: int) -> FuzzAction:
+        return self.actions[idx]
+
+    def clone(self: ActionSequence) -> ActionSequence:
+        res: list[FuzzAction] = []
+        i: int = 0
+        while i < len(self.actions):
+            res.append(self.actions[i].clone())
+            i = i + 1
+        return ActionSequence(res)
+
+    def remove_at(self: ActionSequence, idx: int) -> ActionSequence:
+        res: list[FuzzAction] = []
+        i: int = 0
+        while i < len(self.actions):
+            if i != idx:
+                res.append(self.actions[i].clone())
+            i = i + 1
+        return ActionSequence(res)
+
+    def swap(self: ActionSequence, i: int, j: int) -> None:
+        if i >= 0 and i < len(self.actions) and j >= 0 and j < len(self.actions):
+            tmp: FuzzAction = self.actions[i]
+            self.actions[i] = self.actions[j]
+            self.actions[j] = tmp
+
+    def to_str(self: ActionSequence) -> str:
+        if len(self.actions) == 0:
+            return "[]"
+        parts: list[str] = []
+        i: int = 0
+        while i < len(self.actions):
+            parts.append(self.actions[i].to_str())
+            i = i + 1
+        return nox.strings.join(parts, " -> ")
+
+    def to_json(self: ActionSequence) -> str:
+        s: str = "["
+        i: int = 0
+        while i < len(self.actions):
+            s = s + self.actions[i].to_json()
+            if i + 1 < len(self.actions):
+                s = s + ","
+            i = i + 1
+        s = s + "]"
+        return s
+
+class SequenceFuzzer:
+    prng: Prng
+    action_names: list[str]
+    min_length: int
+    max_length: int
+
+    def __init__(self: SequenceFuzzer, seed: int, action_names: list[str], min_length: int = 1, max_length: int = 10) -> None:
+        self.prng = Prng(seed)
+        self.action_names = action_names
+        self.min_length = min_length
+        self.max_length = max_length
+
+    def generate_random_action(self: SequenceFuzzer) -> FuzzAction:
+        if len(self.action_names) == 0:
+            return FuzzAction("noop")
+        idx: int = self.prng.choose_index(len(self.action_names))
+        name: str = self.action_names[idx]
+        val_int: int = self.prng.next_int_range(0, 100)
+        val_str: str = "item_" + str(val_int)
+        return FuzzAction(name, val_str, val_int)
+
+    def generate_random_sequence(self: SequenceFuzzer) -> ActionSequence:
+        count: int = self.prng.next_int_range(self.min_length, self.max_length)
+        res: ActionSequence = ActionSequence([])
+        i: int = 0
+        while i < count:
+            res.append(self.generate_random_action())
+            i = i + 1
+        return res
+
+    def mutate_sequence(self: SequenceFuzzer, seq: ActionSequence) -> ActionSequence:
+        mutated: ActionSequence = seq.clone()
+        mode: int = self.prng.next_int_range(0, 3)
+
+        if mode == 0 and mutated.len() < self.max_length:
+            # 1. Insert action
+            pos: int = self.prng.next_int_range(0, mutated.len())
+            new_act: FuzzAction = self.generate_random_action()
+            new_list: list[FuzzAction] = []
+            k: int = 0
+            while k < mutated.len():
+                if k == pos:
+                    new_list.append(new_act)
+                new_list.append(mutated.get(k))
+                k = k + 1
+            if pos == mutated.len():
+                new_list.append(new_act)
+            mutated = ActionSequence(new_list)
+        elif mode == 1 and mutated.len() > self.min_length:
+            # 2. Delete action
+            del_pos: int = self.prng.choose_index(mutated.len())
+            mutated = mutated.remove_at(del_pos)
+        elif mode == 2 and mutated.len() > 1:
+            # 3. Swap two actions
+            i1: int = self.prng.choose_index(mutated.len())
+            i2: int = self.prng.choose_index(mutated.len())
+            mutated.swap(i1, i2)
+        else:
+            # 4. Mutate payload of an existing action
+            if mutated.len() > 0:
+                p_idx: int = self.prng.choose_index(mutated.len())
+                target_act: FuzzAction = mutated.get(p_idx)
+                delta: int = self.prng.next_int_range(-5, 5)
+                target_act.payload_int = target_act.payload_int + delta
+                target_act.payload_str = "item_" + str(target_act.payload_int)
+
+        return mutated
+
+class SequenceFuzzResult:
+    found_failure: bool
+    iterations_run: int
+    failing_sequence: ActionSequence | None
+    shrunk_sequence: ActionSequence | None
+
+    def __init__(self: SequenceFuzzResult, found_failure: bool, iterations_run: int, failing_sequence: ActionSequence | None, shrunk_sequence: ActionSequence | None) -> None:
+        self.found_failure = found_failure
+        self.iterations_run = iterations_run
+        self.failing_sequence = failing_sequence
+        self.shrunk_sequence = shrunk_sequence
+
+    def to_json(self: SequenceFuzzResult) -> str:
+        s: str = "{"
+        s = s + "\"found_failure\":" + ("true" if self.found_failure else "false") + ","
+        s = s + "\"iterations_run\":" + str(self.iterations_run) + ","
+        f_seq: ActionSequence | None = self.failing_sequence
+        if f_seq is not None:
+            s = s + "\"failing_sequence\":" + f_seq.to_json() + ","
+        else:
+            s = s + "\"failing_sequence\":null,"
+        s_seq: ActionSequence | None = self.shrunk_sequence
+        if s_seq is not None:
+            s = s + "\"shrunk_sequence\":" + s_seq.to_json()
+        else:
+            s = s + "\"shrunk_sequence\":null"
+        s = s + "}"
+        return s
+
+def shrink_failing_sequence(seq: ActionSequence, target_runner: (ActionSequence) -> bool, max_steps: int = 50) -> ActionSequence:
+    curr: ActionSequence = seq.clone()
+    step: int = 0
+
+    improved: bool = True
+    while improved and step < max_steps:
+        improved = False
+        if curr.len() <= 1:
+            break
+
+        # Try removing each action from right to left
+        i: int = curr.len() - 1
+        while i >= 0 and step < max_steps:
+            candidate: ActionSequence = curr.remove_at(i)
+            step = step + 1
+
+            passed: bool = True
+            try:
+                passed = target_runner(candidate)
+            except Exception as e:
+                passed = False
+
+            if not passed:
+                # Still fails! Accept candidate as smaller reproducer
+                curr = candidate
+                improved = True
+                break
+            i = i - 1
+
+    return curr
+
+def run_sequence_fuzz(fuzzer: SequenceFuzzer, target_runner: (ActionSequence) -> bool, iterations: int = 100, shrink: bool = True) -> SequenceFuzzResult:
+    current_seq: ActionSequence = fuzzer.generate_random_sequence()
+    it: int = 0
+
+    while it < iterations:
+        it = it + 1
+        if it % 2 == 0:
+            current_seq = fuzzer.generate_random_sequence()
+        else:
+            current_seq = fuzzer.mutate_sequence(current_seq)
+
+        passed: bool = True
+        try:
+            passed = target_runner(current_seq)
+        except Exception as e:
+            passed = False
+
+        if not passed:
+            shrunk: ActionSequence = current_seq
+            if shrink:
+                shrunk = shrink_failing_sequence(current_seq, target_runner)
+            return SequenceFuzzResult(True, it, current_seq, shrunk)
+
+    return SequenceFuzzResult(False, it, None, None)
