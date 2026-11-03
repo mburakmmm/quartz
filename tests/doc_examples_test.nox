@@ -6,7 +6,7 @@ import nox.router
 import nox.fs
 from nox.http import HttpRequest, HttpResponse
 from nox.router import Router, Context
-from core.assert import assert_eq_int, assert_eq_str, assert_true, assert_eq_float
+from core.assert import assert_eq_int, assert_eq_str, assert_true, assert_false, assert_eq_float, assert_contains_str
 from core.fixture import Fixture, SCOPE_CASE
 from core.report import JsonlStreamReporter
 from property.generator import IntGen
@@ -34,6 +34,8 @@ from load.safety import default_safety_limits, SafetyLimits
 from load.executor import run_handler_load_test, LoadTestSummary
 from adapters.nyx import create_nyx_adapter, NyxAdapter
 from adapters.aether import create_aether_adapter, AetherAdapter
+from contract.mock import MockExchange, MockPlaybackHandler, create_mock_handler
+from core.regression import RunComparison, compare_runs
 
 def test_recipe_1_unit_and_fixtures() -> None:
     # Basic assertions
@@ -261,6 +263,26 @@ def test_recipe_12_generator_combinators() -> None:
     even_val: int = even_gen.generate(prng)
     assert_true(even_val % 2 == 0, "recipe 12 filtered even generator")
 
+def test_recipe_13_mock_playback() -> None:
+    exchanges: list[MockExchange] = [
+        MockExchange("GET", "/api/v1/ping", {}, "", 200, {"Content-Type": "application/json"}, "{\"pong\": true}")
+    ]
+    handler: MockPlaybackHandler = create_mock_handler(exchanges)
+    res: HttpResponse = handler.handle(HttpRequest("GET", "/api/v1/ping", "", {}))
+    assert_eq_int(res.status, 200, "recipe 13 mock playback status")
+    assert_contains_str(res.body, "pong", "recipe 13 mock playback body")
+
+def test_recipe_14_regression_comparator() -> None:
+    baseline: RunSummary = RunSummary()
+    baseline.record(TestResult("t1", "t1", STATUS_PASS, 10, "", None))
+
+    current: RunSummary = RunSummary()
+    current.record(TestResult("t1", "t1", STATUS_PASS, 12, "", None))
+
+    comp: RunComparison = compare_runs(baseline, current)
+    assert_false(comp.has_regressions, "recipe 14 no regressions")
+    assert_eq_int(comp.total_duration_delta_ms, 2, "recipe 14 duration delta")
+
 def run_all_doc_examples_tests() -> None:
     test_recipe_1_unit_and_fixtures()
     test_recipe_2_property_and_shrinking()
@@ -274,6 +296,8 @@ def run_all_doc_examples_tests() -> None:
     test_recipe_10_html_reports()
     test_recipe_11_staged_workloads()
     test_recipe_12_generator_combinators()
+    test_recipe_13_mock_playback()
+    test_recipe_14_regression_comparator()
     print("quartz doc examples test: ALL PASS")
 
 run_all_doc_examples_tests()

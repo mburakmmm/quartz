@@ -1,0 +1,259 @@
+# Quartz Core — Run-to-Run Regression Comparator
+# Compares baseline test runs against current test execution, identifying newly introduced
+# failures (regressions), resolved failures (fixes), flakiness, and execution duration drift.
+
+import nox.json
+import nox.fs
+import nox.strings
+from nox.json import JsonValue
+from core.types import RunSummary, TestResult, STATUS_PASS, STATUS_FAIL, STATUS_ERROR, STATUS_TIMEOUT, STATUS_SKIP
+from core.report import escape_json
+from contract.schema import json_has_key, json_get_key
+
+class TestRegressionItem:
+    test_id: str
+    baseline_status: str
+    current_status: str
+    baseline_duration_ms: int
+    current_duration_ms: int
+    duration_delta_ms: int
+    failure_message: str
+
+    def __init__(self: TestRegressionItem, test_id: str, baseline_status: str, current_status: str, baseline_duration_ms: int, current_duration_ms: int, failure_message: str) -> None:
+        self.test_id = test_id
+        self.baseline_status = baseline_status
+        self.current_status = current_status
+        self.baseline_duration_ms = baseline_duration_ms
+        self.current_duration_ms = current_duration_ms
+        self.duration_delta_ms = current_duration_ms - baseline_duration_ms
+        self.failure_message = failure_message
+
+    def to_json(self: TestRegressionItem) -> str:
+        s: str = "{"
+        s = s + "\"test_id\": \"" + escape_json(self.test_id) + "\", "
+        s = s + "\"baseline_status\": \"" + self.baseline_status + "\", "
+        s = s + "\"current_status\": \"" + self.current_status + "\", "
+        s = s + "\"baseline_duration_ms\": " + str(self.baseline_duration_ms) + ", "
+        s = s + "\"current_duration_ms\": " + str(self.current_duration_ms) + ", "
+        s = s + "\"duration_delta_ms\": " + str(self.duration_delta_ms) + ", "
+        s = s + "\"failure_message\": \"" + escape_json(self.failure_message) + "\""
+        s = s + "}"
+        return s
+
+class RunComparison:
+    baseline_total: int
+    current_total: int
+    new_failures: list[TestRegressionItem]
+    fixed_tests: list[TestRegressionItem]
+    persistent_failures: list[TestRegressionItem]
+    new_tests: list[TestResult]
+    removed_tests: list[str]
+    total_duration_delta_ms: int
+    duration_pct_change: float
+    has_regressions: bool
+
+    def __init__(self: RunComparison, baseline_total: int, current_total: int, new_failures: list[TestRegressionItem], fixed_tests: list[TestRegressionItem], persistent_failures: list[TestRegressionItem], new_tests: list[TestResult], removed_tests: list[str], total_duration_delta_ms: int, duration_pct_change: float) -> None:
+        self.baseline_total = baseline_total
+        self.current_total = current_total
+        self.new_failures = new_failures
+        self.fixed_tests = fixed_tests
+        self.persistent_failures = persistent_failures
+        self.new_tests = new_tests
+        self.removed_tests = removed_tests
+        self.total_duration_delta_ms = total_duration_delta_ms
+        self.duration_pct_change = duration_pct_change
+        self.has_regressions = (len(new_failures) > 0)
+
+    def to_json(self: RunComparison) -> str:
+        s: str = "{\n"
+        s = s + "  \"schema_version\": \"1\",\n"
+        s = s + "  \"engine\": \"quartz\",\n"
+        s = s + "  \"kind\": \"run_comparison\",\n"
+        s = s + "  \"baseline_total\": " + str(self.baseline_total) + ",\n"
+        s = s + "  \"current_total\": " + str(self.current_total) + ",\n"
+        s = s + "  \"has_regressions\": " + ("true" if self.has_regressions else "false") + ",\n"
+        s = s + "  \"new_failures_count\": " + str(len(self.new_failures)) + ",\n"
+        s = s + "  \"fixed_count\": " + str(len(self.fixed_tests)) + ",\n"
+        s = s + "  \"persistent_failures_count\": " + str(len(self.persistent_failures)) + ",\n"
+        s = s + "  \"total_duration_delta_ms\": " + str(self.total_duration_delta_ms) + ",\n"
+        s = s + "  \"duration_pct_change\": " + str(self.duration_pct_change) + ",\n"
+
+        s = s + "  \"new_failures\": [\n"
+        i: int = 0
+        while i < len(self.new_failures):
+            s = s + "    " + self.new_failures[i].to_json()
+            if i + 1 < len(self.new_failures):
+                s = s + ","
+            s = s + "\n"
+            i = i + 1
+        s = s + "  ],\n"
+
+        s = s + "  \"fixed_tests\": [\n"
+        j: int = 0
+        while j < len(self.fixed_tests):
+            s = s + "    " + self.fixed_tests[j].to_json()
+            if j + 1 < len(self.fixed_tests):
+                s = s + ","
+            s = s + "\n"
+            j = j + 1
+        s = s + "  ]\n"
+
+        s = s + "}\n"
+        return s
+
+    def to_summary_text(self: RunComparison) -> str:
+        s: str = "=== Quartz Run-to-Run Regression Comparison ===\n"
+        s = s + "Baseline Tests: " + str(self.baseline_total) + " | Current Tests: " + str(self.current_total) + "\n"
+        s = s + "Duration Delta: " + str(self.total_duration_delta_ms) + " ms (" + str(self.duration_pct_change) + "%)\n"
+        s = s + "New Regressions (Failures): " + str(len(self.new_failures)) + "\n"
+        s = s + "Resolved / Fixed Tests: " + str(len(self.fixed_tests)) + "\n"
+        s = s + "Persistent Failures: " + str(len(self.persistent_failures)) + "\n"
+        if self.has_regressions:
+            s = s + "[ALERT] Regressions detected:\n"
+            i: int = 0
+            while i < len(self.new_failures):
+                item: TestRegressionItem = self.new_failures[i]
+                s = s + "  - " + item.test_id + " (was " + item.baseline_status + ", now " + item.current_status + "): " + item.failure_message + "\n"
+                i = i + 1
+        else:
+            s = s + "[OK] Zero regressions detected compared to baseline.\n"
+        return s
+
+def find_result_by_id(results: list[TestResult], test_id: str) -> TestResult | None:
+    i: int = 0
+    while i < len(results):
+        r: TestResult = results[i]
+        if r.id == test_id or r.name == test_id:
+            return r
+        i = i + 1
+    return None
+
+def is_failing_status(status: str) -> bool:
+    return status == STATUS_FAIL or status == STATUS_ERROR or status == STATUS_TIMEOUT
+
+def compare_runs(baseline: RunSummary, current: RunSummary) -> RunComparison:
+    new_failures: list[TestRegressionItem] = []
+    fixed_tests: list[TestRegressionItem] = []
+    persistent_failures: list[TestRegressionItem] = []
+    new_tests: list[TestResult] = []
+    removed_tests: list[str] = []
+
+    # Iterate through current results
+    i: int = 0
+    while i < len(current.results):
+        cur_r: TestResult = current.results[i]
+        base_r: TestResult | None = find_result_by_id(baseline.results, cur_r.id)
+        if base_r is None:
+            new_tests.append(cur_r)
+        else:
+            base_fail: bool = is_failing_status(base_r.status)
+            cur_fail: bool = is_failing_status(cur_r.status)
+
+            if not base_fail and cur_fail:
+                # Regression!
+                new_failures.append(TestRegressionItem(
+                    cur_r.id,
+                    base_r.status,
+                    cur_r.status,
+                    base_r.duration_ms,
+                    cur_r.duration_ms,
+                    cur_r.message
+                ))
+            elif base_fail and not cur_fail:
+                # Fixed!
+                fixed_tests.append(TestRegressionItem(
+                    cur_r.id,
+                    base_r.status,
+                    cur_r.status,
+                    base_r.duration_ms,
+                    cur_r.duration_ms,
+                    ""
+                ))
+            elif base_fail and cur_fail:
+                # Persistent failure
+                persistent_failures.append(TestRegressionItem(
+                    cur_r.id,
+                    base_r.status,
+                    cur_r.status,
+                    base_r.duration_ms,
+                    cur_r.duration_ms,
+                    cur_r.message
+                ))
+        i = i + 1
+
+    # Check for removed tests in baseline
+    j: int = 0
+    while j < len(baseline.results):
+        base_item: TestResult = baseline.results[j]
+        cur_item: TestResult | None = find_result_by_id(current.results, base_item.id)
+        if cur_item is None:
+            removed_tests.append(base_item.id)
+        j = j + 1
+
+    duration_delta: int = current.duration_ms - baseline.duration_ms
+    pct_change: float = 0.0
+    if baseline.duration_ms > 0:
+        pct_change = ((duration_delta * 1.0) / (baseline.duration_ms * 1.0)) * 100.0
+
+    return RunComparison(
+        baseline.total,
+        current.total,
+        new_failures,
+        fixed_tests,
+        persistent_failures,
+        new_tests,
+        removed_tests,
+        duration_delta,
+        pct_change
+    )
+
+def parse_run_summary_json(content: str) -> RunSummary:
+    summary: RunSummary = RunSummary()
+    root: JsonValue = nox.json.parse(content)
+
+    if json_has_key(root, "duration_ms"):
+        summary.duration_ms = int(json_get_key(root, "duration_ms").n)
+
+    if json_has_key(root, "results"):
+        arr_node: JsonValue = json_get_key(root, "results")
+        if nox.json.is_array(arr_node):
+            n: int = nox.json.array_len(arr_node)
+            i: int = 0
+            while i < n:
+                item_node: JsonValue = nox.json.array_get(arr_node, i)
+                t_id: str = "test_" + str(i)
+                if json_has_key(item_node, "id"):
+                    t_id = json_get_key(item_node, "id").s
+
+                t_name: str = t_id
+                if json_has_key(item_node, "name"):
+                    t_name = json_get_key(item_node, "name").s
+
+                t_status: str = STATUS_PASS
+                if json_has_key(item_node, "status"):
+                    t_status = json_get_key(item_node, "status").s
+
+                t_dur: int = 0
+                if json_has_key(item_node, "duration_ms"):
+                    t_dur = int(json_get_key(item_node, "duration_ms").n)
+
+                t_msg: str = ""
+                if json_has_key(item_node, "message"):
+                    t_msg = json_get_key(item_node, "message").s
+
+                res: TestResult = TestResult(t_id, t_name, t_status, t_dur, t_msg, None)
+                summary.record(res)
+                i = i + 1
+
+    return summary
+
+def compare_current_with_baseline_json(baseline_json_str: str, current: RunSummary) -> RunComparison:
+    baseline: RunSummary = parse_run_summary_json(baseline_json_str)
+    return compare_runs(baseline, current)
+
+def compare_current_with_baseline_file(baseline_path: str, current: RunSummary) -> RunComparison:
+    if not nox.fs.exists(baseline_path):
+        empty_baseline: RunSummary = RunSummary()
+        return compare_runs(empty_baseline, current)
+    content: str = nox.fs.read_to_string(baseline_path)
+    return compare_current_with_baseline_json(content, current)

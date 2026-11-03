@@ -406,3 +406,52 @@ val: int = even_gen.generate(prng)
 assert (val % 2 == 0)
 ```
 
+---
+
+## 13. Offline HTTP Mock Playback Testing
+
+Simulate upstream HTTP services and microservices offline without active test ports or network listeners by loading or recording deterministic mock interaction fixtures.
+
+```nox
+from nox.http import HttpRequest, HttpResponse
+from contract.mock import MockExchange, MockPlaybackHandler, create_mock_handler
+
+# 1. Declare mock exchanges
+exchanges: list[MockExchange] = [
+    MockExchange("GET", "/api/v1/user", {}, "", 200, {"Content-Type": "application/json"}, "{\"id\": 42, \"name\": \"Alice\"}"),
+    MockExchange("POST", "/api/v1/user", {}, "{\"name\":\"Bob\"}", 201, {"Content-Type": "application/json"}, "{\"id\": 43, \"name\": \"Bob\"}")
+]
+
+# 2. Instantiate mock playback handler with strict 404 fallback policy
+handler: MockPlaybackHandler = create_mock_handler(exchanges, 404)
+
+# 3. Dispatch requests
+resp: HttpResponse = handler.handle(HttpRequest("GET", "/api/v1/user", "", {}))
+assert resp.status == 200
+assert handler.has_called_path("/api/v1/user")
+```
+
+---
+
+## 14. Run-to-Run CI Regression Comparison
+
+Compare the test results of the current build against a saved baseline JSON summary to catch regressions, track resolved test failures, and detect execution time drift.
+
+```nox
+from core.types import RunSummary, TestResult, STATUS_PASS
+from core.regression import RunComparison, compare_runs, compare_current_with_baseline_json
+
+# Baseline execution summary (or loaded from baseline.json via compare_current_with_baseline_file)
+baseline: RunSummary = RunSummary()
+baseline.record(TestResult("auth_check", "auth_check", STATUS_PASS, 15, "", None))
+
+# Current execution summary
+current: RunSummary = RunSummary()
+current.record(TestResult("auth_check", "auth_check", STATUS_PASS, 18, "", None))
+
+# Evaluate regressions
+comparison: RunComparison = compare_runs(baseline, current)
+assert not comparison.has_regressions
+print(comparison.to_summary_text())
+```
+

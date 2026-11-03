@@ -5,6 +5,7 @@ import core.suite
 import core.fixture
 import core.report
 import core.report_html
+import core.regression
 import core.prng
 import property.generator
 import property.shrink
@@ -27,6 +28,7 @@ import contract.http_network
 import contract.property_contract
 import contract.sse
 import contract.websocket
+import contract.mock
 import load.safety
 import load.metrics
 import load.thresholds
@@ -37,7 +39,7 @@ import adapters.nyx
 import adapters.aether
 
 def version() -> str:
-    return "0.9.6"
+    return "0.9.7"
 
 def framework_info() -> str:
     return "Quartz Test Framework v" + version() + " for NOX Ecosystem"

@@ -1,0 +1,94 @@
+# Quartz Tests — Run-to-Run Regression Comparator Suite
+# Validates regression detection, resolved fixes, duration drift, and machine-readable reports.
+
+from core.types import RunSummary, TestResult, STATUS_PASS, STATUS_FAIL, STATUS_ERROR
+from core.assert import assert_eq_int, assert_eq_str, assert_true, assert_false, assert_contains_str
+from core.regression import TestRegressionItem, RunComparison, compare_runs, compare_current_with_baseline_json
+
+def test_regression_detection() -> None:
+    # Baseline: test_1 passes (20ms), test_2 passes (30ms), test_3 fails (50ms) -> total 100ms
+    baseline: RunSummary = RunSummary()
+    baseline.record(TestResult("t1", "test_1", STATUS_PASS, 20, "", None))
+    baseline.record(TestResult("t2", "test_2", STATUS_PASS, 30, "", None))
+    baseline.record(TestResult("t3", "test_3", STATUS_FAIL, 50, "assertion failed", None))
+
+    # Current: test_1 passes (25ms), test_2 fails (40ms, REGRESSION), test_3 passes (55ms, FIXED) -> total 120ms
+    current: RunSummary = RunSummary()
+    current.record(TestResult("t1", "test_1", STATUS_PASS, 25, "", None))
+    current.record(TestResult("t2", "test_2", STATUS_FAIL, 40, "null pointer exception", None))
+    current.record(TestResult("t3", "test_3", STATUS_PASS, 55, "", None))
+
+    comp: RunComparison = compare_runs(baseline, current)
+    assert_true(comp.has_regressions, "regressions detected")
+    assert_eq_int(len(comp.new_failures), 1, "1 new regression")
+    assert_eq_str(comp.new_failures[0].test_id, "t2", "t2 is new failure")
+    assert_eq_str(comp.new_failures[0].baseline_status, "PASS", "t2 was PASS in baseline")
+    assert_eq_str(comp.new_failures[0].current_status, "FAIL", "t2 is FAIL in current")
+    assert_contains_str(comp.new_failures[0].failure_message, "null pointer", "failure message preserved")
+
+    assert_eq_int(len(comp.fixed_tests), 1, "1 resolved fix")
+    assert_eq_str(comp.fixed_tests[0].test_id, "t3", "t3 was fixed")
+
+    assert_eq_int(len(comp.persistent_failures), 0, "0 persistent failures")
+    assert_eq_int(comp.total_duration_delta_ms, 20, "20ms duration increase")
+
+def test_clean_run_zero_regressions() -> None:
+    baseline: RunSummary = RunSummary()
+    baseline.record(TestResult("t1", "test_1", STATUS_PASS, 40, "", None))
+    baseline.record(TestResult("t2", "test_2", STATUS_PASS, 40, "", None))
+
+    current: RunSummary = RunSummary()
+    current.record(TestResult("t1", "test_1", STATUS_PASS, 35, "", None))
+    current.record(TestResult("t2", "test_2", STATUS_PASS, 35, "", None))
+
+    comp: RunComparison = compare_runs(baseline, current)
+    assert_false(comp.has_regressions, "zero regressions detected")
+    assert_eq_int(len(comp.new_failures), 0, "0 new failures")
+    assert_eq_int(len(comp.fixed_tests), 0, "0 fixed tests")
+    assert_eq_int(comp.total_duration_delta_ms, -10, "-10ms duration delta")
+
+def test_duration_drift_and_summary_text() -> None:
+    baseline: RunSummary = RunSummary()
+    baseline.record(TestResult("t1", "test_1", STATUS_PASS, 200, "", None))
+
+    current: RunSummary = RunSummary()
+    current.record(TestResult("t1", "test_1", STATUS_FAIL, 300, "timeout error", None))
+
+    comp: RunComparison = compare_runs(baseline, current)
+    assert_eq_int(comp.total_duration_delta_ms, 100, "100ms delta")
+    assert_true(comp.duration_pct_change >= 49.0 and comp.duration_pct_change <= 51.0, "50% increase")
+
+    txt: str = comp.to_summary_text()
+    assert_contains_str(txt, "Regression Comparison", "contains title")
+    assert_contains_str(txt, "ALERT", "contains regression alert")
+    assert_contains_str(txt, "t1", "contains failing test id")
+
+def test_json_serialization_and_baseline_parsing() -> None:
+    # Construct sample baseline JSON report
+    sample_json: str = "{\n"
+    sample_json = sample_json + "  \"duration_ms\": 100,\n"
+    sample_json = sample_json + "  \"results\": [\n"
+    sample_json = sample_json + "    {\"id\":\"case_a\",\"name\":\"case_a\",\"status\":\"PASS\",\"duration_ms\":50,\"message\":\"\"},\n"
+    sample_json = sample_json + "    {\"id\":\"case_b\",\"name\":\"case_b\",\"status\":\"FAIL\",\"duration_ms\":50,\"message\":\"old error\"}\n"
+    sample_json = sample_json + "  ]\n}"
+
+    current: RunSummary = RunSummary()
+    current.duration_ms = 110
+    current.record(TestResult("case_a", "case_a", STATUS_PASS, 55, "", None))
+    current.record(TestResult("case_b", "case_b", STATUS_PASS, 55, "", None)) # fixed
+
+    comp: RunComparison = compare_current_with_baseline_json(sample_json, current)
+    assert_false(comp.has_regressions, "no new regressions")
+    assert_eq_int(len(comp.fixed_tests), 1, "case_b was fixed")
+    assert_eq_str(comp.fixed_tests[0].test_id, "case_b", "fixed test id")
+
+    json_report: str = comp.to_json()
+    assert_contains_str(json_report, "\"kind\": \"run_comparison\"", "JSON kind present")
+    assert_contains_str(json_report, "\"has_regressions\": false", "has_regressions false in JSON")
+    assert_contains_str(json_report, "\"fixed_count\": 1", "fixed count in JSON")
+
+test_regression_detection()
+test_clean_run_zero_regressions()
+test_duration_drift_and_summary_text()
+test_json_serialization_and_baseline_parsing()
+print("quartz regression comparator test: ALL PASS")

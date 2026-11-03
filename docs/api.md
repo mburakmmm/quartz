@@ -499,6 +499,51 @@ Published as the `quartz` binary via `nox.json` and runnable via `noxc run cli/m
 - `IntPair(first: int, second: int)`
 - `PairIntGen(gen_a: IntGen, gen_b: IntGen)`: Generates correlated integer pairs for multi-variable property invariants.
   - `.generate(prng: Prng) -> IntPair`
+  - `.shrink_candidates(pair: IntPair) -> list[IntPair]`: Generates shrink pairs varying first, second, and both coordinates.
+
+---
+
+## 31. HTTP Mock Record & Replay Engine (`contract/mock.nox`)
+
+- `MockExchange(method, path, req_headers, req_body, resp_status, resp_headers, resp_body)`: Data descriptor for a pre-recorded HTTP interaction.
+  - `.matches(req: HttpRequest, match_body: bool = False, match_headers: bool = False) -> bool`: Evaluates whether an incoming HTTP request matches this exchange.
+  - `.response() -> HttpResponse`: Generates the pre-recorded `HttpResponse`.
+  - `.to_json() -> str`: Serializes exchange to JSON.
+- `MockPlaybackHandler(exchanges: list[MockExchange], unmatched_status: int = 404)`: In-memory deterministic handler fulfilling matching requests offline.
+  - `.handle(req: HttpRequest) -> HttpResponse`: Dispatches matching exchange or returns structured unmatched error response.
+  - `.find_calls_for_path(path: str) -> list[HttpRequest]`: Returns all incoming requests that targeted `path`.
+  - `.has_called_path(path: str) -> bool`: Returns `True` if `path` was invoked at least once.
+  - `.reset()`: Clears invocation counters and recorded requests.
+- `MockRecorder()`: Records live interactions for persistence.
+  - `.record(req: HttpRequest, resp: HttpResponse) -> MockExchange`
+  - `.to_json() -> str`: Serializes all recorded exchanges into a JSON array fixture.
+  - `.save_to_file(path: str) -> None`: Atomically saves recorded exchanges to disk.
+- `create_mock_handler(exchanges: list[MockExchange], unmatched_status: int = 404) -> MockPlaybackHandler`
+- `save_mock_exchanges(path: str, exchanges: list[MockExchange]) -> None`
+- `load_mock_exchanges_from_file(path: str) -> list[MockExchange]`
+- `parse_mock_exchanges_json(content: str) -> list[MockExchange]`
+
+---
+
+## 32. Run-to-Run Regression Comparator (`core/regression.nox`)
+
+- `TestRegressionItem`: Detailed record of a status or timing regression on a specific test.
+  - `test_id: str`, `baseline_status: str`, `current_status: str`, `baseline_duration_ms: int`, `current_duration_ms: int`, `duration_delta_ms: int`, `failure_message: str`
+  - `.to_json() -> str`
+- `RunComparison`: Structured diff between baseline and current test execution summaries.
+  - `baseline_total: int`, `current_total: int`
+  - `new_failures: list[TestRegressionItem]`: Tests that passed in baseline but failed in current run (regressions).
+  - `fixed_tests: list[TestRegressionItem]`: Tests that failed in baseline but passed in current run.
+  - `persistent_failures: list[TestRegressionItem]`: Tests failing in both runs.
+  - `total_duration_delta_ms: int`: Overall execution time difference.
+  - `duration_pct_change: float`: Percentage execution time shift.
+  - `has_regressions: bool`: `True` if `len(new_failures) > 0`.
+  - `.to_json() -> str`: Machine-readable comparison artifact for CI pipelines.
+  - `.to_summary_text() -> str`: Formatted console summary report with alerts.
+- `compare_runs(baseline: RunSummary, current: RunSummary) -> RunComparison`: Evaluates regression diff between two `RunSummary` instances.
+- `compare_current_with_baseline_json(baseline_json_str: str, current: RunSummary) -> RunComparison`: Compares current execution against a baseline JSON report.
+- `compare_current_with_baseline_file(baseline_path: str, current: RunSummary) -> RunComparison`: Reads baseline file from disk and evaluates regressions.
+
 
 
 

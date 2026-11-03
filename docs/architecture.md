@@ -136,3 +136,12 @@ Quartz is designed as a standalone, zero-dependency testing framework for the NO
   1. Implement `load/stages.nox` with `StagedWorkloadConfig` and `LoadStage(target_vus, duration_s)`. Dynamically interpolate active virtual user count across each stage duration while maintaining O(1) memory metrics and streaming JSONL telemetry (`stage_start`, `stage_complete`).
   2. Implement `property/combinators.nox` providing `OneOfIntGen`, `OneOfStringGen`, `WeightedChoiceIntGen`, `WeightedChoiceStringGen`, and `FilteredIntGen` with bounded discard budgets and invariant-preserving shrink candidates.
 
+### ADR-016: HTTP Mock Record & Replay Fixtures and Run-to-Run Regression Comparison
+- **Context:**
+  1. Microservice consumer contracts often require testing handlers against external HTTP APIs that cannot be spun up inside isolated CI build containers or without network credentials.
+  2. Large test suites accumulate tests across versions; developers and CI gates need an automatic mechanism to compare current run results with a baseline run to immediately flag newly introduced test failures (regressions) and duration drift.
+- **Decision:**
+  1. Implement `contract/mock.nox` providing `MockExchange`, `MockPlaybackHandler`, and `MockRecorder`. Requests are matched deterministically in-memory by HTTP method and target path (with optional header and body matching), falling back to a strict 404 response when unmatched. Exchanges roundtrip cleanly to disk as standard JSON fixtures.
+  2. Implement `core/regression.nox` providing `RunComparison` and `compare_runs()`. Automatically computes newly failing tests (`new_failures`), resolved tests (`fixed_tests`), persistent failures, and total execution duration delta percentages, serializing to machine-readable JSON and console alerts.
+
+

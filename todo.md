@@ -607,31 +607,31 @@
 ## Phase 12: v0.9.7 — Contract Mock Record/Replay & Run-to-Run Regression Comparator
 *Objective: Implement offline deterministic HTTP contract mock recording and replay (`contract/mock.nox`), and run-to-run regression comparison engine (`core/regression.nox`) tracking newly failing tests, fixes, flakiness, and duration deltas.*
 
-- [ ] **12.1 HTTP Contract Mock Record & Replay Engine (`contract/mock.nox`)**
-  - [ ] Implement `MockExchange(request, response)` data model with serialization/deserialization to JSON fixtures.
-  - [ ] Implement `MockPlaybackHandler`: in-memory deterministic HTTP handler matching incoming requests by HTTP method, path pattern, and query/header parameters.
-  - [ ] Strict unmatched route policy: configurable behavior (`STATUS_NOT_FOUND = 404` or `STATUS_NOT_IMPLEMENTED = 501`) when incoming request has no matching recorded exchange.
-  - [ ] Automatic recording mode: wraps any real handler or network transport and persists exchanges to disk atomically.
-- [ ] **12.2 Run-to-Run Regression Comparator (`core/regression.nox`)**
-  - [ ] Implement `RunComparison` comparing baseline `RunSummary` (or saved JSON report) against current `RunSummary`.
-  - [ ] Classification: `new_failures` (regressions), `fixed_tests` (resolved), `persistent_failures`, and unchanged tests.
-  - [ ] Execution performance deltas: `total_duration_delta_ms`, percentage change, and identifying slowest outlier tests.
-  - [ ] Report serialization: `RunComparison.to_json()` for CI regression gatekeeping.
-- [ ] **12.3 Dedicated Test Suites (`tests/contract_mock_test.nox`, `tests/regression_comparator_test.nox`)**
-  - [ ] Write `tests/contract_mock_test.nox` testing exchange recording, playback matching, path pattern matching, and 404 fallback.
-  - [ ] Write `tests/regression_comparator_test.nox` testing baseline comparison, newly failing test detection, duration regression calculation, and JSON serialization.
-  - [ ] Update `tests/doc_examples_test.nox` with Recipes 13 & 14.
-  - [ ] Run full project test matrix: verify 22/22 test suites passing cleanly.
-- [ ] **12.4 Documentation Updates (`docs/recipes.md`, `docs/api.md`, `docs/architecture.md`)**
-  - [ ] Add Recipe 13 (Offline HTTP Mock Playback Testing) and Recipe 14 (Run-to-Run CI Regression Comparison).
-  - [ ] Add Sections 31 & 32 in `docs/api.md`.
-  - [ ] Add ADR-016 in `docs/architecture.md`.
-- [ ] **12.5 Release Packaging & Verification (v0.9.7)**
-  - [ ] Update facade `quartz.nox` to version `0.9.7`.
-  - [ ] Update `CHANGELOG.md` with complete Phase 12 release notes.
-  - [ ] Tag `v0.9.7`, push to GitHub, and publish to NOX package registry.
+- [x] **12.1 HTTP Contract Mock Record & Replay Engine (`contract/mock.nox`)**
+  - [x] Implement `MockExchange(request, response)` data model with serialization/deserialization to JSON fixtures.
+  - [x] Implement `MockPlaybackHandler`: in-memory deterministic HTTP handler matching incoming requests by HTTP method, path pattern, and query/header parameters.
+  - [x] Strict unmatched route policy: configurable behavior (`STATUS_NOT_FOUND = 404` or `STATUS_NOT_IMPLEMENTED = 501`) when incoming request has no matching recorded exchange.
+  - [x] Automatic recording mode: wraps any real handler or network transport and persists exchanges to disk atomically.
+- [x] **12.2 Run-to-Run Regression Comparator (`core/regression.nox`)**
+  - [x] Implement `RunComparison` comparing baseline `RunSummary` (or saved JSON report) against current `RunSummary`.
+  - [x] Classification: `new_failures` (regressions), `fixed_tests` (resolved), `persistent_failures`, and unchanged tests.
+  - [x] Execution performance deltas: `total_duration_delta_ms`, percentage change, and identifying slowest outlier tests.
+  - [x] Report serialization: `RunComparison.to_json()` for CI regression gatekeeping.
+- [x] **12.3 Dedicated Test Suites (`tests/contract_mock_test.nox`, `tests/regression_comparator_test.nox`)**
+  - [x] Write `tests/contract_mock_test.nox` testing exchange recording, playback matching, path pattern matching, and 404 fallback.
+  - [x] Write `tests/regression_comparator_test.nox` testing baseline comparison, newly failing test detection, duration regression calculation, and JSON serialization.
+  - [x] Update `tests/doc_examples_test.nox` with Recipes 13 & 14 (all 14 recipes passing).
+  - [x] Run full project test matrix: verify 22/22 test suites passing cleanly.
+- [x] **12.4 Documentation Updates (`docs/recipes.md`, `docs/api.md`, `docs/architecture.md`)**
+  - [x] Add Recipe 13 (Offline HTTP Mock Playback Testing) and Recipe 14 (Run-to-Run CI Regression Comparison).
+  - [x] Add Sections 31 & 32 in `docs/api.md`.
+  - [x] Add ADR-016 in `docs/architecture.md`.
+- [x] **12.5 Release Packaging & Verification (v0.9.7)**
+  - [x] Update facade `quartz.nox` to version `0.9.7`.
+  - [x] Update `CHANGELOG.md` with complete Phase 12 release notes.
+  - [x] Tag `v0.9.7`, push to GitHub, and publish to NOX package registry.
 
-*Phase 12 Exit Gate:* Complete offline mock replay verified; run-to-run regression comparator verified; 22/22 test suites passing cleanly; 4/4 platform CI parity; published as v0.9.7.
+*Phase 12 Exit Gate:* PASSED. Complete offline mock replay verified; run-to-run regression comparator verified; 22/22 test suites passing cleanly; published as v0.9.7.
 
 ---
 
@@ -703,4 +703,6 @@
 | 2026-11-02 | Phase 11 | Staged Workload & Combinators | `load/stages.nox`, `property/combinators.nox` | Dynamic ramp stages, OneOf/Weighted/Filtered generators | [x] DONE |
 | 2026-11-02 | Phase 11 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 20/20 tests pass, recipes 11 & 12 pass, tagged `v0.9.5`, published | [x] DONE |
 | 2026-11-02 | Phase 11.2 | Bugfixes & Hardening | `contract/`, `property/`, `load/`, `cli/` | RFC 6455 accept verification, combinator shrinking, staged caps, CLI fail-closed | [x] DONE |
-| 2026-11-02 | Phase 11.2 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 20/20 tests pass, tagged `v0.9.6`, ready for publish | [x] DONE |
+| 2026-11-02 | Phase 11.2 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 20/20 tests pass, tagged `v0.9.6`, published | [x] DONE |
+| 2026-11-03 | Phase 12 | Mock & Regression Engine | `contract/mock.nox`, `core/regression.nox` | Offline mock playback, recorder, regression diffing, drift tracking | [x] DONE |
+| 2026-11-03 | Phase 12 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 22/22 tests pass, recipes 13 & 14 pass, tagged `v0.9.7`, ready for publish | [x] DONE |

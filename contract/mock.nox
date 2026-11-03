@@ -1,0 +1,236 @@
+# Quartz Contract — HTTP Mock Record & Replay Engine
+# Provides offline deterministic HTTP interaction recording, serialized JSON fixtures,
+# and in-memory mock playback handlers with strict route matching and unmatched fallback policies.
+
+import nox.json
+import nox.fs
+import nox.strings
+from nox.json import JsonValue
+from nox.http import HttpRequest, HttpResponse
+from core.report import escape_json
+from contract.schema import json_has_key, json_get_key
+
+def dict_to_json(d: dict[str, str]) -> str:
+    s: str = "{"
+    first: bool = True
+    for k in d:
+        if not first:
+            s = s + ", "
+        first = False
+        s = s + "\"" + escape_json(k) + "\": \"" + escape_json(d[k]) + "\""
+    s = s + "}"
+    return s
+
+def json_obj_to_dict(obj: JsonValue) -> dict[str, str]:
+    res: dict[str, str] = {}
+    if not nox.json.is_object(obj):
+        return res
+    n: int = nox.json.object_len(obj)
+    i: int = 0
+    while i < n:
+        k: str = nox.json.object_key(obj, i)
+        v_node: JsonValue = nox.json.object_value(obj, i)
+        if nox.json.is_string(v_node):
+            res[k] = v_node.s
+        elif nox.json.is_number(v_node):
+            res[k] = str(int(v_node.n))
+        elif nox.json.is_bool(v_node):
+            res[k] = "true" if v_node.b else "false"
+        i = i + 1
+    return res
+
+class MockExchange:
+    method: str
+    path: str
+    req_headers: dict[str, str]
+    req_body: str
+    resp_status: int
+    resp_headers: dict[str, str]
+    resp_body: str
+
+    def __init__(self: MockExchange, method: str, path: str, req_headers: dict[str, str], req_body: str, resp_status: int, resp_headers: dict[str, str], resp_body: str) -> None:
+        self.method = nox.strings.upper(method)
+        self.path = path
+        self.req_headers = req_headers
+        self.req_body = req_body
+        self.resp_status = resp_status
+        self.resp_headers = resp_headers
+        self.resp_body = resp_body
+
+    def matches(self: MockExchange, req: HttpRequest, match_body: bool = False, match_headers: bool = False) -> bool:
+        if self.method != nox.strings.upper(req.method):
+            return False
+        if self.path != req.target:
+            return False
+        if match_body and self.req_body != req.body:
+            return False
+        if match_headers:
+            for k in self.req_headers:
+                val: str = self.req_headers[k]
+                found: bool = False
+                for rk in req.headers:
+                    if nox.strings.lower(rk) == nox.strings.lower(k):
+                        if req.headers[rk] == val:
+                            found = True
+                        break
+                if not found:
+                    return False
+        return True
+
+    def response(self: MockExchange) -> HttpResponse:
+        h: dict[str, str] = {}
+        for k in self.resp_headers:
+            h[k] = self.resp_headers[k]
+        return HttpResponse(self.resp_status, self.resp_body, h)
+
+    def to_json(self: MockExchange) -> str:
+        s: str = "{\n"
+        s = s + "  \"method\": \"" + escape_json(self.method) + "\",\n"
+        s = s + "  \"path\": \"" + escape_json(self.path) + "\",\n"
+        s = s + "  \"req_headers\": " + dict_to_json(self.req_headers) + ",\n"
+        s = s + "  \"req_body\": \"" + escape_json(self.req_body) + "\",\n"
+        s = s + "  \"resp_status\": " + str(self.resp_status) + ",\n"
+        s = s + "  \"resp_headers\": " + dict_to_json(self.resp_headers) + ",\n"
+        s = s + "  \"resp_body\": \"" + escape_json(self.resp_body) + "\"\n"
+        s = s + "}"
+        return s
+
+def format_mock_exchanges_json(exchanges: list[MockExchange]) -> str:
+    s: str = "[\n"
+    i: int = 0
+    while i < len(exchanges):
+        s = s + exchanges[i].to_json()
+        if i + 1 < len(exchanges):
+            s = s + ","
+        s = s + "\n"
+        i = i + 1
+    s = s + "]\n"
+    return s
+
+def parse_mock_exchange_node(node: JsonValue) -> MockExchange:
+    method: str = "GET"
+    if json_has_key(node, "method"):
+        method = json_get_key(node, "method").s
+
+    path: str = "/"
+    if json_has_key(node, "path"):
+        path = json_get_key(node, "path").s
+
+    req_headers: dict[str, str] = {}
+    if json_has_key(node, "req_headers"):
+        req_headers = json_obj_to_dict(json_get_key(node, "req_headers"))
+
+    req_body: str = ""
+    if json_has_key(node, "req_body"):
+        req_body = json_get_key(node, "req_body").s
+
+    resp_status: int = 200
+    if json_has_key(node, "resp_status"):
+        resp_status = int(json_get_key(node, "resp_status").n)
+
+    resp_headers: dict[str, str] = {}
+    if json_has_key(node, "resp_headers"):
+        resp_headers = json_obj_to_dict(json_get_key(node, "resp_headers"))
+
+    resp_body: str = ""
+    if json_has_key(node, "resp_body"):
+        resp_body = json_get_key(node, "resp_body").s
+
+    return MockExchange(method, path, req_headers, req_body, resp_status, resp_headers, resp_body)
+
+def parse_mock_exchanges_json(content: str) -> list[MockExchange]:
+    res: list[MockExchange] = []
+    root: JsonValue = nox.json.parse(content)
+    if not nox.json.is_array(root):
+        return res
+    n: int = nox.json.array_len(root)
+    i: int = 0
+    while i < n:
+        item: JsonValue = nox.json.array_get(root, i)
+        res.append(parse_mock_exchange_node(item))
+        i = i + 1
+    return res
+
+def save_mock_exchanges(path: str, exchanges: list[MockExchange]) -> None:
+    nox.fs.write_string(path, format_mock_exchanges_json(exchanges))
+
+def load_mock_exchanges_from_file(path: str) -> list[MockExchange]:
+    if not nox.fs.exists(path):
+        return []
+    content: str = nox.fs.read_to_string(path)
+    return parse_mock_exchanges_json(content)
+
+class MockPlaybackHandler:
+    exchanges: list[MockExchange]
+    unmatched_status: int
+    recorded_requests: list[HttpRequest]
+    call_count: int
+
+    def __init__(self: MockPlaybackHandler, exchanges: list[MockExchange], unmatched_status: int = 404) -> None:
+        self.exchanges = exchanges
+        self.unmatched_status = unmatched_status
+        self.recorded_requests = []
+        self.call_count = 0
+
+    def add_exchange(self: MockPlaybackHandler, exchange: MockExchange) -> None:
+        self.exchanges.append(exchange)
+
+    def handle(self: MockPlaybackHandler, req: HttpRequest) -> HttpResponse:
+        self.recorded_requests.append(req)
+        self.call_count = self.call_count + 1
+
+        i: int = 0
+        while i < len(self.exchanges):
+            ex: MockExchange = self.exchanges[i]
+            if ex.matches(req):
+                return ex.response()
+            i = i + 1
+
+        err_body: str = "{\"error\":\"unmatched_mock_route\",\"method\":\"" + escape_json(req.method) + "\",\"path\":\"" + escape_json(req.target) + "\"}"
+        h: dict[str, str] = {"Content-Type": "application/json"}
+        return HttpResponse(self.unmatched_status, err_body, h)
+
+    def find_calls_for_path(self: MockPlaybackHandler, path: str) -> list[HttpRequest]:
+        res: list[HttpRequest] = []
+        i: int = 0
+        while i < len(self.recorded_requests):
+            r: HttpRequest = self.recorded_requests[i]
+            if r.target == path:
+                res.append(r)
+            i = i + 1
+        return res
+
+    def has_called_path(self: MockPlaybackHandler, path: str) -> bool:
+        return len(self.find_calls_for_path(path)) > 0
+
+    def reset(self: MockPlaybackHandler) -> None:
+        self.recorded_requests = []
+        self.call_count = 0
+
+class MockRecorder:
+    recorded_exchanges: list[MockExchange]
+
+    def __init__(self: MockRecorder) -> None:
+        self.recorded_exchanges = []
+
+    def record(self: MockRecorder, req: HttpRequest, resp: HttpResponse) -> MockExchange:
+        ex: MockExchange = MockExchange(
+            req.method,
+            req.target,
+            req.headers,
+            req.body,
+            resp.status,
+            resp.headers,
+            resp.body
+        )
+        self.recorded_exchanges.append(ex)
+        return ex
+
+    def to_json(self: MockRecorder) -> str:
+        return format_mock_exchanges_json(self.recorded_exchanges)
+
+    def save_to_file(self: MockRecorder, path: str) -> None:
+        save_mock_exchanges(path, self.recorded_exchanges)
+
+def create_mock_handler(exchanges: list[MockExchange], unmatched_status: int = 404) -> MockPlaybackHandler:
+    return MockPlaybackHandler(exchanges, unmatched_status)

@@ -1,0 +1,109 @@
+# Quartz Tests — HTTP Contract Mock Record & Replay Suite
+# Validates offline deterministic mock playback, request recording, route matching, and fixture persistence.
+
+import nox.fs
+from nox.http import HttpRequest, HttpResponse
+from core.assert import assert_eq_int, assert_eq_str, assert_true, assert_false, assert_contains_str
+from contract.mock import MockExchange, MockPlaybackHandler, MockRecorder, create_mock_handler, save_mock_exchanges, load_mock_exchanges_from_file, parse_mock_exchanges_json
+
+def test_mock_exchange_matching() -> None:
+    req_headers: dict[str, str] = {"Content-Type": "application/json", "Authorization": "Bearer tok123"}
+    resp_headers: dict[str, str] = {"Content-Type": "application/json"}
+    ex: MockExchange = MockExchange("POST", "/api/items", req_headers, "{\"name\":\"widget\"}", 201, resp_headers, "{\"id\":42}")
+
+    # 1. Matching request
+    h_match: dict[str, str] = {"Content-Type": "application/json", "Authorization": "Bearer tok123"}
+    req1: HttpRequest = HttpRequest("POST", "/api/items", "{\"name\":\"widget\"}", h_match)
+    assert_true(ex.matches(req1, True, True), "exact match on method, path, headers, and body")
+
+    # 2. Case-insensitive method match
+    req2: HttpRequest = HttpRequest("post", "/api/items", "", {})
+    assert_true(ex.matches(req2, False, False), "case-insensitive method match")
+
+    # 3. Mismatched path
+    req3: HttpRequest = HttpRequest("POST", "/api/other", "", {})
+    assert_false(ex.matches(req3, False, False), "mismatched path rejected")
+
+    # 4. Mismatched body when match_body is True
+    req4: HttpRequest = HttpRequest("POST", "/api/items", "{\"name\":\"different\"}", {})
+    assert_false(ex.matches(req4, True, False), "mismatched body rejected when match_body=True")
+    assert_true(ex.matches(req4, False, False), "mismatched body ignored when match_body=False")
+
+def test_mock_playback_handler_routing() -> None:
+    h_res: dict[str, str] = {"Content-Type": "application/json"}
+    exchanges: list[MockExchange] = [
+        MockExchange("GET", "/api/v1/users", {}, "", 200, h_res, "[{\"id\": 1, \"name\": \"Alice\"}]"),
+        MockExchange("POST", "/api/v1/users", {}, "{\"name\": \"Bob\"}", 201, h_res, "{\"id\": 2, \"name\": \"Bob\"}")
+    ]
+    handler: MockPlaybackHandler = create_mock_handler(exchanges, 404)
+
+    # Call GET
+    req_get: HttpRequest = HttpRequest("GET", "/api/v1/users", "", {})
+    res_get: HttpResponse = handler.handle(req_get)
+    assert_eq_int(res_get.status, 200, "GET returns 200")
+    assert_contains_str(res_get.body, "Alice", "body contains Alice")
+
+    # Call POST
+    req_post: HttpRequest = HttpRequest("POST", "/api/v1/users", "{\"name\": \"Bob\"}", {})
+    res_post: HttpResponse = handler.handle(req_post)
+    assert_eq_int(res_post.status, 201, "POST returns 201")
+    assert_contains_str(res_post.body, "Bob", "body contains Bob")
+
+    # Metrics and call assertions
+    assert_eq_int(handler.call_count, 2, "call count is 2")
+    assert_true(handler.has_called_path("/api/v1/users"), "has called /api/v1/users")
+    assert_false(handler.has_called_path("/api/v1/unknown"), "has not called unknown path")
+    calls: list[HttpRequest] = handler.find_calls_for_path("/api/v1/users")
+    assert_eq_int(len(calls), 2, "2 calls recorded for users endpoint")
+
+    # Reset
+    handler.reset()
+    assert_eq_int(handler.call_count, 0, "call count reset to 0")
+    assert_eq_int(len(handler.recorded_requests), 0, "recorded requests cleared")
+
+def test_mock_playback_unmatched_route() -> None:
+    handler: MockPlaybackHandler = create_mock_handler([], 404)
+    req: HttpRequest = HttpRequest("DELETE", "/api/v1/forbidden", "", {})
+    res: HttpResponse = handler.handle(req)
+    assert_eq_int(res.status, 404, "unmatched route returns 404")
+    assert_contains_str(res.body, "unmatched_mock_route", "unmatched error diagnostic present")
+    assert_contains_str(res.body, "/api/v1/forbidden", "diagnosed path present")
+
+def test_mock_recorder_and_file_persistence() -> None:
+    recorder: MockRecorder = MockRecorder()
+
+    req: HttpRequest = HttpRequest("GET", "/health", "", {"Accept": "application/json"})
+    resp: HttpResponse = HttpResponse(200, "{\"status\":\"healthy\"}", {"Content-Type": "application/json"})
+
+    recorded: MockExchange = recorder.record(req, resp)
+    assert_eq_str(recorded.method, "GET", "recorded method")
+    assert_eq_str(recorded.path, "/health", "recorded path")
+    assert_eq_int(recorded.resp_status, 200, "recorded status")
+
+    json_data: str = recorder.to_json()
+    assert_contains_str(json_data, "/health", "JSON contains path")
+    assert_contains_str(json_data, "healthy", "JSON contains body")
+
+    # Roundtrip through JSON parsing
+    parsed_exchanges: list[MockExchange] = parse_mock_exchanges_json(json_data)
+    assert_eq_int(len(parsed_exchanges), 1, "parsed 1 exchange")
+    assert_eq_str(parsed_exchanges[0].path, "/health", "parsed path matches")
+
+    # Disk file roundtrip
+    tmp_path: str = "fixtures/contracts/test_mock_fixture.json"
+    recorder.save_to_file(tmp_path)
+    assert_true(nox.fs.exists(tmp_path), "fixture written to disk")
+
+    loaded: list[MockExchange] = load_mock_exchanges_from_file(tmp_path)
+    assert_eq_int(len(loaded), 1, "loaded 1 exchange from disk")
+    assert_eq_int(loaded[0].resp_status, 200, "loaded status matches")
+
+    # Clean up test file
+    if nox.fs.exists(tmp_path):
+        nox.fs.remove_file(tmp_path)
+
+test_mock_exchange_matching()
+test_mock_playback_handler_routing()
+test_mock_playback_unmatched_route()
+test_mock_recorder_and_file_persistence()
+print("quartz contract mock test: ALL PASS")

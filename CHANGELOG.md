@@ -3,6 +3,27 @@
 All notable changes to the Quartz test framework will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.7] - 2026-11-03 - Phase 12: Contract Mock Record & Replay & Run-to-Run Regression Comparator
+
+### Added
+- **HTTP Contract Mock Record & Replay Engine (`contract/mock.nox`)**:
+  - Implemented `MockExchange` for serializing and matching incoming requests against pre-recorded HTTP interactions.
+  - Implemented `MockPlaybackHandler` with strict route matching (method, target path, query/headers, body) and configurable fallback policies (404/501).
+  - Implemented `MockRecorder` capturing real in-flight interactions and persisting them to atomic JSON disk fixtures.
+  - Added fixture serializers and loaders: `format_mock_exchanges_json`, `parse_mock_exchanges_json`, `save_mock_exchanges`, and `load_mock_exchanges_from_file`.
+- **Run-to-Run Regression Comparator (`core/regression.nox`)**:
+  - Implemented `RunComparison` comparing baseline execution results against current test suites.
+  - Automatic classification: `new_failures` (regressions), `fixed_tests` (resolved), `persistent_failures`, `new_tests`, and `removed_tests`.
+  - Execution duration drift tracking: `total_duration_delta_ms` and percentage shift (`duration_pct_change`).
+  - Machine-readable comparison JSON reports (`.to_json()`) and human-readable terminal alerts (`.to_summary_text()`).
+- **Dedicated Test Suites (`tests/contract_mock_test.nox`, `tests/regression_comparator_test.nox`)**:
+  - Total test suites expanded to **22/22 passing cleanly** with 0 failures.
+  - Verified mock matching, unmatched 404 fallbacks, disk fixture roundtrips, regression alert triggers, and timing deltas.
+- **Documentation & Recipes (`docs/recipes.md`, `docs/api.md`, `docs/architecture.md`)**:
+  - Added Recipe 13 (Offline HTTP Mock Playback Testing) and Recipe 14 (Run-to-Run CI Regression Comparison) with automated verification in `tests/doc_examples_test.nox`.
+  - Added Sections 31 and 32 in `docs/api.md`.
+  - Added ADR-016 in `docs/architecture.md`.
+
 ## [0.9.6] - 2026-11-02 - Bugfix Release: RFC 6455 Accept Verification, Combinator Shrinking, Staged Safety Caps & CLI Fail-Closed
 
 ### Fixed
