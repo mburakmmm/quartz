@@ -3,6 +3,27 @@
 All notable changes to the Quartz test framework will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.16] - 2026-11-03 - Concurrent Callback Execution, Parallel Network Load, Adapter NULL Semantics & Replay Versioning
+
+### Fixed & Hardened
+- **Per-VU Concurrent Callback & Parallel HTTP Load Execution (`load/executor.nox`, `load/stages.nox` & `tests/load_scheduler_test.nox`)**:
+  - Replaced single-loop sequential callback invocation in `run_task_workload_internal()`, `run_scoped_task_workload()`, `run_handler_load_test()`, and `run_staged_task_workload_internal()` with per-VU coroutine fibers (`_make_task_vu_coroutine`, `_make_scoped_task_vu_coroutine`, `_make_handler_vu_coroutine`) so every Virtual User fiber enters its active callback window (`active_requests.increment()`), synchronizes at the wave barrier with all sibling VUs simultaneously in-flight, executes its own callback, and decrements `active_requests` on completion.
+  - Updated `run_network_load_test()` to spawn `vu_count` parallel OS worker threads via `nox.thread.start(_parallel_net_vu_worker, ...)` issuing simultaneous `nox.http.request()` calls across threads with reference-counted atomic metrics aggregation (`active_cell`, `peak_cell`, `pass_cell`, `fail_cell`, `err_cell`, `sum_lat_cell`, `min_lat_cell`, `max_lat_cell`).
+  - Added multi-worker loopback HTTP concurrency verification (`test_network_load_concurrent_http_server`) using `nox.http.listen` + `nox.http.serve_fd` across 4 server worker threads and 4 client VU threads, proving `observed_srv_peak >= 2` simultaneous in-flight HTTP requests on the server side.
+- **Accurate Concurrency Metrics & Worker Lifecycle Guarantees (`load/executor.nox`)**:
+  - Removed the artificial minimum-1 floor (`if val < 1: return 1`) from `ConcurrentWaveScope.active_count()` and `peak_count()` so `peak_concurrency` reports only true measured active callbacks/requests.
+  - Added `is_ready: bool`, `worker_joined: bool`, and `is_worker_finished()` to `ConcurrentWaveScope`, plus automatic cancellation (`cancel_cell.store(1)`) when `open_concurrent_wave_scope()` hits its startup timeout.
+- **Feather SQL `NULL` vs Empty-String (`""`) Preservation & Mandatory CI SQLite Gate (`adapters/feather.nox`, `tests/feather_adapter_test.nox` & `.github/workflows/ci.yml`)**:
+  - Added `is_null: bool` to `FeatherField` and `set_null()` / `is_null()` to `FeatherRecord`, updated `clone()` and `equals()` to distinguish SQL `NULL` from `""`, updated `row_to_feather_record()` to preserve `row.is_null(j)`, and updated `InMemorySqlConnection` to track `null_masks` and `NULL` literals.
+  - Enforced `QUARTZ_REQUIRE_SQLITE=1` in CI on Linux and macOS so SQLite availability or transaction failures never pass silently, and added optional `nox.postgres` rollback verification when `QUARTZ_PG_URL` is configured.
+- **Atlas Standard SQL `NULL` Inner Join Semantics (`adapters/atlas.nox` & `tests/atlas_adapter_test.nox`)**:
+  - Updated `inner_join_tables()` and `verify_inner_join_contract()` so SQL `NULL` join keys (`is_null_pos`) never match `NULL` or `""` (conforming to standard SQL `INNER JOIN` semantics) and preserved `null_mask` on joined output tables.
+- **Property Failure Artifact Schema & PRNG Versioning (`property/generator.nox`, `property/combinators.nox`, `property/property.nox`, `property/replay.nox` & `cli/main.nox`)**:
+  - Added `schema_descriptor()` to `IntGen`, `BoolGen`, `StringGen`, `ListIntGen`, and `PairIntGen`.
+  - Embedded `"prng_version"` (`"v1"`) and `"generator_schema"` in `PropertyResult.to_json()` failure artifacts and verified `prng_version_matches` and `generator_schema_matches` during `PropertyRegistry.verify_replay()` and `quartz replay`.
+- **Semantic JSON State Comparison for Stateful Fuzzing (`fuzz/sequence.nox` & `tests/sequence_fuzz_test.nox`)**:
+  - Added recursive `JsonValue` comparator `states_semantically_equal()` and wired it into `evaluate_sut_against_str_model()` so semantically identical JSON object states with different key orderings do not trigger false `SUT_DIVERGENCE` failures.
+
 ## [0.9.15] - 2026-11-03 - Bugfix Release: Real Concurrent Task/HTTP Load Callbacks, Reference-Counted Atomic Lifetimes, Real SQLite/ORM Transactions & Replay/Atlas/Stateful Hardening
 
 ### Fixed & Hardened

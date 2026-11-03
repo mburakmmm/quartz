@@ -65,16 +65,26 @@ class ReplayVerification:
     expected_counterexample: str
     candidate_matches_artifact: bool
     predicate_failed_again: bool
+    prng_version_matches: bool
+    generator_schema_matches: bool
+    artifact_prng_version: str
+    artifact_generator_schema: str
+    registered_generator_schema: str
 
-    def __init__(self: ReplayVerification, found: bool, generated: str, expected: str, matches: bool, failed_again: bool) -> None:
+    def __init__(self: ReplayVerification, found: bool, generated: str, expected: str, matches: bool, failed_again: bool, prng_ok: bool = True, schema_ok: bool = True, art_prng: str = "", art_schema: str = "", reg_schema: str = "") -> None:
         self.found_in_registry = found
         self.generated_candidate = generated
         self.expected_counterexample = expected
         self.candidate_matches_artifact = matches
         self.predicate_failed_again = failed_again
+        self.prng_version_matches = prng_ok
+        self.generator_schema_matches = schema_ok
+        self.artifact_prng_version = art_prng
+        self.artifact_generator_schema = art_schema
+        self.registered_generator_schema = reg_schema
 
     def is_verified(self: ReplayVerification) -> bool:
-        return self.found_in_registry and self.candidate_matches_artifact and self.predicate_failed_again
+        return self.found_in_registry and self.prng_version_matches and self.generator_schema_matches and self.candidate_matches_artifact and self.predicate_failed_again
 
 def _json_has_key(obj: JsonValue, target_key: str) -> bool:
     n: int = nox.json.object_len(obj)
@@ -202,11 +212,48 @@ class PropertyRegistry:
             c = c + 1
         return ""
 
+    def schema_of(self: PropertyRegistry, test_id: str) -> str:
+        i: int = 0
+        while i < len(self.int_ids):
+            if self.int_ids[i] == test_id:
+                return self.int_gens[i].schema_descriptor()
+            i = i + 1
+        s: int = 0
+        while s < len(self.str_ids):
+            if self.str_ids[s] == test_id:
+                return self.str_gens[s].schema_descriptor()
+            s = s + 1
+        j: int = 0
+        while j < len(self.list_ids):
+            if self.list_ids[j] == test_id:
+                return self.list_gens[j].schema_descriptor()
+            j = j + 1
+        b: int = 0
+        while b < len(self.bool_ids):
+            if self.bool_ids[b] == test_id:
+                return self.bool_gens[b].schema_descriptor()
+            b = b + 1
+        p: int = 0
+        while p < len(self.pair_ids):
+            if self.pair_ids[p] == test_id:
+                return self.pair_gens[p].schema_descriptor()
+            p = p + 1
+        c: int = 0
+        while c < len(self.custom_ids):
+            if self.custom_ids[c] == test_id:
+                return "CustomGen(" + test_id + ")"
+            c = c + 1
+        return ""
+
     # Regenerates the candidate from (seed, test_id, case_index), compares it against expected_original
     # (when non-empty), and runs the original registered predicate.
-    def verify_replay(self: PropertyRegistry, test_id: str, seed: int, case_index: int, expected_original: str) -> ReplayVerification:
+    def verify_replay(self: PropertyRegistry, test_id: str, seed: int, case_index: int, expected_original: str, expected_prng_version: str = "", expected_gen_schema: str = "") -> ReplayVerification:
         case_seed: int = derive_case_seed(seed, test_id, case_index, PRNG_VERSION)
         case_prng: Prng = Prng(case_seed)
+        prng_ver_str: str = "v" + str(PRNG_VERSION)
+        prng_ok: bool = (len(expected_prng_version) == 0) or (expected_prng_version == prng_ver_str) or (expected_prng_version == str(PRNG_VERSION))
+        reg_schema: str = self.schema_of(test_id)
+        schema_ok: bool = (len(expected_gen_schema) == 0) or (len(reg_schema) == 0) or (expected_gen_schema == reg_schema)
 
         i: int = 0
         while i < len(self.int_ids):
@@ -219,7 +266,7 @@ class PropertyRegistry:
                     passed = self.int_preds[i](cand_int)
                 except Exception as e:
                     passed = False
-                return ReplayVerification(True, gen_str, expected_original, matches, not passed)
+                return ReplayVerification(True, gen_str, expected_original, matches, not passed, prng_ok, schema_ok, expected_prng_version, expected_gen_schema, reg_schema)
             i = i + 1
 
         s: int = 0
@@ -232,7 +279,7 @@ class PropertyRegistry:
                     passed_s = self.str_preds[s](cand_str)
                 except Exception as e:
                     passed_s = False
-                return ReplayVerification(True, cand_str, expected_original, matches_s, not passed_s)
+                return ReplayVerification(True, cand_str, expected_original, matches_s, not passed_s, prng_ok, schema_ok, expected_prng_version, expected_gen_schema, reg_schema)
             s = s + 1
 
         j: int = 0
@@ -247,7 +294,7 @@ class PropertyRegistry:
                     passed_l = self.list_preds[j](cand_list)
                 except Exception as e:
                     passed_l = False
-                return ReplayVerification(True, gen_list_str, expected_original, matches_l, not passed_l)
+                return ReplayVerification(True, gen_list_str, expected_original, matches_l, not passed_l, prng_ok, schema_ok, expected_prng_version, expected_gen_schema, reg_schema)
             j = j + 1
 
         b: int = 0
@@ -262,7 +309,7 @@ class PropertyRegistry:
                     passed_b = self.bool_preds[b](cand_bool)
                 except Exception as e:
                     passed_b = False
-                return ReplayVerification(True, gen_bool_str, expected_original, matches_b, not passed_b)
+                return ReplayVerification(True, gen_bool_str, expected_original, matches_b, not passed_b, prng_ok, schema_ok, expected_prng_version, expected_gen_schema, reg_schema)
             b = b + 1
 
         p: int = 0
@@ -276,7 +323,7 @@ class PropertyRegistry:
                     passed_p = self.pair_preds[p](cand_pair)
                 except Exception as e:
                     passed_p = False
-                return ReplayVerification(True, gen_pair_str, expected_original, matches_p, not passed_p)
+                return ReplayVerification(True, gen_pair_str, expected_original, matches_p, not passed_p, prng_ok, schema_ok, expected_prng_version, expected_gen_schema, reg_schema)
             p = p + 1
 
         c: int = 0
@@ -289,10 +336,10 @@ class PropertyRegistry:
                     passed_c = self.custom_preds[c](cand_custom)
                 except Exception as e:
                     passed_c = False
-                return ReplayVerification(True, cand_custom, expected_original, matches_c, not passed_c)
+                return ReplayVerification(True, cand_custom, expected_original, matches_c, not passed_c, prng_ok, schema_ok, expected_prng_version, expected_gen_schema, reg_schema)
             c = c + 1
 
-        return ReplayVerification(False, "", expected_original, False, False)
+        return ReplayVerification(False, "", expected_original, False, False, prng_ok, schema_ok, expected_prng_version, expected_gen_schema, reg_schema)
 
     # Returns 1 if failure reproduced, 0 if the case now passes, -1 if test_id is not registered.
     def replay(self: PropertyRegistry, test_id: str, seed: int, case_index: int) -> int:
@@ -304,7 +351,7 @@ class PropertyRegistry:
         return 0
 
     def replay_result(self: PropertyRegistry, result: PropertyResult) -> bool:
-        v: ReplayVerification = self.verify_replay(result.test_id, result.seed, result.failing_case_index, result.original_counterexample)
+        v: ReplayVerification = self.verify_replay(result.test_id, result.seed, result.failing_case_index, result.original_counterexample, result.prng_version, result.generator_schema)
         return v.is_verified()
 
     def verify_artifact_file(self: PropertyRegistry, path: str) -> ReplayVerification:
@@ -331,7 +378,13 @@ class PropertyRegistry:
                 orig_str = _json_get_key(artifact, "original_counterexample").s
             elif _json_has_key(artifact, "original"):
                 orig_str = _json_get_key(artifact, "original").s
-            return self.verify_replay(test_id, seed_val, case_idx, orig_str)
+            art_prng: str = ""
+            if _json_has_key(artifact, "prng_version"):
+                art_prng = _json_get_key(artifact, "prng_version").s
+            art_schema: str = ""
+            if _json_has_key(artifact, "generator_schema"):
+                art_schema = _json_get_key(artifact, "generator_schema").s
+            return self.verify_replay(test_id, seed_val, case_idx, orig_str, art_prng, art_schema)
         except Exception as e:
             return ReplayVerification(False, "", "", False, False)
 
@@ -360,6 +413,14 @@ class PropertyRegistry:
         if not v.found_in_registry:
             print("Error: test_id in '" + artifact_path + "' is not registered in this PropertyRegistry.")
             nox.os.exit(2)
+            return False
+        if not v.prng_version_matches:
+            print("Error: artifact prng_version '" + v.artifact_prng_version + "' does not match current PRNG version 'v" + str(PRNG_VERSION) + "'.")
+            nox.os.exit(1)
+            return False
+        if not v.generator_schema_matches:
+            print("Error: artifact generator_schema '" + v.artifact_generator_schema + "' does not match registered generator schema '" + v.registered_generator_schema + "'.")
+            nox.os.exit(1)
             return False
         if not v.candidate_matches_artifact:
             print("Error: regenerated candidate '" + v.generated_candidate + "' does not match artifact original_counterexample '" + v.expected_counterexample + "'.")

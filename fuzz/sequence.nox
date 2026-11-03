@@ -3,6 +3,8 @@
 # protocols, and data structures, and shrinks failing sequences to minimal reproducers.
 
 import nox.strings
+import nox.json
+from nox.json import JsonValue
 from core.prng import Prng
 from core.report import escape_json
 
@@ -602,6 +604,71 @@ def evaluate_str_model_sequence(model: StateModelStr, seq: ActionSequence, fail_
         i = i + 1
     return ModelStepOutcome(True, MODEL_VIOLATION_NONE, -1, "", state, state, "")
 
+def _json_values_equal(a: JsonValue, b: JsonValue) -> bool:
+    if a.kind != b.kind:
+        return False
+    # kind: 0=null, 1=bool, 2=number, 3=string, 4=array, 5=object
+    if a.kind == 0:
+        return True
+    if a.kind == 1:
+        return a.b == b.b
+    if a.kind == 2:
+        return a.n == b.n
+    if a.kind == 3:
+        return a.s == b.s
+    if a.kind == 4:
+        if len(a.arr) != len(b.arr):
+            return False
+        i: int = 0
+        while i < len(a.arr):
+            if not _json_values_equal(a.arr[i], b.arr[i]):
+                return False
+            i = i + 1
+        return True
+    if a.kind == 5:
+        na: int = nox.json.object_len(a)
+        nb: int = nox.json.object_len(b)
+        if na != nb:
+            return False
+        ka: int = 0
+        while ka < na:
+            key: str = nox.json.object_key(a, ka)
+            val_a: JsonValue = nox.json.object_value(a, ka)
+            found_key: bool = False
+            kb: int = 0
+            while kb < nb:
+                if nox.json.object_key(b, kb) == key:
+                    found_key = True
+                    val_b: JsonValue = nox.json.object_value(b, kb)
+                    if not _json_values_equal(val_a, val_b):
+                        return False
+                    break
+                kb = kb + 1
+            if not found_key:
+                return False
+            ka = ka + 1
+        return True
+    return False
+
+# Semantic state comparator that compares JSON object/array states independent of key order
+# and falls back to exact string equality for non-JSON state strings.
+def states_semantically_equal(expected_state: str, actual_state: str) -> bool:
+    if expected_state == actual_state:
+        return True
+    trimmed_e: str = nox.strings.trim(expected_state)
+    trimmed_a: str = nox.strings.trim(actual_state)
+    if len(trimmed_e) >= 2 and len(trimmed_a) >= 2:
+        e_starts_json: bool = (trimmed_e[0:1] == "{" and trimmed_e[len(trimmed_e) - 1:len(trimmed_e)] == "}") or (trimmed_e[0:1] == "[" and trimmed_e[len(trimmed_e) - 1:len(trimmed_e)] == "]")
+        a_starts_json: bool = (trimmed_a[0:1] == "{" and trimmed_a[len(trimmed_a) - 1:len(trimmed_a)] == "}") or (trimmed_a[0:1] == "[" and trimmed_a[len(trimmed_a) - 1:len(trimmed_a)] == "]")
+        if e_starts_json and a_starts_json:
+            try:
+                je: JsonValue = nox.json.parse(trimmed_e)
+                ja: JsonValue = nox.json.parse(trimmed_a)
+                return _json_values_equal(je, ja)
+            except Exception as err:
+                return False
+    return False
+
 def evaluate_sut_against_str_model(
     model: StateModelStr,
     sut_reset: () -> None,
@@ -620,7 +687,7 @@ def evaluate_sut_against_str_model(
                 msg: str = "postcondition violated at step " + str(i) + " (" + act.name + ") state " + state + " -> " + expected_state
                 return ModelStepOutcome(False, MODEL_VIOLATION_POSTCONDITION, i, act.name, state, expected_state, msg)
             actual_sut_state: str = sut_step(act)
-            if actual_sut_state != expected_state:
+            if not states_semantically_equal(expected_state, actual_sut_state):
                 msg_div: str = "SUT state divergence at step " + str(i) + " (" + act.name + "): expected=" + expected_state + " actual=" + actual_sut_state
                 return ModelStepOutcome(False, MODEL_VIOLATION_SUT_DIVERGENCE, i, act.name, expected_state, actual_sut_state, msg_div)
             state = expected_state

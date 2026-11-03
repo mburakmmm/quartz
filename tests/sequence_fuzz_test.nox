@@ -2,7 +2,7 @@
 # Validates action sequence modeling, mutations, state machine fuzzing, and counterexample shrinking.
 
 from core.assert import assert_eq_int, assert_eq_str, assert_true, assert_false, assert_contains_str
-from fuzz.sequence import FuzzAction, ActionSequence, SequenceFuzzer, SequenceFuzzResult, run_sequence_fuzz, shrink_failing_sequence, shrink_valid_sequence, StateModel, run_model_sequence, model_sequence_runner, run_sut_against_model, sut_model_runner, StateModelStr, ModelStepOutcome, evaluate_str_model_sequence, evaluate_sut_against_str_model, MODEL_VIOLATION_NONE, MODEL_VIOLATION_PRECONDITION, MODEL_VIOLATION_POSTCONDITION, MODEL_VIOLATION_SUT_DIVERGENCE
+from fuzz.sequence import FuzzAction, ActionSequence, SequenceFuzzer, SequenceFuzzResult, run_sequence_fuzz, shrink_failing_sequence, shrink_valid_sequence, StateModel, run_model_sequence, model_sequence_runner, run_sut_against_model, sut_model_runner, StateModelStr, ModelStepOutcome, evaluate_str_model_sequence, evaluate_sut_against_str_model, states_semantically_equal, MODEL_VIOLATION_NONE, MODEL_VIOLATION_PRECONDITION, MODEL_VIOLATION_POSTCONDITION, MODEL_VIOLATION_SUT_DIVERGENCE
 
 def test_action_and_sequence_basics() -> None:
     act1: FuzzAction = FuzzAction("push", "alpha", 10)
@@ -382,6 +382,23 @@ def test_str_state_model_and_structured_outcomes() -> None:
     assert_eq_str(out_div.expected_state, "AUTH:CART_NONEMPTY", "expected state recorded")
     assert_eq_str(out_div.actual_state, "AUTH:CART_CORRUPTED", "actual SUT state recorded")
     assert_contains_str(out_div.to_json(), "\"violation_kind\":\"SUT_DIVERGENCE\"", "JSON serialization includes structured violation_kind")
+
+    # 5. Semantic JSON state comparison (key-order independent)
+    assert_true(states_semantically_equal("{\"a\":1,\"b\":{\"x\":true,\"y\":2}}", "{\"b\":{\"y\":2,\"x\":true},\"a\":1}"), "JSON objects with different key order are semantically equal")
+    assert_false(states_semantically_equal("{\"a\":1,\"b\":2}", "{\"a\":1,\"b\":3}"), "JSON objects with different values are not equal")
+
+    def json_model_pre(st: str, act: FuzzAction) -> bool:
+        return True
+    def json_model_apply(st: str, act: FuzzAction) -> str:
+        return "{\"user\":\"ada\",\"items\":2,\"active\":true}"
+    def json_model_post(st: str, act: FuzzAction, nst: str) -> bool:
+        return True
+    json_model: StateModelStr = StateModelStr("{\"user\":\"ada\",\"items\":0,\"active\":true}", json_model_pre, json_model_apply, json_model_post)
+    def reordered_json_sut_step(act: FuzzAction) -> str:
+        # Emits semantically identical JSON object with reversed key order
+        return "{\"active\":true,\"items\":2,\"user\":\"ada\"}"
+    out_json_ok: ModelStepOutcome = evaluate_sut_against_str_model(json_model, sut_str_reset, reordered_json_sut_step, ActionSequence([FuzzAction("update")]), True)
+    assert_true(out_json_ok.passed, "evaluate_sut_against_str_model accepts semantically equal JSON state with different key ordering")
 
 test_action_and_sequence_basics()
 test_sequence_generator_and_mutation()

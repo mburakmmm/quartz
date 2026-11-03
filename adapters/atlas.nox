@@ -383,28 +383,38 @@ def inner_join_tables(left: AtlasTable, right: AtlasTable, left_key: str, right_
         h2 = h2 + 1
 
     out_rows: list[list[str]] = []
+    out_nulls: list[list[bool]] = []
     i: int = 0
     while i < left.row_count():
-        l_val: str = left.get_cell(i, left_key)
-        j: int = 0
-        while j < right.row_count():
-            r_val: str = right.get_cell(j, right_key)
-            if l_val == r_val:
-                # Merge row
-                merged: list[str] = []
-                c1: int = 0
-                while c1 < left.col_count():
-                    merged.append(left.get_cell(i, left.headers[c1]))
-                    c1 = c1 + 1
-                c2: int = 0
-                while c2 < right.col_count():
-                    merged.append(right.get_cell(j, right.headers[c2]))
-                    c2 = c2 + 1
-                out_rows.append(merged)
-            j = j + 1
+        # Standard SQL INNER JOIN semantics: NULL join keys never match (NULL != NULL and NULL != "")
+        if not left.is_null_pos(i, l_idx):
+            l_val: str = left.get_cell(i, left_key)
+            j: int = 0
+            while j < right.row_count():
+                if not right.is_null_pos(j, r_idx):
+                    r_val: str = right.get_cell(j, right_key)
+                    if l_val == r_val:
+                        # Merge row and preserve null_mask across both tables
+                        merged: list[str] = []
+                        merged_null: list[bool] = []
+                        c1: int = 0
+                        while c1 < left.col_count():
+                            merged.append(left.get_cell(i, left.headers[c1]))
+                            merged_null.append(left.is_null_pos(i, c1))
+                            c1 = c1 + 1
+                        c2: int = 0
+                        while c2 < right.col_count():
+                            merged.append(right.get_cell(j, right.headers[c2]))
+                            merged_null.append(right.is_null_pos(j, c2))
+                            c2 = c2 + 1
+                        out_rows.append(merged)
+                        out_nulls.append(merged_null)
+                j = j + 1
         i = i + 1
 
-    return AtlasTable(out_headers, out_rows)
+    joined_out: AtlasTable = AtlasTable(out_headers, out_rows)
+    joined_out.null_mask = out_nulls
+    return joined_out
 
 # Length-prefixed canonical row encoding — immune to delimiter / control-character collisions
 # and preserving NULL vs empty-string ("") distinction ("N;" vs "V0:;").
@@ -444,16 +454,17 @@ def verify_inner_join_contract(
     if l_idx < 0 or r_idx < 0:
         return False
 
-    # 1. Compute exact expected count: sum(count_left(k) * count_right(k))
+    # 1. Compute exact expected count: sum(count_left(k) * count_right(k)) for non-NULL keys
     expected_matches: int = 0
     i: int = 0
     while i < left.row_count():
-        l_val: str = left.get_cell(i, left_key)
-        j: int = 0
-        while j < right.row_count():
-            if l_val == right.get_cell(j, right_key):
-                expected_matches = expected_matches + 1
-            j = j + 1
+        if not left.is_null_pos(i, l_idx):
+            l_val: str = left.get_cell(i, left_key)
+            j: int = 0
+            while j < right.row_count():
+                if (not right.is_null_pos(j, r_idx)) and l_val == right.get_cell(j, right_key):
+                    expected_matches = expected_matches + 1
+                j = j + 1
         i = i + 1
 
     if joined_table.row_count() != expected_matches:
@@ -472,23 +483,24 @@ def verify_inner_join_contract(
     expected_sigs: list[str] = []
     ei: int = 0
     while ei < left.row_count():
-        ej: int = 0
-        while ej < right.row_count():
-            if left.get_cell(ei, left_key) == right.get_cell(ej, right_key):
-                combined_expected: list[str] = []
-                combined_nulls: list[bool] = []
-                lc: int = 0
-                while lc < len(left.rows[ei]):
-                    combined_expected.append(left.rows[ei][lc])
-                    combined_nulls.append(left.is_null_pos(ei, lc))
-                    lc = lc + 1
-                rc: int = 0
-                while rc < len(right.rows[ej]):
-                    combined_expected.append(right.rows[ej][rc])
-                    combined_nulls.append(right.is_null_pos(ej, rc))
-                    rc = rc + 1
-                expected_sigs.append(row_signature_with_nulls(combined_expected, combined_nulls))
-            ej = ej + 1
+        if not left.is_null_pos(ei, l_idx):
+            ej: int = 0
+            while ej < right.row_count():
+                if (not right.is_null_pos(ej, r_idx)) and left.get_cell(ei, left_key) == right.get_cell(ej, right_key):
+                    combined_expected: list[str] = []
+                    combined_nulls: list[bool] = []
+                    lc: int = 0
+                    while lc < len(left.rows[ei]):
+                        combined_expected.append(left.rows[ei][lc])
+                        combined_nulls.append(left.is_null_pos(ei, lc))
+                        lc = lc + 1
+                    rc: int = 0
+                    while rc < len(right.rows[ej]):
+                        combined_expected.append(right.rows[ej][rc])
+                        combined_nulls.append(right.is_null_pos(ej, rc))
+                        rc = rc + 1
+                    expected_sigs.append(row_signature_with_nulls(combined_expected, combined_nulls))
+                ej = ej + 1
         ei = ei + 1
 
     used: list[bool] = []

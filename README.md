@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://github.com/mburakmmm/quartz/actions/workflows/ci.yml"><img src="https://github.com/mburakmmm/quartz/actions/workflows/ci.yml/badge.svg" alt="CI Status" /></a>
-  <a href="https://github.com/mburakmmm/quartz/releases/latest"><img src="https://img.shields.io/badge/release-v0.9.15-0969da.svg" alt="Latest Release" /></a>
+  <a href="https://github.com/mburakmmm/quartz/releases/latest"><img src="https://img.shields.io/badge/release-v0.9.16-0969da.svg" alt="Latest Release" /></a>
   <a href="https://github.com/mburakmmm/nox-lang"><img src="https://img.shields.io/badge/nox--lang-v2.0+-8250df.svg" alt="NOX Language" /></a>
   <a href="https://github.com/mburakmmm/quartz/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-success.svg" alt="License: MIT" /></a>
   <img src="https://img.shields.io/badge/platforms-Linux%20|%20macOS%20|%20Windows-2ea44f.svg" alt="Multi-Platform Support" />
@@ -86,7 +86,7 @@ Designed to scale from unit assertions to mission-critical infrastructure verifi
   "name": "my_nox_service",
   "version": "1.0.0",
   "dependencies": {
-    "github.com/mburakmmm/quartz": "v0.9.15"
+    "github.com/mburakmmm/quartz": "v0.9.16"
   }
 }
 ```

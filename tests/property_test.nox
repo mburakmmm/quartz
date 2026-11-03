@@ -73,6 +73,15 @@ def test_failure_shrinking_and_replay() -> None:
     assert_false(ver_tampered.candidate_matches_artifact, "tampered original_counterexample detected as mismatch")
     assert_false(ver_tampered.is_verified(), "tampered artifact is NOT verified")
 
+    # PRNG version and generator_schema mismatch detection
+    ver_bad_prng: ReplayVerification = reg.verify_replay("bounded_int_fail", res.seed, res.failing_case_index, res.original_counterexample, "v999", res.generator_schema)
+    assert_false(ver_bad_prng.prng_version_matches, "mismatched prng_version detected")
+    assert_false(ver_bad_prng.is_verified(), "mismatched prng_version is NOT verified")
+
+    ver_bad_schema: ReplayVerification = reg.verify_replay("bounded_int_fail", res.seed, res.failing_case_index, res.original_counterexample, res.prng_version, "IntGen(min=0,max=9999,boundaries=true)")
+    assert_false(ver_bad_schema.generator_schema_matches, "mismatched generator_schema detected")
+    assert_false(ver_bad_schema.is_verified(), "mismatched generator_schema is NOT verified")
+
     nox.fs.remove_file(artifact_path)
 
     # List[int] property counterexample formatting & replay verification

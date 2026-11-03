@@ -9,7 +9,7 @@ from nox.atomic import AtomicInt
 from load.safety import SafetyLimits, CircuitBreaker, default_safety_limits, CircuitBreakerTrippedError
 from load.metrics import LoadMetrics
 from load.thresholds import Threshold, ThresholdResult, evaluate_all_thresholds, all_thresholds_passed
-from load.executor import VirtualUserState, LoadTestSummary, ConcurrentWaveScope, open_concurrent_wave_scope
+from load.executor import VirtualUserState, LoadTestSummary, _make_task_vu_coroutine, _close_vu_coroutines
 from core.report import escape_json, JsonlStreamReporter
 
 class LoadStage:
@@ -167,21 +167,26 @@ def run_staged_task_workload_internal(config: StagedWorkloadConfig, task_func: (
             payload_start: str = "{\"start_vus\":" + str(start_vus) + ",\"target_vus\":" + str(target_vus) + ",\"duration_s\":" + str(stg.duration_s) + "}"
             reporter.emit("stage_start", "stage_" + str(stage_idx), "PASS", 0, payload_start)
 
-        # Allocate virtual users for this stage and hold concurrent VU wave active while task_func executes
+        # Allocate virtual user coroutine fibers for this stage
         vu_states: list[VirtualUserState] = []
+        vu_coros: list[Generator[int, int]] = []
+        active_requests: AtomicInt = nox.atomic.new_int(0)
+        peak_requests: AtomicInt = nox.atomic.new_int(0)
         v_i: int = 0
         while v_i < target_vus:
             vu_states.append(VirtualUserState(v_i))
+            coro: Generator[int, int] = _make_task_vu_coroutine(v_i, task_func, active_requests, peak_requests)
+            _init_id: int = next(coro)
+            vu_coros.append(coro)
             v_i = v_i + 1
-
-        stg_scope: ConcurrentWaveScope = open_concurrent_wave_scope(target_vus)
 
         stage_completed: int = 0
         stage_successful: int = 0
         stage_failed: int = 0
+        stage_aborted: bool = False
 
-        # Execute requests for the duration of this stage while VUs are active in-flight
-        while t0_stage.elapsed_ms() < stage_duration_ms:
+        # Execute concurrent VU waves for the duration of this stage
+        while t0_stage.elapsed_ms() < stage_duration_ms and (not stage_aborted):
             if t0_global.elapsed_ms() >= limits.duration_seconds * 1000:
                 break
             if global_case_idx >= config.max_total_requests:
@@ -197,11 +202,8 @@ def run_staged_task_workload_internal(config: StagedWorkloadConfig, task_func: (
                 active_vus = start_vus + int((delta * elapsed_stage) / stage_duration_ms)
             if active_vus < 1:
                 active_vus = 1
-            if active_vus > len(vu_states):
-                active_vus = len(vu_states)
-
-            # Round-robin distribution across active VUs
-            vu_assigned: int = stage_completed % active_vus
+            if active_vus > len(vu_coros):
+                active_vus = len(vu_coros)
 
             # Circuit breaker check
             try:
@@ -210,49 +212,77 @@ def run_staged_task_workload_internal(config: StagedWorkloadConfig, task_func: (
                 all_stages_passed = False
                 break
 
-            stage_metrics.record_concurrency(stg_scope.active_count())
-            cumulative_metrics.record_concurrency(stg_scope.active_count())
-            task_t0: Instant = nox.time.instant_now()
-            success: bool = False
-            try:
-                success = task_func(global_case_idx)
-            except Exception as e:
-                success = False
-            stage_metrics.record_concurrency(stg_scope.peak_count())
-            cumulative_metrics.record_concurrency(stg_scope.peak_count())
+            wave_size: int = active_vus
+            rem_global: int = config.max_total_requests - global_case_idx
+            if rem_global < wave_size:
+                wave_size = rem_global
+            rem_stage: int = config.max_requests_per_stage - stage_completed
+            if rem_stage < wave_size:
+                wave_size = rem_stage
 
-            task_duration: int = task_t0.elapsed_ms()
-            is_timeout: bool = (task_duration > limits.timeout_ms)
+            # Phase 1: All active VUs in this wave enter their active request window simultaneously
+            w_enter: int = 0
+            while w_enter < wave_size:
+                _cur_in_flight: int = vu_coros[w_enter].send(global_case_idx + w_enter)
+                w_enter = w_enter + 1
 
-            status: int = 200
-            if is_timeout:
-                status = 504
-                success = False
-                cb.record_failure("timeout")
-            elif not success:
-                status = 500
-                cb.record_failure("failure")
-            else:
-                cb.record_success()
+            stage_metrics.record_concurrency(active_requests.load())
+            cumulative_metrics.record_concurrency(active_requests.load())
 
-            # Record into stage metrics and cumulative metrics
-            stage_metrics.record_result(status, task_duration, is_timeout, success)
-            cumulative_metrics.record_result(status, task_duration, is_timeout, success)
-            vu_states[vu_assigned].record(task_duration, success and (not is_timeout))
+            # Phase 2: Step each VU fiber through its task_func execution
+            w_exec: int = 0
+            while w_exec < wave_size:
+                task_t0: Instant = nox.time.instant_now()
+                ok_int: int = vu_coros[w_exec].send(1)
+                task_duration: int = task_t0.elapsed_ms()
+                stage_metrics.record_concurrency(peak_requests.load())
+                cumulative_metrics.record_concurrency(peak_requests.load())
 
-            stage_completed = stage_completed + 1
-            if success and (not is_timeout):
-                stage_successful = stage_successful + 1
-            else:
-                stage_failed = stage_failed + 1
+                success: bool = (ok_int == 1)
+                is_timeout: bool = (task_duration > limits.timeout_ms)
 
-            global_case_idx = global_case_idx + 1
+                status: int = 200
+                if is_timeout:
+                    status = 504
+                    success = False
+                    cb.record_failure("timeout")
+                elif not success:
+                    status = 500
+                    cb.record_failure("failure")
+                else:
+                    cb.record_success()
 
-            # Emit periodic metric ticks
-            if has_reporter and (stage_completed % 10 == 0):
-                reporter.emit_metric_tick("stage_" + str(stage_idx), stage_metrics.completed, stage_metrics.throughput_rps(t0_stage.elapsed_ms()), stage_metrics.p50(), stage_metrics.p95())
+                # Record into stage metrics and cumulative metrics
+                stage_metrics.record_result(status, task_duration, is_timeout, success)
+                cumulative_metrics.record_result(status, task_duration, is_timeout, success)
+                vu_states[w_exec].record(task_duration, success and (not is_timeout))
 
-        stg_scope.close()
+                stage_completed = stage_completed + 1
+                if success and (not is_timeout):
+                    stage_successful = stage_successful + 1
+                else:
+                    stage_failed = stage_failed + 1
+
+                global_case_idx = global_case_idx + 1
+
+                # Emit periodic metric ticks
+                if has_reporter and (stage_completed % 10 == 0):
+                    reporter.emit_metric_tick("stage_" + str(stage_idx), stage_metrics.completed, stage_metrics.throughput_rps(t0_stage.elapsed_ms()), stage_metrics.p50(), stage_metrics.p95())
+
+                if cb.is_tripped:
+                    w_drain: int = w_exec + 1
+                    while w_drain < wave_size:
+                        _drained: int = vu_coros[w_drain].send(1)
+                        w_drain = w_drain + 1
+                    all_stages_passed = False
+                    stage_aborted = True
+                    break
+
+                w_exec = w_exec + 1
+
+        _close_vu_coroutines(vu_coros)
+        active_requests.free()
+        peak_requests.free()
 
         actual_stage_duration: int = t0_stage.elapsed_ms()
         if actual_stage_duration <= 0:

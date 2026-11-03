@@ -34,8 +34,10 @@ class PropertyResult:
     shrunk_counterexample: str
     shrink_attempts: int
     failure_message: str
+    prng_version: str
+    generator_schema: str
 
-    def __init__(self: PropertyResult, test_id: str, status: str, cases_executed: int, discards: int, seed: int, failing_case_index: int, original: str, shrunk: str, shrink_attempts: int, failure_message: str) -> None:
+    def __init__(self: PropertyResult, test_id: str, status: str, cases_executed: int, discards: int, seed: int, failing_case_index: int, original: str, shrunk: str, shrink_attempts: int, failure_message: str, prng_version: str = "v1", generator_schema: str = "") -> None:
         self.test_id = test_id
         self.status = status
         self.cases_executed = cases_executed
@@ -46,6 +48,8 @@ class PropertyResult:
         self.shrunk_counterexample = shrunk
         self.shrink_attempts = shrink_attempts
         self.failure_message = failure_message
+        self.prng_version = prng_version
+        self.generator_schema = generator_schema
 
     def is_passed(self: PropertyResult) -> bool:
         return self.status == STATUS_PASS
@@ -55,8 +59,10 @@ class PropertyResult:
         escaped_orig: str = escape_json(self.original_counterexample)
         escaped_shrunk: str = escape_json(self.shrunk_counterexample)
         escaped_msg: str = escape_json(self.failure_message)
+        escaped_prng: str = escape_json(self.prng_version)
+        escaped_gen_schema: str = escape_json(self.generator_schema)
         
-        return "{\"schema_version\":\"1\",\"engine\":\"quartz\",\"kind\":\"property\",\"test_id\":\"" + escaped_id + "\",\"status\":\"" + self.status + "\",\"seed\":" + str(self.seed) + ",\"cases_executed\":" + str(self.cases_executed) + ",\"discards\":" + str(self.discards) + ",\"failing_case\":" + str(self.failing_case_index) + ",\"failing_case_index\":" + str(self.failing_case_index) + ",\"original\":\"" + escaped_orig + "\",\"original_counterexample\":\"" + escaped_orig + "\",\"shrunk\":\"" + escaped_shrunk + "\",\"shrunk_counterexample\":\"" + escaped_shrunk + "\",\"shrink_attempts\":" + str(self.shrink_attempts) + ",\"message\":\"" + escaped_msg + "\"}"
+        return "{\"schema_version\":\"1\",\"engine\":\"quartz\",\"kind\":\"property\",\"prng_version\":\"" + escaped_prng + "\",\"generator_schema\":\"" + escaped_gen_schema + "\",\"test_id\":\"" + escaped_id + "\",\"status\":\"" + self.status + "\",\"seed\":" + str(self.seed) + ",\"cases_executed\":" + str(self.cases_executed) + ",\"discards\":" + str(self.discards) + ",\"failing_case\":" + str(self.failing_case_index) + ",\"failing_case_index\":" + str(self.failing_case_index) + ",\"original\":\"" + escaped_orig + "\",\"original_counterexample\":\"" + escaped_orig + "\",\"shrunk\":\"" + escaped_shrunk + "\",\"shrunk_counterexample\":\"" + escaped_shrunk + "\",\"shrink_attempts\":" + str(self.shrink_attempts) + ",\"message\":\"" + escaped_msg + "\"}"
 
 def run_int_property(test_id: str, config: PropertyConfig, gen: IntGen, predicate: (int) -> bool) -> PropertyResult:
     case_idx: int = 0
@@ -78,11 +84,11 @@ def run_int_property(test_id: str, config: PropertyConfig, gen: IntGen, predicat
             orig_str: str = str(candidate)
             shrink_res: ShrinkResultInt = shrink_int(candidate, predicate, 500)
             shrunk_str: str = str(shrink_res.value)
-            return PropertyResult(test_id, STATUS_FAIL, case_idx + 1, discards, config.seed, case_idx, orig_str, shrunk_str, shrink_res.attempts, "invariant violated")
+            return PropertyResult(test_id, STATUS_FAIL, case_idx + 1, discards, config.seed, case_idx, orig_str, shrunk_str, shrink_res.attempts, "invariant violated", "v" + str(PRNG_VERSION), gen.schema_descriptor())
 
         case_idx = case_idx + 1
 
-    return PropertyResult(test_id, STATUS_PASS, case_idx, discards, config.seed, -1, "", "", 0, "")
+    return PropertyResult(test_id, STATUS_PASS, case_idx, discards, config.seed, -1, "", "", 0, "", "v" + str(PRNG_VERSION), gen.schema_descriptor())
 
 def run_str_property(test_id: str, config: PropertyConfig, gen: StringGen, predicate: (str) -> bool) -> PropertyResult:
     case_idx: int = 0
@@ -103,11 +109,11 @@ def run_str_property(test_id: str, config: PropertyConfig, gen: StringGen, predi
             orig_str: str = candidate
             shrink_res: ShrinkResultStr = shrink_str(candidate, predicate, 500)
             shrunk_str: str = shrink_res.value
-            return PropertyResult(test_id, STATUS_FAIL, case_idx + 1, discards, config.seed, case_idx, orig_str, shrunk_str, shrink_res.attempts, "invariant violated")
+            return PropertyResult(test_id, STATUS_FAIL, case_idx + 1, discards, config.seed, case_idx, orig_str, shrunk_str, shrink_res.attempts, "invariant violated", "v" + str(PRNG_VERSION), gen.schema_descriptor())
 
         case_idx = case_idx + 1
 
-    return PropertyResult(test_id, STATUS_PASS, case_idx, discards, config.seed, -1, "", "", 0, "")
+    return PropertyResult(test_id, STATUS_PASS, case_idx, discards, config.seed, -1, "", "", 0, "", "v" + str(PRNG_VERSION), gen.schema_descriptor())
 
 def format_int_list(xs: list[int]) -> str:
     s: str = "["
@@ -138,8 +144,8 @@ def run_list_int_property(test_id: str, config: PropertyConfig, gen: ListIntGen,
             orig_str: str = format_int_list(candidate)
             shrink_res: ShrinkResultListInt = shrink_list_int(candidate, predicate, 500)
             shrunk_str: str = format_int_list(shrink_res.value)
-            return PropertyResult(test_id, STATUS_FAIL, case_idx + 1, discards, config.seed, case_idx, orig_str, shrunk_str, shrink_res.attempts, "invariant violated")
+            return PropertyResult(test_id, STATUS_FAIL, case_idx + 1, discards, config.seed, case_idx, orig_str, shrunk_str, shrink_res.attempts, "invariant violated", "v" + str(PRNG_VERSION), gen.schema_descriptor())
 
         case_idx = case_idx + 1
 
-    return PropertyResult(test_id, STATUS_PASS, case_idx, discards, config.seed, -1, "", "", 0, "")
+    return PropertyResult(test_id, STATUS_PASS, case_idx, discards, config.seed, -1, "", "", 0, "", "v" + str(PRNG_VERSION), gen.schema_descriptor())

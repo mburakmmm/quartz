@@ -220,6 +220,9 @@ class PairIntGen:
         self.gen_a = gen_a
         self.gen_b = gen_b
 
+    def schema_descriptor(self: PairIntGen) -> str:
+        return "PairIntGen(first=" + self.gen_a.schema_descriptor() + ",second=" + self.gen_b.schema_descriptor() + ")"
+
     def generate(self: PairIntGen, prng: Prng) -> IntPair:
         val_a: int = self.gen_a.generate(prng)
         val_b: int = self.gen_b.generate(prng)

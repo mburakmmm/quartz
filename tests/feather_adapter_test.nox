@@ -1,8 +1,10 @@
 # Quartz Tests — Feather Ecosystem Adapter & Persistence Invariant Tests
 import nox.sqlite
+import nox.postgres
 import nox.orm
+import nox.os
 from nox.db import Row
-from nox.orm import Table, Column, Value, val_str, val_int, create_table, insert, update, delete, select
+from nox.orm import Table, Column, Value, val_str, val_int, val_null, create_table, insert, update, delete, select
 from core.suite import TestSuite
 from adapters.feather import FeatherRecord, FeatherRepository, FeatherFixture, verify_crud_lifecycle, verify_idempotent_upsert, verify_transaction_rollback, TxResult, run_transaction, TX_COMMITTED, TX_ABORTED, TX_ROLLED_BACK_ON_ERROR, TX_ROLLBACK_FAILED, SqlConnection, InMemorySqlConnection, run_sql_transaction, run_orm_transaction, rows_to_feather_records
 
@@ -97,12 +99,35 @@ def run_tx_outcome_tests(suite: TestSuite) -> None:
     suite.check_true("sql_tx_is_rollback_failed", sql_rb_fail.is_rollback_failed())
     sql_conn.close()
 
-    # 5. rows_to_feather_records from nox.db.Row
-    db_rows: list[Row] = [Row(["u1", "Linus"], [False, False], ["id", "name"])]
+    # 5. rows_to_feather_records from nox.db.Row (including SQL NULL vs empty string "")
+    db_rows: list[Row] = [
+        Row(["u1", "Linus", ""], [False, False, False], ["id", "name", "bio"]),
+        Row(["u2", "Ada", ""], [False, False, True], ["id", "name", "bio"])
+    ]
     f_recs: list[FeatherRecord] = rows_to_feather_records(db_rows, "id")
-    suite.check_eq_int("rows_to_feather_records_len", len(f_recs), 1)
+    suite.check_eq_int("rows_to_feather_records_len", len(f_recs), 2)
     suite.check_eq_str("rows_to_feather_records_id", f_recs[0].id, "u1")
     suite.check_eq_str("rows_to_feather_records_field", f_recs[0].get("name"), "Linus")
+    suite.check_false("rows_to_feather_records_empty_str_not_null", f_recs[0].is_null("bio"))
+    suite.check_true("rows_to_feather_records_sql_null_is_null", f_recs[1].is_null("bio"))
+
+    # FeatherRecord equality strictly distinguishes SQL NULL from empty string ""
+    rec_with_empty: FeatherRecord = FeatherRecord("r_null_chk")
+    rec_with_empty.set("bio", "")
+    rec_with_null: FeatherRecord = FeatherRecord("r_null_chk")
+    rec_with_null.set_null("bio")
+    suite.check_false("feather_record_null_not_equal_to_empty_str", rec_with_empty.equals(rec_with_null))
+
+    # Rollback verification catches broken rollback that turns NULL into ""
+    null_sql_conn: InMemorySqlConnection = InMemorySqlConnection(["id", "bio"])
+    null_sql_conn.execute("INSERT INTO profiles VALUES ('1', NULL)")
+    null_sql_conn.simulate_broken_rollback = True
+    def corrupt_null_to_empty() -> None:
+        null_sql_conn.execute("DELETE FROM profiles")
+        null_sql_conn.execute("INSERT INTO profiles VALUES ('1', '')")
+    null_rb_res: TxResult = run_sql_transaction(null_sql_conn, "profiles", "id", corrupt_null_to_empty, False)
+    suite.check_eq_str("sql_rollback_detects_null_turned_into_empty_str", null_rb_res.outcome, TX_ROLLBACK_FAILED)
+    null_sql_conn.close()
 
     # 6. Real SQLite (:memory:) + nox.orm Integration Tests
     sqlite_available: bool = False
@@ -119,7 +144,7 @@ def run_tx_outcome_tests(suite: TestSuite) -> None:
         seed_vals: dict[str, Value] = {}
         seed_vals["id"] = val_str("u_1")
         seed_vals["name"] = val_str("Ada")
-        seed_vals["role"] = val_str("architect")
+        seed_vals["role"] = val_null()
         insert(real_conn, users_table, seed_vals)
 
         def orm_commit_fn() -> None:
@@ -139,8 +164,9 @@ def run_tx_outcome_tests(suite: TestSuite) -> None:
             v["name"] = val_str("Ephemeral")
             v["role"] = val_str("guest")
             insert(real_conn, users_table, v)
+            # Mutate NULL role to empty string "" inside aborted tx; rollback must restore NULL!
             upd: dict[str, Value] = {}
-            upd["role"] = val_str("corrupted")
+            upd["role"] = val_str("")
             update(real_conn, users_table, upd, "id = ?", [val_str("u_1")])
 
         orm_abt: TxResult = run_orm_transaction(real_conn, users_table, "id", orm_abort_fn, False)
@@ -157,9 +183,34 @@ def run_tx_outcome_tests(suite: TestSuite) -> None:
 
         real_conn.close()
     except Exception as sqlite_err:
-        # Only reached on bare Windows environments lacking sqlite3.dll; Linux & macOS CI always have libsqlite3
-        if sqlite_available:
+        req_sqlite: str = ""
+        try:
+            req_sqlite = nox.os.getenv("QUARTZ_REQUIRE_SQLITE")
+        except Exception as env_e:
+            req_sqlite = ""
+        if sqlite_available or req_sqlite == "1" or req_sqlite == "true":
             suite.check_true("real_sqlite_unexpected_error: " + str(sqlite_err), False)
+
+    # 7. Optional Real PostgreSQL (`nox.postgres`) + `nox.orm` Integration Tests (when QUARTZ_PG_URL is configured)
+    pg_url: str = ""
+    try:
+        pg_url = nox.os.getenv("QUARTZ_PG_URL")
+    except Exception as pg_env_e:
+        pg_url = ""
+    if len(pg_url) > 0:
+        pg_conn: nox.postgres.Connection = nox.postgres.open(pg_url)
+        pg_conn.execute("DROP TABLE IF EXISTS quartz_tx_test")
+        pg_conn.execute("CREATE TABLE quartz_tx_test (id TEXT PRIMARY KEY, bio TEXT)")
+        pg_conn.execute("INSERT INTO quartz_tx_test VALUES ('1', NULL)")
+
+        def pg_abort_fn() -> None:
+            pg_conn.execute("UPDATE quartz_tx_test SET bio = '' WHERE id = '1'")
+            pg_conn.execute("INSERT INTO quartz_tx_test VALUES ('2', 'temp')")
+
+        pg_abt: TxResult = run_sql_transaction(pg_conn, "quartz_tx_test", "id", pg_abort_fn, False)
+        suite.check_eq_str("real_postgres_tx_aborted", pg_abt.outcome, TX_ABORTED)
+        pg_conn.execute("DROP TABLE IF EXISTS quartz_tx_test")
+        pg_conn.close()
 
 def run_feather_adapter_tests() -> None:
     suite: TestSuite = TestSuite("feather_adapter_suite")

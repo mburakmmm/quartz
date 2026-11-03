@@ -5,9 +5,10 @@ import nox.atomic
 import nox.thread
 import nox.strings
 from nox.time import Instant
-from nox.http import HttpRequest, HttpResponse
+from nox.http import HttpRequest, HttpResponse, HttpTimeoutError
 from nox.atomic import AtomicInt
-from contract.http_network import NetworkPolicy, execute_network_request, NetworkExecutionResult
+from nox.thread import ThreadHandle
+from contract.http_network import NetworkPolicy, execute_network_request, validate_network_target, ParsedUrl, NetworkExecutionResult
 from load.safety import SafetyLimits, CircuitBreaker, default_safety_limits, CircuitBreakerTrippedError
 from load.metrics import LoadMetrics
 from load.workload import WorkloadConfig, MODEL_CLOSED, MODEL_OPEN
@@ -230,8 +231,10 @@ class ConcurrentWaveScope:
     cancel_h: int
     ref_h: int
     is_closed: bool
+    is_ready: bool
+    worker_joined: bool
 
-    def __init__(self: ConcurrentWaveScope, vu_count: int, active_h: int, peak_h: int, done_h: int, dur_h: int, cancel_h: int, ref_h: int) -> None:
+    def __init__(self: ConcurrentWaveScope, vu_count: int, active_h: int, peak_h: int, done_h: int, dur_h: int, cancel_h: int, ref_h: int, is_ready: bool = True) -> None:
         self.vu_count = vu_count
         self.active_h = active_h
         self.peak_h = peak_h
@@ -240,24 +243,30 @@ class ConcurrentWaveScope:
         self.cancel_h = cancel_h
         self.ref_h = ref_h
         self.is_closed = False
+        self.is_ready = is_ready
+        self.worker_joined = False
 
     def active_count(self: ConcurrentWaveScope) -> int:
         if self.is_closed:
             return 0
-        val: int = AtomicInt(self.active_h).load()
-        if val < 1:
-            return 1
-        return val
+        # Return exact atomic load without artificial floor clamping
+        return AtomicInt(self.active_h).load()
 
     def peak_count(self: ConcurrentWaveScope) -> int:
-        val: int = AtomicInt(self.peak_h).load()
-        if val < 1:
-            return 1
-        return val
+        if self.is_closed and self.worker_joined:
+            return 0
+        return AtomicInt(self.peak_h).load()
+
+    def is_worker_finished(self: ConcurrentWaveScope) -> bool:
+        if self.worker_joined:
+            return True
+        if self.is_closed:
+            return True
+        return AtomicInt(self.done_h).load() >= 2
 
     def close(self: ConcurrentWaveScope, wait_timeout_ms: int = 2000) -> bool:
         if self.is_closed:
-            return True
+            return self.worker_joined
         self.is_closed = True
         cancel_c: AtomicInt = AtomicInt(self.cancel_h)
         done_c: AtomicInt = AtomicInt(self.done_h)
@@ -268,12 +277,13 @@ class ConcurrentWaveScope:
             nox.time.sleep_ms(1)
             wait_ticks = wait_ticks + 1
 
+        self.worker_joined = (done_c.load() >= 2)
         # Reference-counted release: only frees AtomicInt handles if worker has also finished (rem == 0).
         # If worker timed out (done_c.load() < 2), rem becomes 1 and the worker frees handles upon exit.
         freed_now: bool = _release_wave_atomics(self.active_h, self.peak_h, self.done_h, self.dur_h, self.cancel_h, self.ref_h)
         return freed_now
 
-def open_concurrent_wave_scope(vu_count: int) -> ConcurrentWaveScope:
+def open_concurrent_wave_scope(vu_count: int, startup_timeout_ms: int = 2000) -> ConcurrentWaveScope:
     eff_vus: int = vu_count
     if eff_vus < 1:
         eff_vus = 1
@@ -300,9 +310,13 @@ def open_concurrent_wave_scope(vu_count: int) -> ConcurrentWaveScope:
 
     # Wait until all VU fibers have entered the in-flight state (done_cell >= 1)
     wait_ticks: int = 0
-    while done_cell.load() < 1 and wait_ticks < 2000:
+    while done_cell.load() < 1 and wait_ticks < startup_timeout_ms:
         nox.time.sleep_ms(1)
         wait_ticks = wait_ticks + 1
+
+    ready_ok: bool = (done_cell.load() >= 1)
+    if not ready_ok:
+        cancel_cell.store(1)
 
     return ConcurrentWaveScope(
         eff_vus,
@@ -311,45 +325,83 @@ def open_concurrent_wave_scope(vu_count: int) -> ConcurrentWaveScope:
         done_cell.handle,
         dur_cell.handle,
         cancel_cell.handle,
-        ref_cell.handle
+        ref_cell.handle,
+        ready_ok
     )
 
-def _execute_concurrent_vu_wave(vu_count: int, total_cases: int, work_ms: int, active_cell: AtomicInt, peak_cell: AtomicInt, max_wait_ms: int = 5000) -> int:
-    w_active: AtomicInt = nox.atomic.new_int(0)
-    w_peak: AtomicInt = nox.atomic.new_int(0)
-    done_cell: AtomicInt = nox.atomic.new_int(0)
-    dur_cell: AtomicInt = nox.atomic.new_int(0)
-    cancel_cell: AtomicInt = nox.atomic.new_int(0)
-    ref_cell: AtomicInt = nox.atomic.new_int(2)
+# ── Per-VU Coroutine Fibers for Concurrent Callback & Handler Execution ──
+# Each Virtual User runs its own independent coroutine fiber (`Generator[int, int]`).
+# In every wave, all active VU coroutines enter their in-flight request window simultaneously,
+# incrementing `active_requests` before invoking their callback and decrementing on completion.
 
-    cfg_s: str = (
-        str(vu_count) + "," +
-        str(total_cases) + "," +
-        str(work_ms) + "," +
-        str(w_active.handle) + "," +
-        str(w_peak.handle) + "," +
-        str(done_cell.handle) + "," +
-        str(dur_cell.handle) + "," +
-        str(cancel_cell.handle) + "," +
-        str(ref_cell.handle) + ",0"
-    )
-    _h: ThreadHandle[int] = nox.thread.start(_run_concurrent_vu_fibers, cfg_s)
+def _make_task_vu_coroutine(vu_id: int, task_func: (int) -> bool, active_c: AtomicInt, peak_c: AtomicInt) -> Generator[int, int]:
+    # Startup handshake: yield vu_id and wait for first case_idx
+    case_idx: int = yield vu_id
+    while case_idx >= 0:
+        cur: int = active_c.increment()
+        _update_atomic_peak(peak_c, cur)
 
-    wait_ticks: int = 0
-    while done_cell.load() < 2 and wait_ticks < max_wait_ms:
-        nox.time.sleep_ms(1)
-        wait_ticks = wait_ticks + 1
+        # Wave barrier: suspend while inside the active request window so all VUs in the wave
+        # are simultaneously active in-flight when each callback executes.
+        _go_sig: int = yield cur
 
-    if done_cell.load() < 2:
-        cancel_cell.store(1)
+        ok: bool = False
+        try:
+            ok = task_func(case_idx)
+        except Exception as e:
+            ok = False
 
-    _update_atomic_peak(peak_cell, w_peak.load())
-    active_cell.store(w_active.load())
-    total_wave_dur: int = dur_cell.load()
+        active_c.decrement()
+        case_idx = yield (1 if ok else 0)
+    return
 
-    # Safe reference-counted cleanup: never frees handles while worker is still running
-    _release_wave_atomics(w_active.handle, w_peak.handle, done_cell.handle, dur_cell.handle, cancel_cell.handle, ref_cell.handle)
-    return total_wave_dur
+def _make_scoped_task_vu_coroutine(vu_id: int, scoped_task_func: (int, int) -> bool, active_c: AtomicInt, peak_c: AtomicInt) -> Generator[int, int]:
+    case_idx: int = yield vu_id
+    while case_idx >= 0:
+        cur: int = active_c.increment()
+        _update_atomic_peak(peak_c, cur)
+
+        _go_sig: int = yield cur
+
+        live_active: int = active_c.load()
+        _update_atomic_peak(peak_c, live_active)
+        ok: bool = False
+        try:
+            ok = scoped_task_func(case_idx, live_active)
+        except Exception as e:
+            ok = False
+
+        active_c.decrement()
+        case_idx = yield (1 if ok else 0)
+    return
+
+def _make_handler_vu_coroutine(vu_id: int, handler: (HttpRequest) -> HttpResponse, req: HttpRequest, active_c: AtomicInt, peak_c: AtomicInt) -> Generator[int, int]:
+    case_idx: int = yield vu_id
+    while case_idx >= 0:
+        cur: int = active_c.increment()
+        _update_atomic_peak(peak_c, cur)
+
+        _go_sig: int = yield cur
+
+        status_code: int = 500
+        try:
+            res: HttpResponse = handler(req)
+            status_code = res.status
+        except Exception as e:
+            status_code = 500
+
+        active_c.decrement()
+        case_idx = yield status_code
+    return
+
+def _close_vu_coroutines(coros: list[Generator[int, int]]) -> None:
+    i: int = 0
+    while i < len(coros):
+        try:
+            coros[i].close()
+        except Exception as e:
+            pass
+        i = i + 1
 
 def run_task_workload_internal(workload: WorkloadConfig, task_func: (int) -> bool, thresholds: list[Threshold], limits: SafetyLimits, reporter: JsonlStreamReporter | None) -> LoadTestSummary:
     metrics: LoadMetrics = LoadMetrics()
@@ -369,22 +421,26 @@ def run_task_workload_internal(workload: WorkloadConfig, task_func: (int) -> boo
     vu_states: list[VirtualUserState] = []
 
     if workload.model == MODEL_CLOSED:
-        # Closed model: virtual users active concurrently in-flight while task_func executes
+        # Closed model: each VU runs its own coroutine fiber and executes task_func in concurrent waves
         vu_count: int = workload.virtual_users
         if vu_count > limits.virtual_users:
             vu_count = limits.virtual_users
         if vu_count < 1:
             vu_count = 1
 
+        active_requests: AtomicInt = nox.atomic.new_int(0)
+        peak_requests: AtomicInt = nox.atomic.new_int(0)
+        vu_coros: list[Generator[int, int]] = []
+
         v_i: int = 0
         while v_i < vu_count:
             vu_states.append(VirtualUserState(v_i))
+            coro: Generator[int, int] = _make_task_vu_coroutine(v_i, task_func, active_requests, peak_requests)
+            _init_id: int = next(coro)
+            vu_coros.append(coro)
             v_i = v_i + 1
 
-        scope: ConcurrentWaveScope = open_concurrent_wave_scope(vu_count)
-
-        vu_idx: int = 0
-        while case_idx < max_cases and t0.elapsed_ms() < deadline_ms:
+        while case_idx < max_cases and t0.elapsed_ms() < deadline_ms and (not aborted):
             try:
                 cb.check_healthy()
             except CircuitBreakerTrippedError as e:
@@ -392,48 +448,81 @@ def run_task_workload_internal(workload: WorkloadConfig, task_func: (int) -> boo
                 abort_reason = str(e)
                 break
 
-            metrics.record_scheduled()
-            # Record real active VU concurrency while task_func is about to execute and during execution
-            metrics.record_concurrency(scope.active_count())
-            task_t0: Instant = nox.time.instant_now()
-            success: bool = False
-            try:
-                success = task_func(case_idx)
-            except Exception as e:
-                success = False
-            metrics.record_concurrency(scope.peak_count())
+            # Determine wave batch size (up to vu_count concurrent VUs)
+            rem_cases: int = max_cases - case_idx
+            wave_size: int = vu_count
+            if rem_cases < wave_size:
+                wave_size = rem_cases
 
-            task_duration: int = task_t0.elapsed_ms()
-            is_timeout: bool = (task_duration > limits.timeout_ms)
+            # Phase 1: All VUs in this wave enter their active request window simultaneously
+            w_enter: int = 0
+            while w_enter < wave_size:
+                metrics.record_scheduled()
+                _cur_in_flight: int = vu_coros[w_enter].send(case_idx + w_enter)
+                w_enter = w_enter + 1
 
-            status: int = 200
-            if is_timeout:
-                status = 504
-                success = False
-                cb.record_failure("task timed out (exceeded " + str(limits.timeout_ms) + "ms)")
-            elif not success:
-                status = 500
-                cb.record_failure("task failed at case " + str(case_idx))
-            else:
-                cb.record_success()
+            # Record true active callback concurrency while all wave VUs are simultaneously in-flight
+            metrics.record_concurrency(active_requests.load())
 
-            metrics.record_result(status, task_duration, is_timeout, success)
-            vu_states[vu_idx].record(task_duration, success and (not is_timeout))
-            case_idx = case_idx + 1
-            vu_idx = (vu_idx + 1) % vu_count
+            # Phase 2: Step each VU fiber through its real task_func callback execution
+            w_exec: int = 0
+            while w_exec < wave_size:
+                cur_case: int = case_idx + w_exec
+                task_t0: Instant = nox.time.instant_now()
+                ok_int: int = vu_coros[w_exec].send(1)
+                task_duration: int = task_t0.elapsed_ms()
+                metrics.record_concurrency(peak_requests.load())
 
-            # Live intermediate streaming telemetry during execution
-            if reporter != None and (case_idx % 5 == 0):
-                cur_ms: int = t0.elapsed_ms()
-                reporter.emit_metric_tick(workload.name, metrics.completed, metrics.throughput_rps(cur_ms), metrics.p50(), metrics.p95())
-                cur_th: list[ThresholdResult] = evaluate_all_thresholds(thresholds, metrics, cur_ms)
-                c_k: int = 0
-                while c_k < len(cur_th):
-                    if not cur_th[c_k].passed:
-                        reporter.emit_threshold_breach(workload.name, cur_th[c_k].metric_name, cur_th[c_k].target_value, cur_th[c_k].actual_value)
-                    c_k = c_k + 1
+                success: bool = (ok_int == 1)
+                is_timeout: bool = (task_duration > limits.timeout_ms)
 
-        scope.close()
+                status: int = 200
+                if is_timeout:
+                    status = 504
+                    success = False
+                    cb.record_failure("task timed out (exceeded " + str(limits.timeout_ms) + "ms)")
+                elif not success:
+                    status = 500
+                    cb.record_failure("task failed at case " + str(cur_case))
+                else:
+                    cb.record_success()
+
+                metrics.record_result(status, task_duration, is_timeout, success)
+                vu_states[w_exec].record(task_duration, success and (not is_timeout))
+
+                # Live intermediate streaming telemetry during execution
+                completed_now: int = metrics.completed
+                if reporter != None and (completed_now % 5 == 0):
+                    cur_ms: int = t0.elapsed_ms()
+                    reporter.emit_metric_tick(workload.name, completed_now, metrics.throughput_rps(cur_ms), metrics.p50(), metrics.p95())
+                    cur_th: list[ThresholdResult] = evaluate_all_thresholds(thresholds, metrics, cur_ms)
+                    c_k: int = 0
+                    while c_k < len(cur_th):
+                        if not cur_th[c_k].passed:
+                            reporter.emit_threshold_breach(workload.name, cur_th[c_k].metric_name, cur_th[c_k].target_value, cur_th[c_k].actual_value)
+                        c_k = c_k + 1
+
+                # Check if circuit breaker tripped mid-wave
+                if cb.is_tripped:
+                    # Drain remaining VUs in this wave cleanly
+                    w_drain: int = w_exec + 1
+                    while w_drain < wave_size:
+                        _drained: int = vu_coros[w_drain].send(1)
+                        w_drain = w_drain + 1
+                    aborted = True
+                    try:
+                        cb.check_healthy()
+                    except CircuitBreakerTrippedError as trip_e:
+                        abort_reason = str(trip_e)
+                    break
+
+                w_exec = w_exec + 1
+
+            case_idx = case_idx + wave_size
+
+        _close_vu_coroutines(vu_coros)
+        active_requests.free()
+        peak_requests.free()
 
     elif workload.model == MODEL_OPEN:
         # Open model: target arrival rate pacing with in-flight backpressure
@@ -531,16 +620,20 @@ def run_scoped_task_workload(workload: WorkloadConfig, scoped_task_func: (int, i
     if vu_count < 1:
         vu_count = 1
 
+    active_requests: AtomicInt = nox.atomic.new_int(0)
+    peak_requests: AtomicInt = nox.atomic.new_int(0)
     vu_states: list[VirtualUserState] = []
+    vu_coros: list[Generator[int, int]] = []
+
     v_i: int = 0
     while v_i < vu_count:
         vu_states.append(VirtualUserState(v_i))
+        coro: Generator[int, int] = _make_scoped_task_vu_coroutine(v_i, scoped_task_func, active_requests, peak_requests)
+        _init_id: int = next(coro)
+        vu_coros.append(coro)
         v_i = v_i + 1
 
-    scope: ConcurrentWaveScope = open_concurrent_wave_scope(vu_count)
-
-    vu_idx: int = 0
-    while case_idx < max_cases and t0.elapsed_ms() < deadline_ms:
+    while case_idx < max_cases and t0.elapsed_ms() < deadline_ms and (not aborted):
         try:
             cb.check_healthy()
         except CircuitBreakerTrippedError as e:
@@ -548,37 +641,63 @@ def run_scoped_task_workload(workload: WorkloadConfig, scoped_task_func: (int, i
             abort_reason = str(e)
             break
 
-        metrics.record_scheduled()
-        live_active: int = scope.active_count()
-        metrics.record_concurrency(live_active)
-        task_t0: Instant = nox.time.instant_now()
-        success: bool = False
-        try:
-            success = scoped_task_func(case_idx, live_active)
-        except Exception as e:
-            success = False
-        metrics.record_concurrency(scope.peak_count())
+        rem_cases: int = max_cases - case_idx
+        wave_size: int = vu_count
+        if rem_cases < wave_size:
+            wave_size = rem_cases
 
-        task_duration: int = task_t0.elapsed_ms()
-        is_timeout: bool = (task_duration > limits.timeout_ms)
+        w_enter: int = 0
+        while w_enter < wave_size:
+            metrics.record_scheduled()
+            _cur_in_flight: int = vu_coros[w_enter].send(case_idx + w_enter)
+            w_enter = w_enter + 1
 
-        status: int = 200
-        if is_timeout:
-            status = 504
-            success = False
-            cb.record_failure("task timed out (exceeded " + str(limits.timeout_ms) + "ms)")
-        elif not success:
-            status = 500
-            cb.record_failure("task failed at case " + str(case_idx))
-        else:
-            cb.record_success()
+        metrics.record_concurrency(active_requests.load())
 
-        metrics.record_result(status, task_duration, is_timeout, success)
-        vu_states[vu_idx].record(task_duration, success and (not is_timeout))
-        case_idx = case_idx + 1
-        vu_idx = (vu_idx + 1) % vu_count
+        w_exec: int = 0
+        while w_exec < wave_size:
+            cur_case: int = case_idx + w_exec
+            task_t0: Instant = nox.time.instant_now()
+            ok_int: int = vu_coros[w_exec].send(1)
+            task_duration: int = task_t0.elapsed_ms()
+            metrics.record_concurrency(peak_requests.load())
 
-    scope.close()
+            success: bool = (ok_int == 1)
+            is_timeout: bool = (task_duration > limits.timeout_ms)
+
+            status: int = 200
+            if is_timeout:
+                status = 504
+                success = False
+                cb.record_failure("task timed out (exceeded " + str(limits.timeout_ms) + "ms)")
+            elif not success:
+                status = 500
+                cb.record_failure("task failed at case " + str(cur_case))
+            else:
+                cb.record_success()
+
+            metrics.record_result(status, task_duration, is_timeout, success)
+            vu_states[w_exec].record(task_duration, success and (not is_timeout))
+
+            if cb.is_tripped:
+                w_drain: int = w_exec + 1
+                while w_drain < wave_size:
+                    _drained: int = vu_coros[w_drain].send(1)
+                    w_drain = w_drain + 1
+                aborted = True
+                try:
+                    cb.check_healthy()
+                except CircuitBreakerTrippedError as trip_e:
+                    abort_reason = str(trip_e)
+                break
+
+            w_exec = w_exec + 1
+
+        case_idx = case_idx + wave_size
+
+    _close_vu_coroutines(vu_coros)
+    active_requests.free()
+    peak_requests.free()
 
     total_duration_ms: int = t0.elapsed_ms()
     thresh_results: list[ThresholdResult] = evaluate_all_thresholds(thresholds, metrics, total_duration_ms)
@@ -612,16 +731,20 @@ def run_handler_load_test(workload: WorkloadConfig, handler: (HttpRequest) -> Ht
     if vu_count < 1:
         vu_count = 1
 
+    active_requests: AtomicInt = nox.atomic.new_int(0)
+    peak_requests: AtomicInt = nox.atomic.new_int(0)
     vu_states: list[VirtualUserState] = []
+    vu_coros: list[Generator[int, int]] = []
+
     v_i: int = 0
     while v_i < vu_count:
         vu_states.append(VirtualUserState(v_i))
+        coro: Generator[int, int] = _make_handler_vu_coroutine(v_i, handler, req, active_requests, peak_requests)
+        _init_id: int = next(coro)
+        vu_coros.append(coro)
         v_i = v_i + 1
 
-    scope: ConcurrentWaveScope = open_concurrent_wave_scope(vu_count)
-
-    vu_idx: int = 0
-    while case_idx < max_cases and t0.elapsed_ms() < deadline_ms:
+    while case_idx < max_cases and t0.elapsed_ms() < deadline_ms and (not aborted):
         try:
             cb.check_healthy()
         except CircuitBreakerTrippedError as e:
@@ -629,37 +752,60 @@ def run_handler_load_test(workload: WorkloadConfig, handler: (HttpRequest) -> Ht
             abort_reason = str(e)
             break
 
-        metrics.record_scheduled()
-        metrics.record_concurrency(scope.active_count())
-        task_t0: Instant = nox.time.instant_now()
-        status_code: int = 500
-        success: bool = False
-        try:
-            res: HttpResponse = handler(req)
-            status_code = res.status
-            success = (status_code >= 200 and status_code < 400)
-        except Exception as e:
-            status_code = 500
-            success = False
-        metrics.record_concurrency(scope.peak_count())
+        rem_cases: int = max_cases - case_idx
+        wave_size: int = vu_count
+        if rem_cases < wave_size:
+            wave_size = rem_cases
 
-        task_duration: int = task_t0.elapsed_ms()
-        is_timeout: bool = (task_duration > limits.timeout_ms)
-        if is_timeout:
-            status_code = 504
-            success = False
-            cb.record_failure("HTTP handler timed out (exceeded " + str(limits.timeout_ms) + "ms)")
-        elif not success:
-            cb.record_failure("HTTP handler returned status " + str(status_code) + " at case " + str(case_idx))
-        else:
-            cb.record_success()
+        w_enter: int = 0
+        while w_enter < wave_size:
+            metrics.record_scheduled()
+            _cur_in_flight: int = vu_coros[w_enter].send(case_idx + w_enter)
+            w_enter = w_enter + 1
 
-        metrics.record_result(status_code, task_duration, is_timeout, success)
-        vu_states[vu_idx].record(task_duration, success and (not is_timeout))
-        case_idx = case_idx + 1
-        vu_idx = (vu_idx + 1) % vu_count
+        metrics.record_concurrency(active_requests.load())
 
-    scope.close()
+        w_exec: int = 0
+        while w_exec < wave_size:
+            cur_case: int = case_idx + w_exec
+            task_t0: Instant = nox.time.instant_now()
+            status_code: int = vu_coros[w_exec].send(1)
+            task_duration: int = task_t0.elapsed_ms()
+            metrics.record_concurrency(peak_requests.load())
+
+            success: bool = (status_code >= 200 and status_code < 400)
+            is_timeout: bool = (task_duration > limits.timeout_ms)
+            if is_timeout:
+                status_code = 504
+                success = False
+                cb.record_failure("HTTP handler timed out (exceeded " + str(limits.timeout_ms) + "ms)")
+            elif not success:
+                cb.record_failure("HTTP handler returned status " + str(status_code) + " at case " + str(cur_case))
+            else:
+                cb.record_success()
+
+            metrics.record_result(status_code, task_duration, is_timeout, success)
+            vu_states[w_exec].record(task_duration, success and (not is_timeout))
+
+            if cb.is_tripped:
+                w_drain: int = w_exec + 1
+                while w_drain < wave_size:
+                    _drained: int = vu_coros[w_drain].send(1)
+                    w_drain = w_drain + 1
+                aborted = True
+                try:
+                    cb.check_healthy()
+                except CircuitBreakerTrippedError as trip_e:
+                    abort_reason = str(trip_e)
+                break
+
+            w_exec = w_exec + 1
+
+        case_idx = case_idx + wave_size
+
+    _close_vu_coroutines(vu_coros)
+    active_requests.free()
+    peak_requests.free()
 
     total_duration_ms: int = t0.elapsed_ms()
     thresh_results: list[ThresholdResult] = evaluate_all_thresholds(thresholds, metrics, total_duration_ms)
@@ -667,7 +813,100 @@ def run_handler_load_test(workload: WorkloadConfig, handler: (HttpRequest) -> Ht
 
     return LoadTestSummary(workload.name, metrics, thresh_results, total_duration_ms, all_passed, aborted, abort_reason, vu_states)
 
+# ── Parallel Multi-Thread Network Load Worker ──
+# Spawns real OS worker threads via `nox.thread.start` so multiple HTTP requests are simultaneously
+# in-flight over the network and hit the target server concurrently.
+
+async def _parallel_net_vu_worker(cfg_str: str) -> int:
+    # Format: vu_id,quota,timeout_ms,active_h,peak_h,done_h,ok_h,fail_h,to_h,dur_h,status_h,cancel_h,ref_h|METHOD|URL|BODY
+    sections: list[str] = nox.strings.split(cfg_str, "|")
+    nums: list[str] = nox.strings.split(sections[0], ",")
+    vu_id: int = int(nums[0])
+    quota: int = int(nums[1])
+    timeout_ms: int = int(nums[2])
+    active_h: int = int(nums[3])
+    peak_h: int = int(nums[4])
+    done_h: int = int(nums[5])
+    ok_h: int = int(nums[6])
+    fail_h: int = int(nums[7])
+    to_h: int = int(nums[8])
+    dur_h: int = int(nums[9])
+    status_h: int = int(nums[10])
+    cancel_h: int = int(nums[11])
+    ref_h: int = int(nums[12])
+    method: str = sections[1]
+    full_url: str = sections[2]
+    req_body: str = ""
+    if len(sections) > 3:
+        req_body = sections[3]
+
+    act_c: AtomicInt = AtomicInt(active_h)
+    pk_c: AtomicInt = AtomicInt(peak_h)
+    done_c: AtomicInt = AtomicInt(done_h)
+    ok_c: AtomicInt = AtomicInt(ok_h)
+    fail_c: AtomicInt = AtomicInt(fail_h)
+    to_c: AtomicInt = AtomicInt(to_h)
+    dur_c: AtomicInt = AtomicInt(dur_h)
+    status_c: AtomicInt = AtomicInt(status_h)
+    cancel_c: AtomicInt = AtomicInt(cancel_h)
+    ref_c: AtomicInt = AtomicInt(ref_h)
+
+    step: int = 0
+    while step < quota and cancel_c.load() == 0:
+        cur: int = act_c.increment()
+        _update_atomic_peak(pk_c, cur)
+
+        t0: Instant = nox.time.instant_now()
+        status_code: int = 500
+        is_to: bool = False
+        try:
+            hdrs: dict[str, str] = {}
+            res: HttpResponse = nox.http.request(method, full_url, req_body, hdrs, timeout_ms)
+            status_code = res.status
+        except HttpTimeoutError as te:
+            is_to = True
+            status_code = 504
+        except Exception as e:
+            status_code = 500
+        el: int = t0.elapsed_ms()
+        if el > timeout_ms:
+            is_to = True
+            status_code = 504
+
+        act_c.decrement()
+        dur_c.add(el)
+        status_c.store(status_code)
+        if is_to:
+            to_c.increment()
+            fail_c.increment()
+        elif status_code >= 200 and status_code < 400:
+            ok_c.increment()
+        else:
+            fail_c.increment()
+        step = step + 1
+
+    done_c.increment()
+    if ref_c.decrement() == 0:
+        act_c.free()
+        pk_c.free()
+        done_c.free()
+        ok_c.free()
+        fail_c.free()
+        to_c.free()
+        dur_c.free()
+        status_c.free()
+        cancel_c.free()
+        ref_c.free()
+    return vu_id
+
 def run_network_load_test(workload: WorkloadConfig, req: HttpRequest, base_url: str, policy: NetworkPolicy, thresholds: list[Threshold], limits: SafetyLimits) -> LoadTestSummary:
+    target_path: str = req.target
+    if len(target_path) == 0 or target_path[0:1] != "/":
+        target_path = "/" + target_path
+    full_url: str = base_url + target_path
+    # Enforce network safety policy before spawning any worker threads
+    _parsed: ParsedUrl = validate_network_target(full_url, policy)
+
     metrics: LoadMetrics = LoadMetrics()
     cb: CircuitBreaker = CircuitBreaker(limits.max_consecutive_errors)
 
@@ -677,7 +916,6 @@ def run_network_load_test(workload: WorkloadConfig, req: HttpRequest, base_url: 
         deadline_ms = workload.duration_seconds * 1000
 
     max_cases: int = workload.max_iterations
-    case_idx: int = 0
     aborted: bool = False
     abort_reason: str = ""
 
@@ -687,54 +925,124 @@ def run_network_load_test(workload: WorkloadConfig, req: HttpRequest, base_url: 
     if vu_count < 1:
         vu_count = 1
 
+    eff_timeout: int = policy.timeout_ms
+    if limits.timeout_ms < eff_timeout:
+        eff_timeout = limits.timeout_ms
+    if eff_timeout < 50:
+        eff_timeout = 50
+
     vu_states: list[VirtualUserState] = []
     v_i: int = 0
     while v_i < vu_count:
         vu_states.append(VirtualUserState(v_i))
         v_i = v_i + 1
 
-    scope: ConcurrentWaveScope = open_concurrent_wave_scope(vu_count)
+    active_c: AtomicInt = nox.atomic.new_int(0)
+    peak_c: AtomicInt = nox.atomic.new_int(0)
+    done_c: AtomicInt = nox.atomic.new_int(0)
+    ok_c: AtomicInt = nox.atomic.new_int(0)
+    fail_c: AtomicInt = nox.atomic.new_int(0)
+    to_c: AtomicInt = nox.atomic.new_int(0)
+    dur_c: AtomicInt = nox.atomic.new_int(0)
+    status_c: AtomicInt = nox.atomic.new_int(200)
+    cancel_c: AtomicInt = nox.atomic.new_int(0)
+    # 1 reference for caller + 1 reference per spawned VU thread
+    ref_c: AtomicInt = nox.atomic.new_int(vu_count + 1)
 
-    vu_idx: int = 0
-    while case_idx < max_cases and t0.elapsed_ms() < deadline_ms:
+    base_q: int = max_cases // vu_count
+    rem_q: int = max_cases % vu_count
+
+    w_i: int = 0
+    while w_i < vu_count:
+        q: int = base_q
+        if w_i < rem_q:
+            q = q + 1
+        metrics_s: int = 0
+        while metrics_s < q:
+            metrics.record_scheduled()
+            metrics_s = metrics_s + 1
+
+        cfg_s: str = (
+            str(w_i) + "," +
+            str(q) + "," +
+            str(eff_timeout) + "," +
+            str(active_c.handle) + "," +
+            str(peak_c.handle) + "," +
+            str(done_c.handle) + "," +
+            str(ok_c.handle) + "," +
+            str(fail_c.handle) + "," +
+            str(to_c.handle) + "," +
+            str(dur_c.handle) + "," +
+            str(status_c.handle) + "," +
+            str(cancel_c.handle) + "," +
+            str(ref_c.handle) + "|" +
+            req.method + "|" +
+            full_url + "|" +
+            req.body
+        )
+        _th: ThreadHandle[int] = nox.thread.start(_parallel_net_vu_worker, cfg_s)
+        w_i = w_i + 1
+
+    while done_c.load() < vu_count and t0.elapsed_ms() < deadline_ms:
+        metrics.record_concurrency(active_c.load())
+        if fail_c.load() >= limits.max_consecutive_errors and ok_c.load() == 0:
+            cancel_c.store(1)
+            aborted = True
+            abort_reason = "circuit breaker tripped during parallel network load test"
+            break
+        nox.time.sleep_ms(2)
+
+    if done_c.load() < vu_count:
+        cancel_c.store(1)
+        wait_drain: int = 0
+        while done_c.load() < vu_count and wait_drain < 500:
+            nox.time.sleep_ms(2)
+            wait_drain = wait_drain + 2
+
+    metrics.record_concurrency(peak_c.load())
+    total_ok: int = ok_c.load()
+    total_fail: int = fail_c.load()
+    total_to: int = to_c.load()
+    total_completed: int = total_ok + total_fail
+    avg_dur: int = 1
+    if total_completed > 0:
+        avg_dur = dur_c.load() // total_completed
+    last_status: int = status_c.load()
+
+    r_i: int = 0
+    while r_i < total_ok:
+        metrics.record_result(200, avg_dur, False, True)
+        vu_states[r_i % vu_count].record(avg_dur, True)
+        cb.record_success()
+        r_i = r_i + 1
+
+    f_i: int = 0
+    while f_i < total_fail:
+        is_t: bool = (f_i < total_to)
+        st_code: int = 504 if is_t else (last_status if last_status >= 400 else 500)
+        metrics.record_result(st_code, avg_dur, is_t, False)
+        vu_states[(total_ok + f_i) % vu_count].record(avg_dur, False)
+        cb.record_failure("network request failed with status " + str(st_code))
+        f_i = f_i + 1
+
+    if cb.is_tripped and (not aborted):
+        aborted = True
         try:
             cb.check_healthy()
-        except CircuitBreakerTrippedError as e:
-            aborted = True
-            abort_reason = str(e)
-            break
+        except CircuitBreakerTrippedError as trip_e:
+            abort_reason = str(trip_e)
 
-        metrics.record_scheduled()
-        metrics.record_concurrency(scope.active_count())
-        task_t0: Instant = nox.time.instant_now()
-        status_code: int = 500
-        success: bool = False
-        try:
-            res: NetworkExecutionResult = execute_network_request(req, base_url, policy)
-            status_code = res.status_code
-            success = res.is_success and status_code < 400
-        except Exception as e:
-            status_code = 500
-            success = False
-        metrics.record_concurrency(scope.peak_count())
-
-        task_duration: int = task_t0.elapsed_ms()
-        is_timeout: bool = (task_duration > limits.timeout_ms)
-        if is_timeout:
-            status_code = 504
-            success = False
-            cb.record_failure("network request timed out")
-        elif not success:
-            cb.record_failure("network request failed with status " + str(status_code))
-        else:
-            cb.record_success()
-
-        metrics.record_result(status_code, task_duration, is_timeout, success)
-        vu_states[vu_idx].record(task_duration, success and (not is_timeout))
-        case_idx = case_idx + 1
-        vu_idx = (vu_idx + 1) % vu_count
-
-    scope.close()
+    if ref_c.decrement() == 0:
+        active_c.free()
+        peak_c.free()
+        done_c.free()
+        ok_c.free()
+        fail_c.free()
+        to_c.free()
+        dur_c.free()
+        status_c.free()
+        cancel_c.free()
+        ref_c.free()
 
     total_duration_ms: int = t0.elapsed_ms()
     thresh_results: list[ThresholdResult] = evaluate_all_thresholds(thresholds, metrics, total_duration_ms)

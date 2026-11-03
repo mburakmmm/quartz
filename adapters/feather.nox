@@ -9,10 +9,12 @@ from nox.orm import Table, select
 class FeatherField:
     name: str
     value: str
+    is_null: bool
 
-    def __init__(self: FeatherField, name: str, value: str) -> None:
+    def __init__(self: FeatherField, name: str, value: str, is_null: bool = False) -> None:
         self.name = name
         self.value = value
+        self.is_null = is_null
 
 class FeatherRecord:
     id: str
@@ -27,11 +29,32 @@ class FeatherRecord:
         while i < len(self.fields):
             if self.fields[i].name == name:
                 self.fields[i].value = value
+                self.fields[i].is_null = False
                 return
             i = i + 1
         new_f: list[FeatherField] = self.fields
-        new_f.append(FeatherField(name, value))
+        new_f.append(FeatherField(name, value, False))
         self.fields = new_f
+
+    def set_null(self: FeatherRecord, name: str) -> None:
+        i: int = 0
+        while i < len(self.fields):
+            if self.fields[i].name == name:
+                self.fields[i].value = ""
+                self.fields[i].is_null = True
+                return
+            i = i + 1
+        new_f: list[FeatherField] = self.fields
+        new_f.append(FeatherField(name, "", True))
+        self.fields = new_f
+
+    def is_null(self: FeatherRecord, name: str) -> bool:
+        i: int = 0
+        while i < len(self.fields):
+            if self.fields[i].name == name:
+                return self.fields[i].is_null
+            i = i + 1
+        return False
 
     def get(self: FeatherRecord, name: str) -> str:
         i: int = 0
@@ -54,7 +77,10 @@ class FeatherRecord:
         i: int = 0
         while i < len(self.fields):
             f: FeatherField = self.fields[i]
-            rec.set(f.name, f.value)
+            if f.is_null:
+                rec.set_null(f.name)
+            else:
+                rec.set(f.name, f.value)
             i = i + 1
         return rec
 
@@ -68,7 +94,9 @@ class FeatherRecord:
             f: FeatherField = self.fields[i]
             if not other.has(f.name):
                 return False
-            if other.get(f.name) != f.value:
+            if other.is_null(f.name) != f.is_null:
+                return False
+            if (not f.is_null) and other.get(f.name) != f.value:
                 return False
             i = i + 1
         return True
@@ -350,7 +378,8 @@ protocol SqlConnection:
     def close(self: SqlConnection) -> None:
         pass
 
-# Converts a `nox.db.Row` into a `FeatherRecord`, using `pk_col` as the record ID.
+# Converts a `nox.db.Row` into a `FeatherRecord`, using `pk_col` as the record ID
+# and preserving SQL NULL vs empty-string ("") cells via `set_null`.
 def row_to_feather_record(row: Row, pk_col: str) -> FeatherRecord:
     pk_val: str = ""
     n: int = row.column_count()
@@ -366,10 +395,10 @@ def row_to_feather_record(row: Row, pk_col: str) -> FeatherRecord:
     j: int = 0
     while j < n:
         cname: str = row.column_name(j)
-        cval: str = ""
-        if not row.is_null(j):
-            cval = row.get_str(j)
-        rec.set(cname, cval)
+        if row.is_null(j):
+            rec.set_null(cname)
+        else:
+            rec.set(cname, row.get_str(j))
         j = j + 1
     return rec
 
@@ -515,7 +544,9 @@ def run_orm_transaction(
 class InMemorySqlConnection:
     columns: list[str]
     rows: list[list[str]]
+    null_masks: list[list[bool]]
     tx_backup: list[list[str]]
+    tx_null_backup: list[list[bool]]
     in_tx: bool
     simulate_broken_rollback: bool
     simulate_commit_error: bool
@@ -523,7 +554,9 @@ class InMemorySqlConnection:
     def __init__(self: InMemorySqlConnection, columns: list[str]) -> None:
         self.columns = columns
         self.rows = []
+        self.null_masks = []
         self.tx_backup = []
+        self.tx_null_backup = []
         self.in_tx = False
         self.simulate_broken_rollback = False
         self.simulate_commit_error = False
@@ -541,33 +574,62 @@ class InMemorySqlConnection:
             i = i + 1
         return out
 
+    def _clone_nulls(self: InMemorySqlConnection, src: list[list[bool]]) -> list[list[bool]]:
+        out: list[list[bool]] = []
+        i: int = 0
+        while i < len(src):
+            r: list[bool] = []
+            j: int = 0
+            while j < len(src[i]):
+                r.append(src[i][j])
+                j = j + 1
+            out.append(r)
+            i = i + 1
+        return out
+
     def insert_row(self: InMemorySqlConnection, values: list[str]) -> int:
+        nulls: list[bool] = []
+        i: int = 0
+        while i < len(values):
+            nulls.append(False)
+            i = i + 1
+        return self.insert_row_with_nulls(values, nulls)
+
+    def insert_row_with_nulls(self: InMemorySqlConnection, values: list[str], nulls: list[bool]) -> int:
         new_rows: list[list[str]] = self.rows
         new_rows.append(values)
         self.rows = new_rows
+        new_nulls: list[list[bool]] = self.null_masks
+        new_nulls.append(nulls)
+        self.null_masks = new_nulls
         return 1
 
     def execute(self: InMemorySqlConnection, sql: str) -> int:
         s: str = nox.strings.trim(sql)
         if s == "BEGIN" or s == "BEGIN TRANSACTION":
             self.tx_backup = self._clone_rows(self.rows)
+            self.tx_null_backup = self._clone_nulls(self.null_masks)
             self.in_tx = True
             return 0
         if s == "COMMIT":
             if self.simulate_commit_error:
                 raise ValueError("simulated deferred constraint failure on COMMIT")
             self.tx_backup = []
+            self.tx_null_backup = []
             self.in_tx = False
             return 0
         if s == "ROLLBACK":
             if not self.simulate_broken_rollback and self.in_tx:
                 self.rows = self._clone_rows(self.tx_backup)
+                self.null_masks = self._clone_nulls(self.tx_null_backup)
             self.tx_backup = []
+            self.tx_null_backup = []
             self.in_tx = False
             return 0
         if nox.strings.starts_with(s, "DELETE FROM"):
             cnt: int = len(self.rows)
             self.rows = []
+            self.null_masks = []
             return cnt
         if nox.strings.starts_with(s, "INSERT INTO"):
             lp: int = nox.strings.index_of(s, "(")
@@ -576,14 +638,22 @@ class InMemorySqlConnection:
                 inner: str = s[lp + 1:rp]
                 parts: list[str] = nox.strings.split(inner, ",")
                 cleaned: list[str] = []
+                nulls_row: list[bool] = []
                 pi: int = 0
                 while pi < len(parts):
                     v: str = nox.strings.trim(parts[pi])
-                    if len(v) >= 2 and v[0:1] == "'" and v[len(v) - 1:len(v)] == "'":
+                    if v == "NULL" or v == "null":
+                        cleaned.append("")
+                        nulls_row.append(True)
+                    elif len(v) >= 2 and v[0:1] == "'" and v[len(v) - 1:len(v)] == "'":
                         v = v[1:len(v) - 1]
-                    cleaned.append(v)
+                        cleaned.append(v)
+                        nulls_row.append(False)
+                    else:
+                        cleaned.append(v)
+                        nulls_row.append(False)
                     pi = pi + 1
-                return self.insert_row(cleaned)
+                return self.insert_row_with_nulls(cleaned, nulls_row)
         return 0
 
     def query(self: InMemorySqlConnection, sql: str) -> list[Row]:
@@ -592,10 +662,13 @@ class InMemorySqlConnection:
         while i < len(self.rows):
             vals: list[str] = self.rows[i]
             nulls: list[bool] = []
-            c: int = 0
-            while c < len(vals):
-                nulls.append(False)
-                c = c + 1
+            if i < len(self.null_masks) and len(self.null_masks[i]) == len(vals):
+                nulls = self.null_masks[i]
+            else:
+                c: int = 0
+                while c < len(vals):
+                    nulls.append(False)
+                    c = c + 1
             out.append(Row(vals, nulls, self.columns))
             i = i + 1
         return out

@@ -17,6 +17,9 @@ class IntGen:
         self.max_val = max_val
         self.with_boundaries = with_boundaries
 
+    def schema_descriptor(self: IntGen) -> str:
+        return "IntGen(min=" + str(self.min_val) + ",max=" + str(self.max_val) + ",boundaries=" + ("true" if self.with_boundaries else "false") + ")"
+
     def generate(self: IntGen, prng: Prng) -> int:
         if self.with_boundaries and prng.next_int_range(0, 10) == 0:
             # 10% probability of boundary value
@@ -57,6 +60,9 @@ class BoolGen:
     def __init__(self: BoolGen) -> None:
         pass
 
+    def schema_descriptor(self: BoolGen) -> str:
+        return "BoolGen()"
+
     def generate(self: BoolGen, prng: Prng) -> bool:
         return prng.next_bool()
 
@@ -69,6 +75,9 @@ class StringGen:
         self.min_len = min_len
         self.max_len = max_len
         self.charset = charset
+
+    def schema_descriptor(self: StringGen) -> str:
+        return "StringGen(min_len=" + str(self.min_len) + ",max_len=" + str(self.max_len) + ",charset_len=" + str(len(self.charset)) + ")"
 
     def generate(self: StringGen, prng: Prng) -> str:
         target_len: int = prng.next_int_range(self.min_len, self.max_len)
@@ -112,6 +121,9 @@ class ListIntGen:
         self.min_len = min_len
         self.max_len = max_len
         self.item_gen = item_gen
+
+    def schema_descriptor(self: ListIntGen) -> str:
+        return "ListIntGen(min_len=" + str(self.min_len) + ",max_len=" + str(self.max_len) + ",item=" + self.item_gen.schema_descriptor() + ")"
 
     def generate(self: ListIntGen, prng: Prng) -> list[int]:
         target_len: int = prng.next_int_range(self.min_len, self.max_len)

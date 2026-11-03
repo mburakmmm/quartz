@@ -110,6 +110,22 @@ def run_contract_hardening_tests(suite: TestSuite) -> None:
     db_empty_t: AtlasTable = from_db_rows([Row(["1", ""], [False, False], ["id", "bio"])])
     suite.check_false("sort_contract_rejects_null_turned_into_empty_str", verify_sort_contract(db_null_t, db_empty_t, "id", True, True))
 
+    # SQL INNER JOIN NULL key semantics: NULL != NULL and NULL != ""
+    join_l_null: AtlasTable = from_db_rows([
+        Row(["1", "Alice"], [False, False], ["k", "name"]),
+        Row(["", "NullKeyL"], [True, False], ["k", "name"]),
+        Row(["", "EmptyKeyL"], [False, False], ["k", "name"])
+    ])
+    join_r_null: AtlasTable = from_db_rows([
+        Row(["1", "Rome"], [False, False], ["k", "city"]),
+        Row(["", "NullKeyR"], [True, False], ["k", "city"]),
+        Row(["", "EmptyKeyR"], [False, False], ["k", "city"])
+    ])
+    joined_null_aware: AtlasTable = inner_join_tables(join_l_null, join_r_null, "k", "k")
+    # Only "1" == "1" and non-NULL "" == non-NULL "" should match (2 rows total; NULL keys must NOT match NULL or "")
+    suite.check_eq_int("inner_join_excludes_sql_null_keys", joined_null_aware.row_count(), 2)
+    suite.check_true("inner_join_contract_validates_null_exclusion", verify_inner_join_contract(join_l_null, join_r_null, "k", "k", joined_null_aware))
+
 def run_atlas_adapter_tests() -> None:
     suite: TestSuite = TestSuite("atlas_adapter_suite")
 

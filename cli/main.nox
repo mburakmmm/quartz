@@ -306,12 +306,30 @@ def cmd_replay() -> None:
             nox.os.exit(1)
             return
 
+        art_prng: str = ""
+        if json_has_key(artifact, "prng_version"):
+            art_prng = json_get_key(artifact, "prng_version").s
+            print("  PRNG Version: " + art_prng)
+        art_schema: str = ""
+        if json_has_key(artifact, "generator_schema"):
+            art_schema = json_get_key(artifact, "generator_schema").s
+            if len(art_schema) > 0:
+                print("  Generator Schema: " + art_schema)
+
         # Replay against the ORIGINAL registered generator + predicate and verify candidate == original_counterexample.
         registry: PropertyRegistry = build_cli_registry()
-        v: ReplayVerification = registry.verify_replay(test_id, seed_val, case_idx, orig_str)
+        v: ReplayVerification = registry.verify_replay(test_id, seed_val, case_idx, orig_str, art_prng, art_schema)
         if not v.found_in_registry:
             print("Error: test_id '" + test_id + "' is not registered in the CLI property registry (pass --target <file.nox> for custom project properties).")
             nox.os.exit(2)
+            return
+        if not v.prng_version_matches:
+            print("Error: artifact prng_version '" + v.artifact_prng_version + "' does not match current PRNG version 'v" + str(PRNG_VERSION) + "'.")
+            nox.os.exit(1)
+            return
+        if not v.generator_schema_matches:
+            print("Error: artifact generator_schema '" + v.artifact_generator_schema + "' does not match registered generator schema '" + v.registered_generator_schema + "'.")
+            nox.os.exit(1)
             return
         if not v.candidate_matches_artifact:
             print("Error: regenerated candidate '" + v.generated_candidate + "' does not match artifact original_counterexample '" + v.expected_counterexample + "'.")
