@@ -3,7 +3,7 @@
 
 import nox.fs
 from nox.http import HttpRequest, HttpResponse
-from core.assert import assert_eq_int, assert_eq_str, assert_true, assert_false, assert_contains_str
+from core.assert import assert_eq_int, assert_eq_str, assert_true, assert_false, assert_contains_str, assert_not_contains_str
 from contract.mock import MockExchange, MockPlaybackHandler, MockRecorder, create_mock_handler, save_mock_exchanges, load_mock_exchanges_from_file, parse_mock_exchanges_json
 
 def test_mock_exchange_matching() -> None:
@@ -102,8 +102,67 @@ def test_mock_recorder_and_file_persistence() -> None:
     if nox.fs.exists(tmp_path):
         nox.fs.remove_file(tmp_path)
 
+def test_mock_recorder_secret_redaction() -> None:
+    recorder: MockRecorder = MockRecorder()
+    req_h: dict[str, str] = {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer super-secret-key-12345",
+        "Cookie": "session_id=abcdef987654",
+        "X-Api-Key": "my-vault-secret"
+    }
+    resp_h: dict[str, str] = {
+        "Content-Type": "application/json",
+        "Set-Cookie": "auth=secret_cookie_token"
+    }
+    req: HttpRequest = HttpRequest("POST", "/secure/checkout", "{\"token\": \"Bearer body_secret_tok\"}", req_h)
+    resp: HttpResponse = HttpResponse(200, "{\"msg\": \"auth with Bearer server_secret_tok ok\"}", resp_h)
+
+    recorded: MockExchange = recorder.record(req, resp)
+
+    # Validate header redaction
+    assert_eq_str(recorded.req_headers["Authorization"], "[REDACTED]", "Authorization header redacted")
+    assert_eq_str(recorded.req_headers["Cookie"], "[REDACTED]", "Cookie header redacted")
+    assert_eq_str(recorded.req_headers["X-Api-Key"], "[REDACTED]", "X-Api-Key header redacted")
+    assert_eq_str(recorded.req_headers["Content-Type"], "application/json", "non-sensitive header preserved")
+    assert_eq_str(recorded.resp_headers["Set-Cookie"], "[REDACTED]", "Set-Cookie response header redacted")
+
+    # Validate body secret redaction
+    assert_not_contains_str(recorded.req_body, "body_secret_tok", "request body secret masked")
+    assert_contains_str(recorded.req_body, "[REDACTED]", "request body has redaction mask")
+    assert_not_contains_str(recorded.resp_body, "server_secret_tok", "response body secret masked")
+    assert_contains_str(recorded.resp_body, "[REDACTED]", "response body has redaction mask")
+
+def test_mock_playback_route_body_disambiguation() -> None:
+    h_res: dict[str, str] = {"Content-Type": "application/json"}
+    exchanges: list[MockExchange] = [
+        MockExchange("POST", "/api/orders", {}, "{\"item\": \"book\"}", 200, h_res, "{\"price\": 10}"),
+        MockExchange("POST", "/api/orders", {}, "{\"item\": \"laptop\"}", 200, h_res, "{\"price\": 1000}")
+    ]
+    # Without explicit match_body=True, count_matching_routes > 1 enforces body match
+    handler: MockPlaybackHandler = create_mock_handler(exchanges, 404)
+
+    # 1. Matching second exchange by body
+    req_laptop: HttpRequest = HttpRequest("POST", "/api/orders", "{\"item\": \"laptop\"}", {})
+    res_laptop: HttpResponse = handler.handle(req_laptop)
+    assert_eq_int(res_laptop.status, 200, "laptop order status 200")
+    assert_contains_str(res_laptop.body, "1000", "laptop order returns correct price")
+
+    # 2. Matching first exchange by body
+    req_book: HttpRequest = HttpRequest("POST", "/api/orders", "{\"item\": \"book\"}", {})
+    res_book: HttpResponse = handler.handle(req_book)
+    assert_eq_int(res_book.status, 200, "book order status 200")
+    assert_contains_str(res_book.body, "10", "book order returns correct price")
+
+    # 3. Non-matching body falls through to 404 unmatched route
+    req_phone: HttpRequest = HttpRequest("POST", "/api/orders", "{\"item\": \"phone\"}", {})
+    res_phone: HttpResponse = handler.handle(req_phone)
+    assert_eq_int(res_phone.status, 404, "unknown item body returns 404")
+    assert_contains_str(res_phone.body, "unmatched_mock_route", "unmatched route error reported")
+
 test_mock_exchange_matching()
 test_mock_playback_handler_routing()
 test_mock_playback_unmatched_route()
 test_mock_recorder_and_file_persistence()
+test_mock_recorder_secret_redaction()
+test_mock_playback_route_body_disambiguation()
 print("quartz contract mock test: ALL PASS")

@@ -3,6 +3,28 @@
 All notable changes to the Quartz test framework will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.8] - 2026-11-03 - Bugfix Release: Regression Comparator Hardening, Mock Secret Redaction & CI Release Gate
+
+### Fixed & Hardened
+- **Run-to-Run Regression Comparator Hardening (`core/regression.nox`)**:
+  - **New Failing Tests as Regressions**: Newly added tests that fail (`baseline_status == "NONE"`, `current_status == "FAIL"`) are now tracked in `new_failures` and immediately trigger `has_regressions = True`.
+  - **Unresolved Skipped Failures**: Previously failing tests that are now skipped (`STATUS_FAIL -> STATUS_SKIP`) are no longer falsely reported as `fixed_tests`. They are strictly classified under `skipped_failures` (`"failing test was skipped (not resolved)"`).
+  - **Strict Baseline File Verification**: Added `strict: bool = False` flag to `compare_current_with_baseline_file()`. When `strict=True`, a missing baseline file immediately raises `AssertionError` instead of silently assuming an empty baseline.
+  - **Execution Time Regression Thresholds**: Added `max_duration_pct_increase: float = 0.0` configuration to `compare_runs()`. If execution time increases beyond the specified percentage, `has_performance_regression` and `has_regressions` are flagged with `[PERF ALERT]`.
+  - **Comprehensive JSON Serialization**: `RunComparison.to_json()` now outputs full detail for all regression categories: `new_failures`, `fixed_tests`, `persistent_failures`, `skipped_failures`, and `removed_tests`.
+- **HTTP Contract Mock Secret Redaction & Routing Hardening (`contract/mock.nox`)**:
+  - **Sensitive Header Redaction**: Masked `Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, `Proxy-Authorization`, and `Token` headers as `[REDACTED]` during recording.
+  - **Body Secret Redaction**: Sanitized request and response bodies using `redact_secrets()` before fixture persistence.
+  - **Automatic Route Disambiguation**: In `MockPlaybackHandler`, when multiple mock exchanges share the same method and target path (`count_matching_routes > 1`), incoming requests are automatically disambiguated by matching request bodies to avoid returning wrong mock responses.
+  - **Atomic Fixture Writing**: Updated `save_mock_exchanges()` to use `nox.fs.write_string_atomic()` preventing partial file corruption.
+- **CI / CD Quality Release Gate (`.github/workflows/publish.yml`)**:
+  - Added mandatory `noxc check quartz.nox` and `noxc test` verification steps prior to `noxc publish`, preventing publishing unverified packages to the NOX registry.
+- **Test Matrix Expansion (`tests/contract_mock_test.nox`, `tests/regression_comparator_test.nox`)**:
+  - Added tests for secret redaction in mock headers and bodies.
+  - Added tests for route body disambiguation on duplicate routes.
+  - Added tests for new failure detection, skipped failure classification, strict missing baseline file check, and performance duration regression thresholds.
+  - All 22 test suites passing cleanly (100% pass rate).
+
 ## [0.9.7] - 2026-11-03 - Phase 12: Contract Mock Record & Replay & Run-to-Run Regression Comparator
 
 ### Added

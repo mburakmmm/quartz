@@ -635,6 +635,36 @@
 
 ---
 
+## Phase 12.2: v0.9.8 — Bugfix & Reliability Hardening Release
+*Objective: Address all architectural and security audit findings from GPT-6 Sol's evaluation of v0.9.7: harden regression comparator against missed failures and false fixes, enforce mock secret redaction and route body disambiguation, add CI/CD pre-publish release gate, and ensure atomic file writes.*
+
+- [x] **12.2.1 Run-to-Run Regression Comparator Hardening (`core/regression.nox`)**
+  - [x] Classify newly introduced failing tests (`baseline_status == "NONE"` and `current_status in (FAIL, ERROR, TIMEOUT)`) into `new_failures`, triggering `has_regressions = True`.
+  - [x] Reclassify `FAIL -> SKIP` status transitions as unresolved `skipped_failures` rather than false `fixed_tests`.
+  - [x] Add `strict: bool = False` parameter to `compare_current_with_baseline_file()`, raising `AssertionError` when baseline file is absent in strict mode.
+  - [x] Implement execution duration drift threshold (`max_duration_pct_increase: float = 0.0`), setting `has_performance_regression = True` and flagging regressions when test execution time grows beyond threshold.
+  - [x] Complete serialization of all regression categories (`new_failures`, `fixed_tests`, `persistent_failures`, `skipped_failures`, `removed_tests`) in `RunComparison.to_json()`.
+- [x] **12.2.2 HTTP Mock Secret Redaction & Route Disambiguation (`contract/mock.nox`)**
+  - [x] Implement sensitive header detection (`is_sensitive_header`) and masking (`Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, `Proxy-Authorization`) in recorded exchanges.
+  - [x] Redact secrets from request and response bodies using `redact_secrets()` prior to disk persistence.
+  - [x] Implement automatic route body disambiguation in `MockPlaybackHandler`: when `count_matching_routes > 1`, request matching automatically requires matching bodies.
+  - [x] Upgrade `save_mock_exchanges()` to use atomic file persistence (`nox.fs.write_string_atomic()`).
+- [x] **12.2.3 CI/CD Quality Release Gate (`.github/workflows/publish.yml`)**
+  - [x] Add mandatory `noxc check quartz.nox` and `noxc test` verification steps in `publish.yml` prior to `noxc publish` to block publishing broken builds.
+- [x] **12.2.4 Test Suite Hardening & Verification (`tests/contract_mock_test.nox`, `tests/regression_comparator_test.nox`)**
+  - [x] Add tests for sensitive header & body secret redaction in `tests/contract_mock_test.nox`.
+  - [x] Add tests for multiple route body disambiguation in `tests/contract_mock_test.nox`.
+  - [x] Add tests for new failure regression detection, `FAIL->SKIP` classification, strict missing file check, and performance drift thresholds in `tests/regression_comparator_test.nox`.
+  - [x] Run full project test matrix: verify 22/22 test suites passing cleanly (100% pass rate).
+- [x] **12.2.5 Bugfix Release Packaging (v0.9.8)**
+  - [x] Update facade `quartz.nox` to version `0.9.8`.
+  - [x] Update `CHANGELOG.md` with complete v0.9.8 bugfix notes.
+  - [x] Tag `v0.9.8`, push to GitHub, and publish to NOX package registry.
+
+*Phase 12.2 Exit Gate:* PASSED. Full regression hardening, mock secret redaction, and CI release gate verified; 22/22 test suites passing cleanly; published as v0.9.8.
+
+---
+
 ## Execution Log & Audit Trail
 
 | Date | Phase | Task | Action / Command | Result / Evidence | Status |
@@ -706,3 +736,5 @@
 | 2026-11-02 | Phase 11.2 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 20/20 tests pass, tagged `v0.9.6`, published | [x] DONE |
 | 2026-11-03 | Phase 12 | Mock & Regression Engine | `contract/mock.nox`, `core/regression.nox` | Offline mock playback, recorder, regression diffing, drift tracking | [x] DONE |
 | 2026-11-03 | Phase 12 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 22/22 tests pass, recipes 13 & 14 pass, tagged `v0.9.7`, ready for publish | [x] DONE |
+| 2026-11-03 | Phase 12.2 | Bugfixes & Hardening | `core/regression.nox`, `contract/mock.nox` | New failure tracking, skip handling, secret redaction, body disambiguation | [x] DONE |
+| 2026-11-03 | Phase 12.2 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 22/22 tests pass, CI release gate added, tagged `v0.9.8`, published | [x] DONE |

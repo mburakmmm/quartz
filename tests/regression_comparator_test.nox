@@ -1,9 +1,9 @@
 # Quartz Tests — Run-to-Run Regression Comparator Suite
 # Validates regression detection, resolved fixes, duration drift, and machine-readable reports.
 
-from core.types import RunSummary, TestResult, STATUS_PASS, STATUS_FAIL, STATUS_ERROR
+from core.types import RunSummary, TestResult, STATUS_PASS, STATUS_FAIL, STATUS_ERROR, STATUS_SKIP
 from core.assert import assert_eq_int, assert_eq_str, assert_true, assert_false, assert_contains_str
-from core.regression import TestRegressionItem, RunComparison, compare_runs, compare_current_with_baseline_json
+from core.regression import TestRegressionItem, RunComparison, compare_runs, compare_current_with_baseline_json, compare_current_with_baseline_file
 
 def test_regression_detection() -> None:
     # Baseline: test_1 passes (20ms), test_2 passes (30ms), test_3 fails (50ms) -> total 100ms
@@ -87,8 +87,75 @@ def test_json_serialization_and_baseline_parsing() -> None:
     assert_contains_str(json_report, "\"has_regressions\": false", "has_regressions false in JSON")
     assert_contains_str(json_report, "\"fixed_count\": 1", "fixed count in JSON")
 
+def test_newly_added_failing_test_is_regression() -> None:
+    baseline: RunSummary = RunSummary()
+    baseline.record(TestResult("t1", "test_1", STATUS_PASS, 50, "", None))
+
+    current: RunSummary = RunSummary()
+    current.record(TestResult("t1", "test_1", STATUS_PASS, 50, "", None))
+    current.record(TestResult("t_new", "test_new", STATUS_FAIL, 50, "syntax error in new feature", None))
+
+    comp: RunComparison = compare_runs(baseline, current)
+    assert_true(comp.has_regressions, "newly added failing test triggers regression")
+    assert_eq_int(len(comp.new_failures), 1, "1 new failure recorded")
+    assert_eq_str(comp.new_failures[0].test_id, "t_new", "new failure test_id")
+    assert_eq_str(comp.new_failures[0].baseline_status, "NONE", "baseline status marked NONE")
+    assert_eq_str(comp.new_failures[0].current_status, "FAIL", "current status FAIL")
+    assert_contains_str(comp.new_failures[0].failure_message, "syntax error", "failure message preserved")
+
+def test_fail_to_skip_is_skipped_failure_not_fixed() -> None:
+    baseline: RunSummary = RunSummary()
+    baseline.record(TestResult("t_bug", "test_bug", STATUS_FAIL, 40, "db timeout", None))
+
+    current: RunSummary = RunSummary()
+    current.record(TestResult("t_bug", "test_bug", STATUS_SKIP, 0, "skipped temporarily", None))
+
+    comp: RunComparison = compare_runs(baseline, current)
+    assert_eq_int(len(comp.fixed_tests), 0, "FAIL -> SKIP is NOT a fixed test")
+    assert_eq_int(len(comp.skipped_failures), 1, "recorded as skipped_failure")
+    assert_eq_str(comp.skipped_failures[0].test_id, "t_bug", "test_id matches")
+    assert_contains_str(comp.skipped_failures[0].failure_message, "skipped (not resolved)", "skipped failure message")
+
+def test_strict_missing_baseline_file_raises() -> None:
+    current: RunSummary = RunSummary()
+    current.record(TestResult("t1", "test_1", STATUS_PASS, 10, "", None))
+
+    # Strict=False should succeed with empty baseline
+    comp: RunComparison = compare_current_with_baseline_file("nonexistent_path_xyz123.json", current, False)
+    assert_false(comp.has_regressions, "empty baseline has no regressions")
+
+    # Strict=True should raise AssertionError
+    raised: bool = False
+    try:
+        compare_current_with_baseline_file("nonexistent_path_xyz123.json", current, True)
+    except AssertionError as e:
+        raised = True
+    assert_true(raised, "strict=True raised AssertionError for missing baseline file")
+
+def test_performance_regression_threshold() -> None:
+    baseline: RunSummary = RunSummary()
+    baseline.record(TestResult("t1", "test_1", STATUS_PASS, 100, "", None))
+
+    current: RunSummary = RunSummary()
+    current.record(TestResult("t1", "test_1", STATUS_PASS, 140, "", None)) # 40% increase
+
+    # 1. Threshold of 20% exceeded
+    comp_alert: RunComparison = compare_runs(baseline, current, 20.0)
+    assert_true(comp_alert.has_performance_regression, "40% exceeds 20% threshold")
+    assert_true(comp_alert.has_regressions, "performance regression flags has_regressions")
+    assert_contains_str(comp_alert.to_summary_text(), "PERF ALERT", "summary contains perf alert")
+
+    # 2. Threshold of 50% not exceeded
+    comp_ok: RunComparison = compare_runs(baseline, current, 50.0)
+    assert_false(comp_ok.has_performance_regression, "40% does not exceed 50% threshold")
+    assert_false(comp_ok.has_regressions, "no regressions when below threshold")
+
 test_regression_detection()
 test_clean_run_zero_regressions()
 test_duration_drift_and_summary_text()
 test_json_serialization_and_baseline_parsing()
+test_newly_added_failing_test_is_regression()
+test_fail_to_skip_is_skipped_failure_not_fixed()
+test_strict_missing_baseline_file_raises()
+test_performance_regression_threshold()
 print("quartz regression comparator test: ALL PASS")

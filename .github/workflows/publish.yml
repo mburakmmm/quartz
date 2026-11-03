@@ -20,6 +20,11 @@ jobs:
           curl -fsSL https://raw.githubusercontent.com/mburakmmm/nox-lang/main/install.sh | bash
           echo "$HOME/.nox-lang/bin" >> $GITHUB_PATH
 
+      - name: Verify Quality Gate
+        run: |
+          noxc check quartz.nox
+          noxc test
+
       - name: Publish to NOX Registry
         run: |
           noxc publish github.com/mburakmmm/quartz --ref ${{ github.ref_name }} --description "Shared test framework for the NOX ecosystem" --tags testing,assertions,property,fuzz,contract,load
