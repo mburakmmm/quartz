@@ -3,7 +3,7 @@ import nox.csv
 from nox.db import Row
 from core.suite import TestSuite
 from core.prng import Prng
-from adapters.atlas import AtlasTable, parse_csv, sort_table, verify_sort_idempotence, verify_csv_roundtrip, groupby_count, verify_groupby_contract, verify_groupby_conservation, inner_join_tables, verify_inner_join_contract, verify_inner_join_conservation, mutate_csv, verify_sort_contract, AtlasEngine, reference_atlas_engine, run_atlas_engine_contract, row_signature, from_nox_csv, to_nox_csv, from_dict_records, from_db_rows
+from adapters.atlas import AtlasTable, parse_csv, sort_table, verify_sort_idempotence, verify_csv_roundtrip, groupby_count, verify_groupby_contract, verify_groupby_conservation, inner_join_tables, verify_inner_join_contract, verify_inner_join_conservation, mutate_csv, verify_sort_contract, AtlasEngine, reference_atlas_engine, run_atlas_engine_contract, row_signature, row_signature_with_nulls, table_row_signature, from_nox_csv, to_nox_csv, from_dict_records, from_db_rows
 
 def broken_groupby(table: AtlasTable, group_col: str) -> AtlasTable:
     # Returns duplicated group rows: A:2, A:2 style corruption
@@ -91,11 +91,24 @@ def run_contract_hardening_tests(suite: TestSuite) -> None:
 
     db_rows: list[Row] = [
         Row(["1", "Istanbul"], [False, False], ["id", "city"]),
-        Row(["2", "Ankara"], [False, False], ["id", "city"])
+        Row(["2", ""], [False, False], ["id", "city"]),
+        Row(["3", ""], [False, True], ["id", "city"])
     ]
     from_db_t: AtlasTable = from_db_rows(db_rows)
-    suite.check_eq_int("from_db_rows_count", from_db_t.row_count(), 2)
+    suite.check_eq_int("from_db_rows_count", from_db_t.row_count(), 3)
     suite.check_eq_str("from_db_rows_cell", from_db_t.get_cell(0, "city"), "Istanbul")
+    suite.check_false("from_db_rows_empty_string_not_null", from_db_t.is_null_cell(1, "city"))
+    suite.check_true("from_db_rows_sql_null_is_null", from_db_t.is_null_cell(2, "city"))
+
+    # NULL cell vs empty-string cell must produce distinct row signatures
+    sig_empty_str: str = row_signature_with_nulls(["1", ""], [False, False])
+    sig_sql_null: str = row_signature_with_nulls(["1", ""], [False, True])
+    suite.check_true("null_vs_empty_string_distinct_signature", sig_empty_str != sig_sql_null)
+
+    # Sort contract rejects table where a NULL cell was turned into a non-null empty string ""
+    db_null_t: AtlasTable = from_db_rows([Row(["1", ""], [False, True], ["id", "bio"])])
+    db_empty_t: AtlasTable = from_db_rows([Row(["1", ""], [False, False], ["id", "bio"])])
+    suite.check_false("sort_contract_rejects_null_turned_into_empty_str", verify_sort_contract(db_null_t, db_empty_t, "id", True, True))
 
 def run_atlas_adapter_tests() -> None:
     suite: TestSuite = TestSuite("atlas_adapter_suite")

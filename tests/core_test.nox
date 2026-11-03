@@ -123,24 +123,36 @@ def test_suite_tag_filtering() -> None:
     assert_eq_int(suite2.pass_count(), 1, "only login_smoke matches both --tag smoke, not --exclude-tag flaky, and --filter login")
     assert_eq_int(suite2.skip_count(), 2, "two cases skipped by CLI filter args")
 
+def _lazy_never_called_slow() -> bool:
+    assert False, "slow_fn should NEVER be invoked when filtered out!"
+    return True
+
+def _lazy_never_called_untagged() -> bool:
+    assert False, "untagged_fn should NEVER be invoked when --tag fast is set!"
+    return True
+
+def _lazy_allowed_fast() -> bool:
+    return True
+
 def test_lazy_test_execution() -> None:
     suite: TestSuite = TestSuite("lazy_suite")
     suite.set_include_tag("fast")
 
-    def slow_fn() -> bool:
-        # Deliberately fail if invoked
-        assert False, "slow_fn should NEVER be invoked when filtered out!"
-        return True
+    suite.run_test("skipped_slow_test", _lazy_never_called_slow, ["slow"])
+    suite.run_test("skipped_untagged_test", _lazy_never_called_untagged)
+    suite.run_test("active_fast_test", _lazy_allowed_fast, ["fast"])
 
-    def fast_fn() -> bool:
-        return True
-
-    suite.run_test("skipped_slow_test", slow_fn, ["slow"])
-    suite.run_test("active_fast_test", fast_fn, ["fast"])
-
-    assert_eq_int(suite.total_count(), 2, "2 total cases in lazy suite")
+    assert_eq_int(suite.total_count(), 3, "3 total cases in lazy suite")
     assert_eq_int(suite.pass_count(), 1, "active fast test passed")
-    assert_eq_int(suite.skip_count(), 1, "slow test was lazily skipped without invocation")
+    assert_eq_int(suite.skip_count(), 2, "slow and untagged tests lazily skipped without invocation")
+
+    # Negative check for --exclude-tag: excluded callback must never run even when it also has an included tag
+    suite_excl: TestSuite = TestSuite("lazy_exclude_suite")
+    suite_excl.apply_filter_args(["--tag", "fast", "--exclude-tag", "quarantined"])
+    suite_excl.run_test("quarantined_fast_test", _lazy_never_called_slow, ["fast", "quarantined"])
+    suite_excl.run_test("clean_fast_test", _lazy_allowed_fast, ["fast"])
+    assert_eq_int(suite_excl.pass_count(), 1, "only clean_fast_test ran")
+    assert_eq_int(suite_excl.skip_count(), 1, "quarantined_fast_test skipped without running")
 
 class TempFileFixture(Fixture):
     path: str

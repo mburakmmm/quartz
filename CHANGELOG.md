@@ -3,6 +3,30 @@
 All notable changes to the Quartz test framework will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.15] - 2026-11-03 - Bugfix Release: Real Concurrent Task/HTTP Load Callbacks, Reference-Counted Atomic Lifetimes, Real SQLite/ORM Transactions & Replay/Atlas/Stateful Hardening
+
+### Fixed & Hardened
+- **Real Concurrent User Callbacks & HTTP Load Execution (`load/executor.nox` & `load/stages.nox`)**:
+  - Replaced synthetic `work_ms_per_task` / `should_succeed` parameters in `run_parallel_thread_workload()` with the user's real `task_func: (int) -> bool` callback, recording real callback latencies, pass/fail outcomes, and circuit-breaker transitions.
+  - Added `ConcurrentWaveScope` (`open_concurrent_wave_scope(vu_count)`) so `run_task_workload_internal()`, `run_scoped_task_workload()`, `run_parallel_thread_workload()`, `run_handler_load_test()`, `run_network_load_test()`, and `run_staged_task_workload_internal()` hold all `vu_count` Virtual User fibers simultaneously active in-flight **while** the real `task_func` / `handler` / network callbacks execute rather than running a detached pre-loop wave.
+  - Added `run_scoped_task_workload(workload, scoped_task_func: (int, int) -> bool, thresholds, limits)` passing the live in-flight Virtual User count (`scope.active_count()`) directly to the user callback during execution.
+  - Updated `run_handler_load_test()` and `run_network_load_test()` to record the actual HTTP response status code (`res.status` / `res.status_code`) instead of collapsing HTTP status codes into boolean `200`/`500`.
+- **Reference-Counted Atomic Lifetime Safety Under Timeouts (`load/executor.nox`)**:
+  - Added `_release_wave_atomics()` with a reference-counted `ref_cell: AtomicInt` (initialized to 2) and cooperative `cancel_cell: AtomicInt` so `AtomicInt.free()` is only called by the final exiting participant (`ref_cell.decrement() == 0`), eliminating any use-after-free risk when a wave wait window times out before worker fibers finish.
+- **Feather `COMMIT` Failure Recovery Rollback & Real SQLite + `nox.orm` Integration (`adapters/feather.nox` & `tests/feather_adapter_test.nox`)**:
+  - Updated `run_sql_transaction()` and `run_orm_transaction()` so that if `conn.execute("COMMIT")` throws an exception, an immediate recovery `conn.execute("ROLLBACK")` is executed and pre-transaction snapshot restoration is verified (`TX_ROLLED_BACK_ON_ERROR` when restored vs `TX_ROLLBACK_FAILED`).
+  - Added real `nox.sqlite.open(":memory:")` + `nox.orm` (`Table`, `Column`, `create_table`, `insert`, `update`, `delete`, `select`) + `run_orm_transaction()` integration tests verifying `TX_COMMITTED`, `TX_ABORTED`, and `TX_ROLLED_BACK_ON_ERROR` against a live SQLite engine.
+- **Atlas `NULL` vs Empty-String Preservation (`adapters/atlas.nox`)**:
+  - Added `null_mask: list[list[bool]]`, `is_null_pos()`, and `is_null_cell()` to `AtlasTable` and preserved `db_row.is_null(vc)` in `from_db_rows()`.
+  - Added `row_signature_with_nulls()` and `table_row_signature()` encoding SQL `NULL` cells as `"N;"` and non-null strings as `"V<len>:<cell>;"` so `NULL` and `""` (empty string) never collide in `from_db_rows()`, `verify_sort_contract()`, or `verify_inner_join_contract()`.
+- **Replay Artifact Safe JSON Escaping, Negative Artifact Handling & Multi-Generator Registry (`property/replay.nox`)**:
+  - Escaped `target_file` via `escape_json(target_file)` in `save_failure_artifact()` so Windows backslash paths and quotes produce valid JSON, and hardened `verify_artifact_file()` against missing, empty, or malformed JSON files.
+  - Added `register_bool()`, `register_pair_int()`, and `register_custom()` to `PropertyRegistry` so boolean, `IntPair`, and arbitrary custom user domain generators can be deterministically replayed and counterexample-verified.
+- **Negative Tag Filtering Assertions (`fixtures/tag_demo.nox`, `tests/core_test.nox` & `.github/workflows/ci.yml`)**:
+  - Updated `fixtures/tag_demo.nox` and `tests/core_test.nox` so excluded/unselected callbacks raise `AssertionError` if ever invoked, and added `--exclude-tag slow` CLI E2E verification to CI.
+- **Stateful Fuzzing Composite State (`StateModelStr`) & Structured `ModelStepOutcome` (`fuzz/sequence.nox`)**:
+  - Added `ModelStepOutcome` (`passed`, `violation_kind` — `NONE`, `PRECONDITION`, `POSTCONDITION`, `SUT_DIVERGENCE`, `step_index`, `action_name`, `expected_state`, `actual_state`, `message`, `to_json()`), `StateModelStr`, `evaluate_str_model_sequence()`, and `evaluate_sut_against_str_model()`.
+
 ## [0.9.14] - 2026-11-03 - Bugfix Release: Dynamic CLI Execution, User-Project Property Replay, Concurrent Load Engine & Stdlib DB/CSV Connectors
 
 ### Fixed & Hardened

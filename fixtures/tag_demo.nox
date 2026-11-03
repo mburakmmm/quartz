@@ -1,27 +1,37 @@
 # Fixture program for verifying real CLI tag selection:
 #   noxc run fixtures/tag_demo.nox -- --tag smoke
-# Prints "RAN:<names> SKIPPED:<names>" so callers can verify only matching tests ran.
+#   noxc run fixtures/tag_demo.nox -- --exclude-tag slow
+# Prints "RAN:<names> PASS=<n> SKIP=<n>" and fails loudly if an excluded/unselected test ever runs.
 from core.suite import TestSuite
+from nox.test import AssertionError
 
 ran: list[str] = []
+suite: TestSuite = TestSuite("tag_demo")
+suite.apply_argv_filters()
 
 def t_smoke() -> bool:
     ran.append("smoke_case")
     return True
 
 def t_slow() -> bool:
+    # Negative assertion: if --tag smoke or --exclude-tag slow is active, slow_case must NEVER execute!
+    if len(suite.include_tags) > 0 or len(suite.exclude_tags) > 0:
+        raise AssertionError("slow_case was invoked despite being filtered out!")
     ran.append("slow_case")
     return True
 
 def t_untagged() -> bool:
+    if len(suite.include_tags) > 0:
+        raise AssertionError("untagged_case was invoked despite --tag filter!")
     ran.append("untagged_case")
     return True
 
-suite: TestSuite = TestSuite("tag_demo")
-suite.apply_argv_filters()
 suite.run_test("smoke_case", t_smoke, ["smoke"])
 suite.run_test("slow_case", t_slow, ["slow"])
 suite.run_test("untagged_case", t_untagged)
+
+if not suite.all_passed():
+    raise AssertionError("tag_demo failed: an excluded test executed or a selected test failed")
 
 out: str = "RAN:"
 i: int = 0

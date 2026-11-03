@@ -2,7 +2,7 @@
 # Validates action sequence modeling, mutations, state machine fuzzing, and counterexample shrinking.
 
 from core.assert import assert_eq_int, assert_eq_str, assert_true, assert_false, assert_contains_str
-from fuzz.sequence import FuzzAction, ActionSequence, SequenceFuzzer, SequenceFuzzResult, run_sequence_fuzz, shrink_failing_sequence, shrink_valid_sequence, StateModel, run_model_sequence, model_sequence_runner, run_sut_against_model, sut_model_runner
+from fuzz.sequence import FuzzAction, ActionSequence, SequenceFuzzer, SequenceFuzzResult, run_sequence_fuzz, shrink_failing_sequence, shrink_valid_sequence, StateModel, run_model_sequence, model_sequence_runner, run_sut_against_model, sut_model_runner, StateModelStr, ModelStepOutcome, evaluate_str_model_sequence, evaluate_sut_against_str_model, MODEL_VIOLATION_NONE, MODEL_VIOLATION_PRECONDITION, MODEL_VIOLATION_POSTCONDITION, MODEL_VIOLATION_SUT_DIVERGENCE
 
 def test_action_and_sequence_basics() -> None:
     act1: FuzzAction = FuzzAction("push", "alpha", 10)
@@ -321,6 +321,68 @@ def test_sut_against_model() -> None:
     assert_true(runner(ok_seq), "sut_model_runner passes matching sequence")
     assert_false(runner(div_seq), "sut_model_runner fails diverging sequence")
 
+def str_model_pre(state: str, act: FuzzAction) -> bool:
+    if act.name == "checkout":
+        return state == "AUTH:CART_NONEMPTY"
+    return True
+
+def str_model_apply(state: str, act: FuzzAction) -> str:
+    if act.name == "login":
+        return "AUTH:CART_EMPTY"
+    if act.name == "add_item" and state == "AUTH:CART_EMPTY":
+        return "AUTH:CART_NONEMPTY"
+    if act.name == "checkout" and state == "AUTH:CART_NONEMPTY":
+        return "AUTH:ORDER_PLACED"
+    return state
+
+def str_model_post(state: str, act: FuzzAction, next_state: str) -> bool:
+    if act.name == "forbid":
+        return False
+    return len(next_state) > 0
+
+def test_str_state_model_and_structured_outcomes() -> None:
+    s_model: StateModelStr = StateModelStr("ANON:CART_EMPTY", str_model_pre, str_model_apply, str_model_post)
+
+    # 1. Valid workflow passes with MODEL_VIOLATION_NONE
+    valid_seq: ActionSequence = ActionSequence([FuzzAction("login"), FuzzAction("add_item"), FuzzAction("checkout")])
+    out_ok: ModelStepOutcome = evaluate_str_model_sequence(s_model, valid_seq, True)
+    assert_true(out_ok.passed, "valid composite state workflow passes")
+    assert_eq_str(out_ok.violation_kind, MODEL_VIOLATION_NONE, "violation_kind is NONE")
+    assert_eq_str(out_ok.actual_state, "AUTH:ORDER_PLACED", "final state is AUTH:ORDER_PLACED")
+
+    # 2. Precondition violation reported with structured fields when fail_on_precondition=True
+    premature_checkout: ActionSequence = ActionSequence([FuzzAction("login"), FuzzAction("checkout")])
+    out_pre: ModelStepOutcome = evaluate_str_model_sequence(s_model, premature_checkout, True)
+    assert_false(out_pre.passed, "premature checkout fails precondition")
+    assert_eq_str(out_pre.violation_kind, MODEL_VIOLATION_PRECONDITION, "violation_kind is PRECONDITION")
+    assert_eq_int(out_pre.step_index, 1, "violation at step 1")
+    assert_eq_str(out_pre.action_name, "checkout", "action_name is checkout")
+
+    # 3. Postcondition violation reported with structured fields
+    post_seq: ActionSequence = ActionSequence([FuzzAction("login"), FuzzAction("forbid")])
+    out_post: ModelStepOutcome = evaluate_str_model_sequence(s_model, post_seq, True)
+    assert_false(out_post.passed, "forbid action fails postcondition")
+    assert_eq_str(out_post.violation_kind, MODEL_VIOLATION_POSTCONDITION, "violation_kind is POSTCONDITION")
+    assert_eq_int(out_post.step_index, 1, "postcondition failed at step 1")
+
+    # 4. SUT divergence against StateModelStr
+    def sut_str_reset() -> None:
+        pass
+    def buggy_sut_str_step(act: FuzzAction) -> str:
+        if act.name == "login":
+            return "AUTH:CART_EMPTY"
+        if act.name == "add_item":
+            return "AUTH:CART_CORRUPTED"
+        return "ANON:CART_EMPTY"
+
+    out_div: ModelStepOutcome = evaluate_sut_against_str_model(s_model, sut_str_reset, buggy_sut_str_step, valid_seq, True)
+    assert_false(out_div.passed, "SUT divergence caught against StateModelStr")
+    assert_eq_str(out_div.violation_kind, MODEL_VIOLATION_SUT_DIVERGENCE, "violation_kind is SUT_DIVERGENCE")
+    assert_eq_int(out_div.step_index, 1, "divergence at step 1 (add_item)")
+    assert_eq_str(out_div.expected_state, "AUTH:CART_NONEMPTY", "expected state recorded")
+    assert_eq_str(out_div.actual_state, "AUTH:CART_CORRUPTED", "actual SUT state recorded")
+    assert_contains_str(out_div.to_json(), "\"violation_kind\":\"SUT_DIVERGENCE\"", "JSON serialization includes structured violation_kind")
+
 test_action_and_sequence_basics()
 test_sequence_generator_and_mutation()
 test_sequence_fuzzing_and_shrinking()
@@ -331,4 +393,5 @@ test_initial_actions_and_valid_shrinking()
 test_state_model()
 test_validator_evaluated_before_target_runner()
 test_sut_against_model()
+test_str_state_model_and_structured_outcomes()
 print("quartz sequence fuzz test: ALL PASS")

@@ -9,7 +9,7 @@ from nox.atomic import AtomicInt
 from load.safety import SafetyLimits, CircuitBreaker, default_safety_limits, CircuitBreakerTrippedError
 from load.metrics import LoadMetrics
 from load.thresholds import Threshold, ThresholdResult, evaluate_all_thresholds, all_thresholds_passed
-from load.executor import VirtualUserState, LoadTestSummary, _execute_concurrent_vu_wave
+from load.executor import VirtualUserState, LoadTestSummary, ConcurrentWaveScope, open_concurrent_wave_scope
 from core.report import escape_json, JsonlStreamReporter
 
 class LoadStage:
@@ -167,26 +167,20 @@ def run_staged_task_workload_internal(config: StagedWorkloadConfig, task_func: (
             payload_start: str = "{\"start_vus\":" + str(start_vus) + ",\"target_vus\":" + str(target_vus) + ",\"duration_s\":" + str(stg.duration_s) + "}"
             reporter.emit("stage_start", "stage_" + str(stage_idx), "PASS", 0, payload_start)
 
-        # Allocate virtual users for this stage and execute concurrent VU wave
+        # Allocate virtual users for this stage and hold concurrent VU wave active while task_func executes
         vu_states: list[VirtualUserState] = []
         v_i: int = 0
         while v_i < target_vus:
             vu_states.append(VirtualUserState(v_i))
             v_i = v_i + 1
 
-        stg_active_cell: AtomicInt = nox.atomic.new_int(0)
-        stg_peak_cell: AtomicInt = nox.atomic.new_int(0)
-        _execute_concurrent_vu_wave(target_vus, target_vus, 0, stg_active_cell, stg_peak_cell)
-        stage_metrics.record_concurrency(stg_peak_cell.load())
-        cumulative_metrics.record_concurrency(stg_peak_cell.load())
-        stg_active_cell.free()
-        stg_peak_cell.free()
+        stg_scope: ConcurrentWaveScope = open_concurrent_wave_scope(target_vus)
 
         stage_completed: int = 0
         stage_successful: int = 0
         stage_failed: int = 0
 
-        # Execute requests for the duration of this stage
+        # Execute requests for the duration of this stage while VUs are active in-flight
         while t0_stage.elapsed_ms() < stage_duration_ms:
             if t0_global.elapsed_ms() >= limits.duration_seconds * 1000:
                 break
@@ -216,12 +210,16 @@ def run_staged_task_workload_internal(config: StagedWorkloadConfig, task_func: (
                 all_stages_passed = False
                 break
 
+            stage_metrics.record_concurrency(stg_scope.active_count())
+            cumulative_metrics.record_concurrency(stg_scope.active_count())
             task_t0: Instant = nox.time.instant_now()
             success: bool = False
             try:
                 success = task_func(global_case_idx)
             except Exception as e:
                 success = False
+            stage_metrics.record_concurrency(stg_scope.peak_count())
+            cumulative_metrics.record_concurrency(stg_scope.peak_count())
 
             task_duration: int = task_t0.elapsed_ms()
             is_timeout: bool = (task_duration > limits.timeout_ms)
@@ -253,6 +251,8 @@ def run_staged_task_workload_internal(config: StagedWorkloadConfig, task_func: (
             # Emit periodic metric ticks
             if has_reporter and (stage_completed % 10 == 0):
                 reporter.emit_metric_tick("stage_" + str(stage_idx), stage_metrics.completed, stage_metrics.throughput_rps(t0_stage.elapsed_ms()), stage_metrics.p50(), stage_metrics.p95())
+
+        stg_scope.close()
 
         actual_stage_duration: int = t0_stage.elapsed_ms()
         if actual_stage_duration <= 0:

@@ -600,8 +600,9 @@ Published as the `quartz` binary via `nox.json` and runnable via `noxc run cli/m
   - `.col_count() -> int`
   - `.col_index(col_name: str) -> int`
   - `.get_cell(row_idx: int, col_name: str) -> str`
+  - `.is_null_cell(row_idx: int, col_name: str) -> bool` & `.is_null_pos(row_idx: int, col_idx: int) -> bool`: Preserves SQL `NULL` vs empty-string `""` distinction.
   - `.to_csv(delimiter: str = ",", quote_char: str = "\"") -> str`: Formats table into standard CSV with automatic quoting and quote doubling.
-- `row_signature(row: list[str]) -> str`: Length-prefixed canonical row encoding (`<col_count>#<len>:<cell>;...`) immune to delimiter and control-character collisions.
+- `row_signature(row: list[str]) -> str`, `row_signature_with_nulls(row: list[str], nulls: list[bool]) -> str`, and `table_row_signature(table: AtlasTable, row_idx: int) -> str`: Length-prefixed canonical row encoding (`<col_count>#V<len>:<cell>;...` and `N;` for SQL `NULL`) immune to delimiter, control-character, and `NULL`-vs-`""` collisions.
 - `escape_csv_field(field: str, delimiter: str, quote_char: str) -> str`: Escapes internal quotes and wraps in quotes if delimiter/newline/quote is present.
 - `parse_csv(raw_csv: str, delimiter: str = ",", quote_char: str = "\"") -> AtlasTable`: Robust state-machine CSV parser handling embedded quotes, commas, CRLF/LF line breaks.
 - `from_nox_csv(raw_csv: str) -> AtlasTable` & `to_nox_csv(table: AtlasTable) -> str`: Direct connectors for NOX standard library `nox.csv.parse` and `nox.csv.dump`.

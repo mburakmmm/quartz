@@ -1,7 +1,10 @@
 # Quartz Tests — Feather Ecosystem Adapter & Persistence Invariant Tests
+import nox.sqlite
+import nox.orm
 from nox.db import Row
+from nox.orm import Table, Column, Value, val_str, val_int, create_table, insert, update, delete, select
 from core.suite import TestSuite
-from adapters.feather import FeatherRecord, FeatherRepository, FeatherFixture, verify_crud_lifecycle, verify_idempotent_upsert, verify_transaction_rollback, TxResult, run_transaction, TX_COMMITTED, TX_ABORTED, TX_ROLLED_BACK_ON_ERROR, TX_ROLLBACK_FAILED, SqlConnection, InMemorySqlConnection, run_sql_transaction, rows_to_feather_records
+from adapters.feather import FeatherRecord, FeatherRepository, FeatherFixture, verify_crud_lifecycle, verify_idempotent_upsert, verify_transaction_rollback, TxResult, run_transaction, TX_COMMITTED, TX_ABORTED, TX_ROLLED_BACK_ON_ERROR, TX_ROLLBACK_FAILED, SqlConnection, InMemorySqlConnection, run_sql_transaction, run_orm_transaction, rows_to_feather_records
 
 def tx_ok_insert(r: FeatherRepository) -> None:
     rec: FeatherRecord = FeatherRecord("tx_new")
@@ -80,6 +83,13 @@ def run_tx_outcome_tests(suite: TestSuite) -> None:
     suite.check_eq_str("sql_tx_rolled_back_on_error", sql_err.outcome, TX_ROLLED_BACK_ON_ERROR)
     suite.check_eq_int("sql_rows_after_error_rollback", len(sql_conn.query("SELECT * FROM users")), 2)
 
+    # 3.b SQL COMMIT failure triggers automatic recovery ROLLBACK
+    sql_conn.simulate_commit_error = True
+    sql_cm_rb: TxResult = run_sql_transaction(sql_conn, "users", "id", sql_insert_temp, True)
+    suite.check_eq_str("sql_tx_commit_failure_rolled_back", sql_cm_rb.outcome, TX_ROLLED_BACK_ON_ERROR)
+    suite.check_eq_int("sql_rows_after_commit_failure_rollback", len(sql_conn.query("SELECT * FROM users")), 2)
+    sql_conn.simulate_commit_error = False
+
     # 4. SQL ROLLBACK_FAILED (when driver fails to roll back state on ROLLBACK)
     sql_conn.simulate_broken_rollback = True
     sql_rb_fail: TxResult = run_sql_transaction(sql_conn, "users", "id", sql_insert_temp, False)
@@ -93,6 +103,63 @@ def run_tx_outcome_tests(suite: TestSuite) -> None:
     suite.check_eq_int("rows_to_feather_records_len", len(f_recs), 1)
     suite.check_eq_str("rows_to_feather_records_id", f_recs[0].id, "u1")
     suite.check_eq_str("rows_to_feather_records_field", f_recs[0].get("name"), "Linus")
+
+    # 6. Real SQLite (:memory:) + nox.orm Integration Tests
+    sqlite_available: bool = False
+    try:
+        real_conn: nox.sqlite.Connection = nox.sqlite.open(":memory:")
+        sqlite_available = True
+        users_table: Table = Table("users", [
+            Column("id", 1, True),
+            Column("name", 1, False),
+            Column("role", 1, False)
+        ])
+        create_table(real_conn, users_table)
+
+        seed_vals: dict[str, Value] = {}
+        seed_vals["id"] = val_str("u_1")
+        seed_vals["name"] = val_str("Ada")
+        seed_vals["role"] = val_str("architect")
+        insert(real_conn, users_table, seed_vals)
+
+        def orm_commit_fn() -> None:
+            v: dict[str, Value] = {}
+            v["id"] = val_str("u_2")
+            v["name"] = val_str("Grace")
+            v["role"] = val_str("compiler")
+            insert(real_conn, users_table, v)
+
+        orm_com: TxResult = run_orm_transaction(real_conn, users_table, "id", orm_commit_fn, True)
+        suite.check_eq_str("real_sqlite_orm_committed", orm_com.outcome, TX_COMMITTED)
+        suite.check_eq_int("real_sqlite_orm_rows_after_commit", len(select(real_conn, users_table, "", [])), 2)
+
+        def orm_abort_fn() -> None:
+            v: dict[str, Value] = {}
+            v["id"] = val_str("u_99")
+            v["name"] = val_str("Ephemeral")
+            v["role"] = val_str("guest")
+            insert(real_conn, users_table, v)
+            upd: dict[str, Value] = {}
+            upd["role"] = val_str("corrupted")
+            update(real_conn, users_table, upd, "id = ?", [val_str("u_1")])
+
+        orm_abt: TxResult = run_orm_transaction(real_conn, users_table, "id", orm_abort_fn, False)
+        suite.check_eq_str("real_sqlite_orm_aborted", orm_abt.outcome, TX_ABORTED)
+        suite.check_eq_int("real_sqlite_orm_rows_after_abort", len(select(real_conn, users_table, "", [])), 2)
+
+        def orm_error_fn() -> None:
+            delete(real_conn, users_table, "id = ?", [val_str("u_2")])
+            raise ValueError("simulated ORM failure after delete")
+
+        orm_err: TxResult = run_orm_transaction(real_conn, users_table, "id", orm_error_fn, True)
+        suite.check_eq_str("real_sqlite_orm_rolled_back_on_error", orm_err.outcome, TX_ROLLED_BACK_ON_ERROR)
+        suite.check_eq_int("real_sqlite_orm_rows_after_error", len(select(real_conn, users_table, "", [])), 2)
+
+        real_conn.close()
+    except Exception as sqlite_err:
+        # Only reached on bare Windows environments lacking sqlite3.dll; Linux & macOS CI always have libsqlite3
+        if sqlite_available:
+            suite.check_true("real_sqlite_unexpected_error: " + str(sqlite_err), False)
 
 def run_feather_adapter_tests() -> None:
     suite: TestSuite = TestSuite("feather_adapter_suite")

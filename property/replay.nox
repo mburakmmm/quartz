@@ -1,6 +1,8 @@
 # Quartz Property — Replay Engine & User Property Registry
 from core.prng import Prng, PRNG_VERSION, derive_case_seed
-from property.generator import IntGen, StringGen, ListIntGen
+from core.report import escape_json
+from property.generator import IntGen, BoolGen, StringGen, ListIntGen
+from property.combinators import IntPair, PairIntGen
 from property.property import PropertyResult, format_int_list
 import nox.fs
 import nox.json
@@ -8,10 +10,13 @@ from nox.json import JsonValue
 import nox.os
 import nox.strings
 
+def format_int_pair(pair: IntPair) -> str:
+    return "(" + str(pair.first) + ", " + str(pair.second) + ")"
+
 def save_failure_artifact(path: str, result: PropertyResult, target_file: str = "") -> None:
     json_data: str = result.to_json()
     if len(target_file) > 0:
-        json_data = nox.strings.replace(json_data, "{\"schema_version\":", "{\"target_file\":\"" + target_file + "\",\"schema_version\":")
+        json_data = nox.strings.replace(json_data, "{\"schema_version\":", "{\"target_file\":\"" + escape_json(target_file) + "\",\"schema_version\":")
     nox.fs.write_string_atomic(path, json_data)
 
 def replay_int_case(test_id: str, seed: int, case_index: int, gen: IntGen, predicate: (int) -> bool) -> bool:
@@ -101,6 +106,15 @@ class PropertyRegistry:
     list_ids: list[str]
     list_gens: list[ListIntGen]
     list_preds: list[(list[int]) -> bool]
+    bool_ids: list[str]
+    bool_gens: list[BoolGen]
+    bool_preds: list[(bool) -> bool]
+    pair_ids: list[str]
+    pair_gens: list[PairIntGen]
+    pair_preds: list[(IntPair) -> bool]
+    custom_ids: list[str]
+    custom_gens: list[(Prng) -> str]
+    custom_preds: list[(str) -> bool]
 
     def __init__(self: PropertyRegistry) -> None:
         self.int_ids = []
@@ -112,6 +126,15 @@ class PropertyRegistry:
         self.list_ids = []
         self.list_gens = []
         self.list_preds = []
+        self.bool_ids = []
+        self.bool_gens = []
+        self.bool_preds = []
+        self.pair_ids = []
+        self.pair_gens = []
+        self.pair_preds = []
+        self.custom_ids = []
+        self.custom_gens = []
+        self.custom_preds = []
 
     def register_int(self: PropertyRegistry, test_id: str, gen: IntGen, predicate: (int) -> bool) -> None:
         self.int_ids.append(test_id)
@@ -127,6 +150,21 @@ class PropertyRegistry:
         self.list_ids.append(test_id)
         self.list_gens.append(gen)
         self.list_preds.append(predicate)
+
+    def register_bool(self: PropertyRegistry, test_id: str, gen: BoolGen, predicate: (bool) -> bool) -> None:
+        self.bool_ids.append(test_id)
+        self.bool_gens.append(gen)
+        self.bool_preds.append(predicate)
+
+    def register_pair_int(self: PropertyRegistry, test_id: str, gen: PairIntGen, predicate: (IntPair) -> bool) -> None:
+        self.pair_ids.append(test_id)
+        self.pair_gens.append(gen)
+        self.pair_preds.append(predicate)
+
+    def register_custom(self: PropertyRegistry, test_id: str, gen_fn: (Prng) -> str, predicate_fn: (str) -> bool) -> None:
+        self.custom_ids.append(test_id)
+        self.custom_gens.append(gen_fn)
+        self.custom_preds.append(predicate_fn)
 
     def has(self: PropertyRegistry, test_id: str) -> bool:
         return self.kind_of(test_id) != ""
@@ -147,6 +185,21 @@ class PropertyRegistry:
             if self.list_ids[j] == test_id:
                 return "list_int"
             j = j + 1
+        b: int = 0
+        while b < len(self.bool_ids):
+            if self.bool_ids[b] == test_id:
+                return "bool"
+            b = b + 1
+        p: int = 0
+        while p < len(self.pair_ids):
+            if self.pair_ids[p] == test_id:
+                return "pair_int"
+            p = p + 1
+        c: int = 0
+        while c < len(self.custom_ids):
+            if self.custom_ids[c] == test_id:
+                return "custom"
+            c = c + 1
         return ""
 
     # Regenerates the candidate from (seed, test_id, case_index), compares it against expected_original
@@ -197,6 +250,48 @@ class PropertyRegistry:
                 return ReplayVerification(True, gen_list_str, expected_original, matches_l, not passed_l)
             j = j + 1
 
+        b: int = 0
+        while b < len(self.bool_ids):
+            if self.bool_ids[b] == test_id:
+                cand_bool: bool = self.bool_gens[b].generate(case_prng)
+                gen_bool_str: str = "true" if cand_bool else "false"
+                alt_bool_str: str = "True" if cand_bool else "False"
+                matches_b: bool = (len(expected_original) == 0) or (gen_bool_str == expected_original) or (alt_bool_str == expected_original)
+                passed_b: bool = False
+                try:
+                    passed_b = self.bool_preds[b](cand_bool)
+                except Exception as e:
+                    passed_b = False
+                return ReplayVerification(True, gen_bool_str, expected_original, matches_b, not passed_b)
+            b = b + 1
+
+        p: int = 0
+        while p < len(self.pair_ids):
+            if self.pair_ids[p] == test_id:
+                cand_pair: IntPair = self.pair_gens[p].generate(case_prng)
+                gen_pair_str: str = format_int_pair(cand_pair)
+                matches_p: bool = (len(expected_original) == 0) or (gen_pair_str == expected_original)
+                passed_p: bool = False
+                try:
+                    passed_p = self.pair_preds[p](cand_pair)
+                except Exception as e:
+                    passed_p = False
+                return ReplayVerification(True, gen_pair_str, expected_original, matches_p, not passed_p)
+            p = p + 1
+
+        c: int = 0
+        while c < len(self.custom_ids):
+            if self.custom_ids[c] == test_id:
+                cand_custom: str = self.custom_gens[c](case_prng)
+                matches_c: bool = (len(expected_original) == 0) or (cand_custom == expected_original)
+                passed_c: bool = False
+                try:
+                    passed_c = self.custom_preds[c](cand_custom)
+                except Exception as e:
+                    passed_c = False
+                return ReplayVerification(True, cand_custom, expected_original, matches_c, not passed_c)
+            c = c + 1
+
         return ReplayVerification(False, "", expected_original, False, False)
 
     # Returns 1 if failure reproduced, 0 if the case now passes, -1 if test_id is not registered.
@@ -216,20 +311,29 @@ class PropertyRegistry:
         if not nox.fs.exists(path):
             return ReplayVerification(False, "", "", False, False)
         content: str = nox.fs.read_to_string(path)
-        artifact: JsonValue = nox.json.parse(content)
-        test_id: str = _json_get_key(artifact, "test_id").s
-        seed_val: int = int(_json_get_key(artifact, "seed").n)
-        case_idx: int = 0
-        if _json_has_key(artifact, "failing_case_index"):
-            case_idx = int(_json_get_key(artifact, "failing_case_index").n)
-        elif _json_has_key(artifact, "failing_case"):
-            case_idx = int(_json_get_key(artifact, "failing_case").n)
-        orig_str: str = ""
-        if _json_has_key(artifact, "original_counterexample"):
-            orig_str = _json_get_key(artifact, "original_counterexample").s
-        elif _json_has_key(artifact, "original"):
-            orig_str = _json_get_key(artifact, "original").s
-        return self.verify_replay(test_id, seed_val, case_idx, orig_str)
+        if len(nox.strings.trim(content)) == 0:
+            return ReplayVerification(False, "", "", False, False)
+        try:
+            artifact: JsonValue = nox.json.parse(content)
+            if not _json_has_key(artifact, "test_id"):
+                return ReplayVerification(False, "", "", False, False)
+            test_id: str = _json_get_key(artifact, "test_id").s
+            if len(test_id) == 0:
+                return ReplayVerification(False, "", "", False, False)
+            seed_val: int = int(_json_get_key(artifact, "seed").n)
+            case_idx: int = 0
+            if _json_has_key(artifact, "failing_case_index"):
+                case_idx = int(_json_get_key(artifact, "failing_case_index").n)
+            elif _json_has_key(artifact, "failing_case"):
+                case_idx = int(_json_get_key(artifact, "failing_case").n)
+            orig_str: str = ""
+            if _json_has_key(artifact, "original_counterexample"):
+                orig_str = _json_get_key(artifact, "original_counterexample").s
+            elif _json_has_key(artifact, "original"):
+                orig_str = _json_get_key(artifact, "original").s
+            return self.verify_replay(test_id, seed_val, case_idx, orig_str)
+        except Exception as e:
+            return ReplayVerification(False, "", "", False, False)
 
     # Allows any user property test file to act as a replay target via:
     #   noxc run user_property_test.nox -- --replay path/to/failure.json

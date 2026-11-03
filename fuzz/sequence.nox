@@ -521,3 +521,111 @@ def sut_model_runner(
     def runner(seq: ActionSequence) -> bool:
         return len(run_sut_against_model(model, sut_reset, sut_step, seq, fail_on_precondition)) == 0
     return runner
+
+MODEL_VIOLATION_NONE: str = "NONE"
+MODEL_VIOLATION_PRECONDITION: str = "PRECONDITION"
+MODEL_VIOLATION_POSTCONDITION: str = "POSTCONDITION"
+MODEL_VIOLATION_SUT_DIVERGENCE: str = "SUT_DIVERGENCE"
+
+class ModelStepOutcome:
+    passed: bool
+    violation_kind: str
+    step_index: int
+    action_name: str
+    expected_state: str
+    actual_state: str
+    message: str
+
+    def __init__(
+        self: ModelStepOutcome,
+        passed: bool,
+        violation_kind: str,
+        step_index: int,
+        action_name: str,
+        expected_state: str,
+        actual_state: str,
+        message: str
+    ) -> None:
+        self.passed = passed
+        self.violation_kind = violation_kind
+        self.step_index = step_index
+        self.action_name = action_name
+        self.expected_state = expected_state
+        self.actual_state = actual_state
+        self.message = message
+
+    def to_json(self: ModelStepOutcome) -> str:
+        s: str = "{"
+        s = s + "\"passed\":" + ("true" if self.passed else "false") + ","
+        s = s + "\"violation_kind\":\"" + escape_json(self.violation_kind) + "\","
+        s = s + "\"step_index\":" + str(self.step_index) + ","
+        s = s + "\"action_name\":\"" + escape_json(self.action_name) + "\","
+        s = s + "\"expected_state\":\"" + escape_json(self.expected_state) + "\","
+        s = s + "\"actual_state\":\"" + escape_json(self.actual_state) + "\","
+        s = s + "\"message\":\"" + escape_json(self.message) + "\""
+        s = s + "}"
+        return s
+
+# Richer composite/serialized state model supporting arbitrary string/JSON state representations.
+class StateModelStr:
+    initial_state: str
+    precondition: (str, FuzzAction) -> bool
+    apply_fn: (str, FuzzAction) -> str
+    postcondition: (str, FuzzAction, str) -> bool
+
+    def __init__(
+        self: StateModelStr,
+        initial_state: str,
+        precondition: (str, FuzzAction) -> bool,
+        apply_fn: (str, FuzzAction) -> str,
+        postcondition: (str, FuzzAction, str) -> bool
+    ) -> None:
+        self.initial_state = initial_state
+        self.precondition = precondition
+        self.apply_fn = apply_fn
+        self.postcondition = postcondition
+
+def evaluate_str_model_sequence(model: StateModelStr, seq: ActionSequence, fail_on_precondition: bool = False) -> ModelStepOutcome:
+    state: str = model.initial_state
+    i: int = 0
+    while i < seq.len():
+        act: FuzzAction = seq.get(i)
+        if model.precondition(state, act):
+            new_state: str = model.apply_fn(state, act)
+            if not model.postcondition(state, act, new_state):
+                msg: str = "postcondition violated at step " + str(i) + " (" + act.name + ") state " + state + " -> " + new_state
+                return ModelStepOutcome(False, MODEL_VIOLATION_POSTCONDITION, i, act.name, state, new_state, msg)
+            state = new_state
+        elif fail_on_precondition:
+            msg_pre: str = "precondition violated at step " + str(i) + " (" + act.name + ") in state " + state
+            return ModelStepOutcome(False, MODEL_VIOLATION_PRECONDITION, i, act.name, state, state, msg_pre)
+        i = i + 1
+    return ModelStepOutcome(True, MODEL_VIOLATION_NONE, -1, "", state, state, "")
+
+def evaluate_sut_against_str_model(
+    model: StateModelStr,
+    sut_reset: () -> None,
+    sut_step: (FuzzAction) -> str,
+    seq: ActionSequence,
+    fail_on_precondition: bool = False
+) -> ModelStepOutcome:
+    sut_reset()
+    state: str = model.initial_state
+    i: int = 0
+    while i < seq.len():
+        act: FuzzAction = seq.get(i)
+        if model.precondition(state, act):
+            expected_state: str = model.apply_fn(state, act)
+            if not model.postcondition(state, act, expected_state):
+                msg: str = "postcondition violated at step " + str(i) + " (" + act.name + ") state " + state + " -> " + expected_state
+                return ModelStepOutcome(False, MODEL_VIOLATION_POSTCONDITION, i, act.name, state, expected_state, msg)
+            actual_sut_state: str = sut_step(act)
+            if actual_sut_state != expected_state:
+                msg_div: str = "SUT state divergence at step " + str(i) + " (" + act.name + "): expected=" + expected_state + " actual=" + actual_sut_state
+                return ModelStepOutcome(False, MODEL_VIOLATION_SUT_DIVERGENCE, i, act.name, expected_state, actual_sut_state, msg_div)
+            state = expected_state
+        elif fail_on_precondition:
+            msg_pre: str = "precondition violated at step " + str(i) + " (" + act.name + ") in state " + state
+            return ModelStepOutcome(False, MODEL_VIOLATION_PRECONDITION, i, act.name, state, state, msg_pre)
+        i = i + 1
+    return ModelStepOutcome(True, MODEL_VIOLATION_NONE, -1, "", state, state, "")

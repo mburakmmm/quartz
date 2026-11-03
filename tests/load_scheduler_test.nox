@@ -1,13 +1,15 @@
 # Quartz Load — Scheduler, Safety Guardrails & Workload Test Suite
 import nox.http
+import nox.atomic
 from nox.http import HttpRequest, HttpResponse
+from nox.atomic import AtomicInt
 from core.assert import assert_true, assert_false, assert_eq_int, assert_contains_str
 from load.safety import SafetyLimits, default_safety_limits, CircuitBreaker, CircuitBreakerTrippedError
 from load.safety import validate_load_target, LoadSafetyError, HARD_CAP_VIRTUAL_USERS, HARD_CAP_DURATION_SECONDS, HARD_CAP_RATE_RPS
 from load.workload import WorkloadConfig, closed_workload, open_workload, MODEL_CLOSED, MODEL_OPEN
 from load.metrics import LoadMetrics
 from load.thresholds import Threshold
-from load.executor import LoadTestSummary, run_task_workload, run_handler_load_test, run_parallel_thread_workload
+from load.executor import LoadTestSummary, ConcurrentWaveScope, open_concurrent_wave_scope, run_task_workload, run_scoped_task_workload, run_handler_load_test, run_parallel_thread_workload
 from contract.http import build_request, empty_headers
 
 def test_safety_limits_clamping() -> None:
@@ -95,12 +97,37 @@ def test_parallel_os_thread_workload() -> None:
         Threshold("p95_latency_ms", "<=", 500.0),
         Threshold("error_rate", "<=", 0.0)
     ]
-    summary: LoadTestSummary = run_parallel_thread_workload(wl, 5, True, thresholds, limits)
+    callback_invocations: AtomicInt = nox.atomic.new_int(0)
+    def real_parallel_callback(case_idx: int) -> bool:
+        callback_invocations.increment()
+        return case_idx >= 0
+
+    summary: LoadTestSummary = run_parallel_thread_workload(wl, real_parallel_callback, thresholds, limits)
+    invoked_count: int = callback_invocations.load()
+    callback_invocations.free()
+
     assert_true(summary.all_passed, "parallel OS-thread workload passed thresholds")
+    assert_eq_int(invoked_count, 12, "real user task_func callback invoked 12 times")
     assert_eq_int(summary.metrics.completed, 12, "12 parallel tasks completed")
     assert_eq_int(summary.metrics.successful, 12, "12 parallel tasks succeeded")
     assert_true(summary.metrics.peak_concurrency >= 2, "parallel OS threads measured active peak_concurrency >= 2")
     assert_contains_str(summary.to_json(), "\"peak_concurrency\":", "JSON summary includes peak_concurrency")
+
+    # Verify failing callback in run_parallel_thread_workload propagates real failures
+    wl_fail: WorkloadConfig = closed_workload("parallel_fail_test", 2, 2, 6)
+    summary_fail: LoadTestSummary = run_parallel_thread_workload(wl_fail, mock_flaky_task, thresholds, limits)
+    assert_false(summary_fail.all_passed, "failing callback fails error_rate threshold")
+    assert_eq_int(summary_fail.metrics.failed, 1, "case 5 failure recorded from real callback")
+
+def test_wave_scope_timeout_lifetime_safety() -> None:
+    # Verify reference-counted AtomicInt cleanup when close() times out (wait_timeout_ms=0)
+    scope: ConcurrentWaveScope = open_concurrent_wave_scope(3)
+    assert_true(scope.active_count() >= 2, "scope holds VUs active in-flight")
+    # Pass wait_timeout_ms=0 so caller exits immediately and worker cleans up atomics safely when done
+    _freed_immediately: bool = scope.close(0)
+    # Wait briefly for background worker to finish and release the final reference cleanly
+    nox.time.sleep_ms(15)
+    assert_true(scope.is_closed, "scope marked closed without premature use-after-free")
 
 def test_open_workload_execution() -> None:
     limits: SafetyLimits = default_safety_limits()
@@ -222,12 +249,47 @@ async def test_concurrent_scheduler() -> None:
     assert_eq_int(vu_completed[1], 10, "VU 1 completed 10 requests")
     assert_eq_int(vu_completed[2], 10, "VU 2 completed 10 requests")
 
+    # Test run_scoped_task_workload verifying live in-flight VU count observed inside the user callback
+    limits: SafetyLimits = default_safety_limits()
+    wl_conc: WorkloadConfig = closed_workload("concurrent_fiber_task", 4, 2, 16)
+    cb_calls: AtomicInt = nox.atomic.new_int(0)
+    cb_observed_peak: AtomicInt = nox.atomic.new_int(0)
+    def tracked_scoped_task(idx: int, active_vus_in_flight: int) -> bool:
+        cb_calls.increment()
+        if active_vus_in_flight > cb_observed_peak.load():
+            cb_observed_peak.store(active_vus_in_flight)
+        return (idx % 7) != 6
+
+    conc_summary: LoadTestSummary = run_scoped_task_workload(wl_conc, tracked_scoped_task, [], limits)
+    total_cb_calls: int = cb_calls.load()
+    observed_peak: int = cb_observed_peak.load()
+    cb_calls.free()
+    cb_observed_peak.free()
+    assert_eq_int(total_cb_calls, 16, "run_scoped_task_workload invoked real callback 16 times across VUs")
+    assert_eq_int(conc_summary.metrics.completed, 16, "16 concurrent tasks completed")
+    assert_eq_int(conc_summary.metrics.failed, 2, "cases 6 and 13 failed as determined by real callback")
+    assert_eq_int(observed_peak, 4, "user callback directly observed 4 active VU fibers in-flight during execution")
+    assert_eq_int(conc_summary.metrics.peak_concurrency, 4, "all 4 VU fibers active concurrently in-flight")
+
+    # Test run_handler_load_test executing real HTTP handler with 4 active VU fibers in-flight
+    wl_http: WorkloadConfig = closed_workload("concurrent_fiber_http", 4, 2, 12)
+    req_ok: HttpRequest = build_request("GET", "/ping", "", empty_headers())
+    http_summary: LoadTestSummary = run_handler_load_test(wl_http, mock_http_api, req_ok, [], limits)
+    assert_eq_int(http_summary.metrics.completed, 12, "12 concurrent HTTP handler requests completed")
+    assert_eq_int(http_summary.metrics.successful, 12, "12 concurrent HTTP 200 responses")
+    assert_eq_int(http_summary.metrics.peak_concurrency, 4, "4 concurrent HTTP handler VUs active in-flight")
+
+    req_404: HttpRequest = build_request("GET", "/missing", "", empty_headers())
+    http_404_summary: LoadTestSummary = run_handler_load_test(wl_http, mock_http_api, req_404, [], limits)
+    assert_true(http_404_summary.aborted, "404 responses trip circuit breaker in handler load test")
+
 def run_all_load_scheduler_tests() -> None:
     test_safety_limits_clamping()
     test_load_target_validation()
     test_circuit_breaker()
     test_closed_workload_execution()
     test_parallel_os_thread_workload()
+    test_wave_scope_timeout_lifetime_safety()
     test_open_workload_execution()
     test_circuit_breaker_abort_in_workload()
     test_handler_load_runner()

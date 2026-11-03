@@ -1,9 +1,13 @@
 # Quartz Property Test — Deterministic Runs, Failure Shrinking and Replay
-from property.generator import IntGen, StringGen, ListIntGen, CHARSET_TURKISH_UNICODE
+from core.prng import Prng
+from property.generator import IntGen, BoolGen, StringGen, ListIntGen, CHARSET_ALPHA, CHARSET_TURKISH_UNICODE
+from property.combinators import IntPair, PairIntGen
 from property.property import PropertyConfig, PropertyResult, run_int_property, run_str_property, run_list_int_property, default_property_config
-from property.replay import replay_int_case, replay_list_int_case, PropertyRegistry, ReplayVerification, save_failure_artifact
+from property.replay import replay_int_case, replay_list_int_case, PropertyRegistry, ReplayVerification, save_failure_artifact, format_int_pair
 from core.assert import assert_eq_int, assert_eq_str, assert_true, assert_false
 import nox.fs
+import nox.json
+from nox.json import JsonValue
 
 def prop_addition_commutative(x: int) -> bool:
     return (x + 10) == (10 + x)
@@ -80,6 +84,62 @@ def test_failure_shrinking_and_replay() -> None:
     reg.register_list_int("list_len_fail", list_gen, prop_list_len_under_3)
     ver_list: ReplayVerification = reg.verify_replay("list_len_fail", list_res.seed, list_res.failing_case_index, list_res.original_counterexample)
     assert_true(ver_list.is_verified(), "list_int replay verifies formatted original_counterexample and predicate failure")
+
+    # 1. Windows backslash & quote escaping in save_failure_artifact target_file
+    win_artifact_path: str = "fixtures/win_path_artifact_test.json"
+    save_failure_artifact(win_artifact_path, res, "C:\\Users\\dev\\fixtures\\\"quoted\"\\custom_replay_demo.nox")
+    raw_win_json: str = nox.fs.read_to_string(win_artifact_path)
+    parsed_win_json: JsonValue = nox.json.parse(raw_win_json)
+    assert_true(nox.json.object_len(parsed_win_json) > 0, "artifact JSON with backslashes and quotes parses cleanly")
+    ver_win: ReplayVerification = reg.verify_artifact_file(win_artifact_path)
+    assert_true(ver_win.is_verified(), "verify_artifact_file succeeds on artifact with escaped Windows target_file")
+    nox.fs.remove_file(win_artifact_path)
+
+    # 2. Negative artifact tests: missing file, empty file, corrupted JSON
+    ver_missing: ReplayVerification = reg.verify_artifact_file("fixtures/non_existent_artifact_99999.json")
+    assert_false(ver_missing.is_verified(), "missing artifact file returns unverified")
+
+    corrupt_path: str = "fixtures/corrupt_artifact_test.json"
+    nox.fs.write_string_atomic(corrupt_path, "{broken_json: [1, 2")
+    ver_corrupt: ReplayVerification = reg.verify_artifact_file(corrupt_path)
+    assert_false(ver_corrupt.is_verified(), "corrupted JSON artifact returns unverified without crashing")
+    nox.fs.remove_file(corrupt_path)
+
+    # 3. StringGen, BoolGen, PairIntGen, and Custom generator replay verification
+    s_gen: StringGen = StringGen(3, 8, CHARSET_ALPHA)
+    def prop_str_short(s: str) -> bool:
+        return len(s) < 5
+    s_res: PropertyResult = run_str_property("str_short_fail", cfg, s_gen, prop_str_short)
+    assert_false(s_res.is_passed(), "str_short_fail fails when len >= 5")
+    reg.register_str("str_short_fail", s_gen, prop_str_short)
+    ver_str: ReplayVerification = reg.verify_replay("str_short_fail", s_res.seed, s_res.failing_case_index, s_res.original_counterexample)
+    assert_true(ver_str.is_verified(), "StringGen replay verified")
+
+    b_gen: BoolGen = BoolGen()
+    def prop_always_false(b: bool) -> bool:
+        return not b
+    reg.register_bool("bool_fail_on_true", b_gen, prop_always_false)
+    assert_eq_str(reg.kind_of("bool_fail_on_true"), "bool", "kind_of reports bool")
+
+    p_gen: PairIntGen = PairIntGen(IntGen(10, 20, False), IntGen(10, 20, False))
+    def prop_pair_sum_under_15(pair: IntPair) -> bool:
+        return (pair.first + pair.second) < 15
+    reg.register_pair_int("pair_sum_fail", p_gen, prop_pair_sum_under_15)
+    ver_pair: ReplayVerification = reg.verify_replay("pair_sum_fail", 42, 0, "")
+    assert_true(ver_pair.is_verified(), "PairIntGen replay verified")
+    ver_pair_exact: ReplayVerification = reg.verify_replay("pair_sum_fail", 42, 0, ver_pair.generated_candidate)
+    assert_true(ver_pair_exact.is_verified(), "PairIntGen replay matches exact formatted (a, b) counterexample")
+
+    def custom_user_gen(prng: Prng) -> str:
+        code: int = prng.next_int_range(500, 599)
+        return "HTTP_" + str(code)
+    def custom_user_pred(val: str) -> bool:
+        return False
+    reg.register_custom("custom_domain_fail", custom_user_gen, custom_user_pred)
+    ver_custom: ReplayVerification = reg.verify_replay("custom_domain_fail", 1337, 3, "")
+    assert_true(ver_custom.is_verified(), "custom domain generator replay verified")
+    ver_custom_exact: ReplayVerification = reg.verify_replay("custom_domain_fail", 1337, 3, ver_custom.generated_candidate)
+    assert_true(ver_custom_exact.is_verified(), "custom domain generator matches exact serialized counterexample")
 
 def test_unicode_string_property() -> None:
     cfg: PropertyConfig = PropertyConfig(100, 5, 4242, 5000)

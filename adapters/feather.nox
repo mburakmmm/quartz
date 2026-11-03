@@ -436,7 +436,15 @@ def run_sql_transaction(
         try:
             conn.execute("COMMIT")
         except Exception as cm_err:
-            return TxResult(TX_ROLLBACK_FAILED, "commit failed: " + str(cm_err))
+            # Recovery rollback: ensure the open transaction is closed and pre-tx state is restored
+            try:
+                conn.execute("ROLLBACK")
+            except Exception as cm_rb_err:
+                return TxResult(TX_ROLLBACK_FAILED, "commit failed: " + str(cm_err) + " (recovery rollback failed: " + str(cm_rb_err) + ")")
+            post_cm_snap: list[FeatherRecord] = rows_to_feather_records(conn.query(select_sql), pk_col)
+            if records_equal(pre_snap, post_cm_snap):
+                return TxResult(TX_ROLLED_BACK_ON_ERROR, "commit failed (rolled back): " + str(cm_err))
+            return TxResult(TX_ROLLBACK_FAILED, "commit failed and state not restored: " + str(cm_err))
         return TxResult(TX_COMMITTED, "")
 
     try:
@@ -481,7 +489,15 @@ def run_orm_transaction(
         try:
             conn.execute("COMMIT")
         except Exception as cm_err:
-            return TxResult(TX_ROLLBACK_FAILED, "commit failed: " + str(cm_err))
+            # Recovery rollback: ensure the open transaction is closed and pre-tx state is restored
+            try:
+                conn.execute("ROLLBACK")
+            except Exception as cm_rb_err:
+                return TxResult(TX_ROLLBACK_FAILED, "commit failed: " + str(cm_err) + " (recovery rollback failed: " + str(cm_rb_err) + ")")
+            post_cm_snap: list[FeatherRecord] = rows_to_feather_records(select(conn, table, "", []), pk_col)
+            if records_equal(pre_snap, post_cm_snap):
+                return TxResult(TX_ROLLED_BACK_ON_ERROR, "commit failed (rolled back): " + str(cm_err))
+            return TxResult(TX_ROLLBACK_FAILED, "commit failed and state not restored: " + str(cm_err))
         return TxResult(TX_COMMITTED, "")
 
     try:
@@ -502,6 +518,7 @@ class InMemorySqlConnection:
     tx_backup: list[list[str]]
     in_tx: bool
     simulate_broken_rollback: bool
+    simulate_commit_error: bool
 
     def __init__(self: InMemorySqlConnection, columns: list[str]) -> None:
         self.columns = columns
@@ -509,6 +526,7 @@ class InMemorySqlConnection:
         self.tx_backup = []
         self.in_tx = False
         self.simulate_broken_rollback = False
+        self.simulate_commit_error = False
 
     def _clone_rows(self: InMemorySqlConnection, src: list[list[str]]) -> list[list[str]]:
         out: list[list[str]] = []
@@ -536,6 +554,8 @@ class InMemorySqlConnection:
             self.in_tx = True
             return 0
         if s == "COMMIT":
+            if self.simulate_commit_error:
+                raise ValueError("simulated deferred constraint failure on COMMIT")
             self.tx_backup = []
             self.in_tx = False
             return 0

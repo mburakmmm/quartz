@@ -881,6 +881,50 @@
 
 ---
 
+## Phase 14.5: v0.9.15 — Concurrent Task/HTTP Load Callbacks, Safe Atomic Lifetimes, Real SQLite/ORM Transactions & Replay/Atlas/Stateful Hardening
+*Objective: Resolve all P1 and P2 findings from GPT-6 Sol's v0.9.14 audit: real concurrent user callback execution in task and HTTP load runners, reference-counted atomic cell lifetime safety under timeouts, real `nox.sqlite` + `nox.orm` integration tests and `COMMIT` failure recovery rollback, Atlas `NULL` vs empty-string distinction, replay artifact JSON path escaping and multi-generator registry, negative tag-filtering tests, and structured `StateModelStr` / `ModelStepOutcome`.*
+
+- [x] **14.5.1 [P1] Real Concurrent Task Callback Execution (`load/executor.nox`, `load/stages.nox`, `tests/load_scheduler_test.nox`, `tests/stage_workload_test.nox`)**
+  - [x] Remove synthetic `work_ms_per_task` / `should_succeed` from `run_parallel_thread_workload` and execute the user's real `task_func: (int) -> bool` callback inside concurrent Virtual User worker fibers (`spawn` + `Channel[int]` barrier and result channels), measuring real callback latency (`task_t0.elapsed_ms()`), real success/failure status, and real `peak_concurrency` while `task_func` is actively executing.
+  - [x] Add `run_scoped_task_workload(workload: WorkloadConfig, scoped_task_func: (int, int) -> bool, thresholds: list[Threshold], limits: SafetyLimits) -> LoadTestSummary`.
+  - [x] In `run_task_workload_internal()` and `run_staged_task_workload_internal()`, remove the detached pre-loop `_execute_concurrent_vu_wave()` probe and execute `task_func(case_idx)` inside multi-VU waves (`ConcurrentWaveScope`) where `active_cell` tracks all active VUs in the wave while `task_func` runs.
+  - [x] Add unit test in `tests/load_scheduler_test.nox` where the user callback directly observes the live in-flight VU count (`observed_peak == 4` with 4 VUs) and verifies real callback error/latency propagation.
+- [x] **14.5.2 [P1] Real Concurrent HTTP Handler & Network Load Execution (`load/executor.nox`, `tests/load_scheduler_test.nox`)**
+  - [x] In `run_handler_load_test()` and `run_network_load_test()`, remove the detached pre-loop wave and execute requests inside `ConcurrentWaveScope`, recording actual HTTP status codes (`res.status` / `res.status_code`), real latencies, and `peak_concurrency` during actual handler/network execution.
+  - [x] Add unit test in `tests/load_scheduler_test.nox` proving `mock_http_api` is invoked across 4 active VUs in-flight and its latency/status/concurrency metrics come directly from the handler executions.
+- [x] **14.5.3 [P1] Concurrency Timeout & Atomic Resource Lifetime Safety (`load/executor.nox`, `tests/load_scheduler_test.nox`)**
+  - [x] Never call `.free()` unconditionally on shared `AtomicInt` handles (`done_cell`, `dur_cell`, `active_cell`, `peak_cell`) while a worker thread or fiber could still access them after a timeout.
+  - [x] Introduce reference-counted `_release_wave_atomics()` (`ref_cell: AtomicInt` + `cancel_cell: AtomicInt` cancellation flag) so workers check `cancel_cell` and only the final exiting participant (`ref_cell.decrement() == 0`) frees shared `AtomicInt` cells.
+  - [x] Add unit test in `tests/load_scheduler_test.nox` testing timeout/cancellation cleanup safety without premature `.free()`.
+- [x] **14.5.4 [P2] Feather `COMMIT` Failure Recovery Rollback & Real SQLite + `nox.orm` Integration Tests (`adapters/feather.nox`, `tests/feather_adapter_test.nox`, `.github/workflows/ci.yml`)**
+  - [x] In `run_sql_transaction()` and `run_orm_transaction()`, if `conn.execute("COMMIT")` raises an exception, immediately attempt `conn.execute("ROLLBACK")` in a recovery `try/except` block, verify whether pre-transaction snapshot was restored, and include recovery status in `TxResult.error_message`.
+  - [x] Add unit test for `COMMIT` failure triggering automatic `ROLLBACK` recovery.
+  - [x] Add real `nox.sqlite.open(":memory:")` + `nox.orm` (`Table`, `Column`, `create_table`, `insert`, `update`, `delete`, `select`) + `run_orm_transaction` integration tests in `tests/feather_adapter_test.nox` verifying `TX_COMMITTED`, `TX_ABORTED`, and `TX_ROLLED_BACK_ON_ERROR` against a real SQLite engine.
+- [x] **14.5.5 [P2] Atlas `NULL` vs Empty-String Preservation (`adapters/atlas.nox`, `tests/atlas_adapter_test.nox`)**
+  - [x] Add `null_mask: list[list[bool]]` to `AtlasTable` (with `is_null_cell(row_idx: int, col_name: str) -> bool` and `is_null_pos(row_idx: int, col_idx: int) -> bool`) and preserve `db_row.is_null(vc)` in `from_db_rows()`.
+  - [x] Encode `NULL` cells distinctly (`"N;"`) vs non-null string cells (`"V" + str(len(cell)) + ":" + cell + ";"`) in `row_signature_with_nulls()` / `table_row_signature()` so `NULL` and `""` never collide in integrity checks, sorts, or joins.
+  - [x] Add unit tests in `tests/atlas_adapter_test.nox` verifying `NULL` vs `""` distinction in `from_db_rows`, `is_null_cell`, and `table_row_signature`.
+- [x] **14.5.6 [P2] Replay Artifact Safe JSON Serialization & Negative Artifact Tests (`property/replay.nox`, `tests/property_test.nox`)**
+  - [x] Escape `target_file` via `escape_json(target_file)` in `save_failure_artifact()` so Windows backslash paths and quotes produce valid JSON.
+  - [x] Add negative tests in `tests/property_test.nox` for `save_failure_artifact` with backslashes/quotes in `target_file`, and for `verify_artifact_file` on missing, empty, or corrupted JSON files.
+- [x] **14.5.7 [P2] Property Replay Support for Additional & Custom Generator Types (`property/replay.nox`, `tests/property_test.nox`)**
+  - [x] Add `register_bool`, `register_pair_int`, and generic `register_custom` to `PropertyRegistry` so boolean, tuple/pair, and arbitrary custom user generators can be replayed deterministically and counterexample-checked.
+  - [x] Add tests in `tests/property_test.nox` verifying replay for `str`, `bool`, `IntPair`, and custom generators.
+- [x] **14.5.8 [P2] Tag Filtering Negative Unit & E2E Tests (`tests/core_test.nox`, `fixtures/tag_demo.nox`, `.github/workflows/ci.yml`)**
+  - [x] Update `fixtures/tag_demo.nox` and `tests/core_test.nox` so excluded/unselected test callbacks fail loudly if ever invoked when `--tag smoke` or `--exclude-tag slow` is active.
+  - [x] Add `--exclude-tag slow` CLI E2E check in `.github/workflows/ci.yml`.
+- [x] **14.5.9 [P2] Stateful Fuzzing Richer State (`StateModelStr`) & Structured `ModelStepOutcome` (`fuzz/sequence.nox`, `tests/sequence_fuzz_test.nox`)**
+  - [x] Add `ModelStepOutcome` (`passed: bool`, `violation_kind: str` — `"NONE"`, `"PRECONDITION"`, `"POSTCONDITION"`, `"SUT_DIVERGENCE"`, `step_index: int`, `action_name: str`, `expected_state: str`, `actual_state: str`, `message: str`) and `StateModelStr` (for composite/serialized string or JSON states) + `evaluate_str_model_sequence` / `evaluate_sut_against_str_model`.
+  - [x] Add unit tests in `tests/sequence_fuzz_test.nox` verifying `StateModelStr` and structured `PRECONDITION`, `POSTCONDITION`, and `SUT_DIVERGENCE` outcomes.
+- [x] **14.5.10 Verification & Release (`v0.9.15`)**
+  - [x] Bump version to `0.9.15` in `quartz.nox`, `CHANGELOG.md`, and `docs/api.md`.
+  - [x] Verify all 26 test files pass (`noxc test`) and dynamic CLI E2E passes.
+  - [x] Commit, tag `v0.9.15`, push, verify 4/4 platform CI and Publish workflow green, and run `noxc publish`.
+
+*Phase 14.5 Exit Gate:* PASSED. Real concurrent callback & HTTP load execution (`ConcurrentWaveScope` + `run_scoped_task_workload`), reference-counted atomic lifetime safety, real `nox.sqlite` + `nox.orm` transaction integration & `COMMIT` failure recovery rollback, Atlas `NULL` vs `""` preservation, escaped replay artifact paths + custom generator replay, negative tag-filtering guards, and `StateModelStr` / `ModelStepOutcome` verified across all 26 test suites.
+
+---
+
 ## Execution Log & Audit Trail
 
 | Date | Phase | Task | Action / Command | Result / Evidence | Status |
@@ -967,3 +1011,5 @@
 | 2026-11-03 | Phase 14.3 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 26/26 tests pass, tagged `v0.9.13`, published | [x] DONE |
 | 2026-11-03 | Phase 14.4 | Bugfixes & Hardening | `cli/`, `property/`, `load/`, `fuzz/`, `adapters/` | Dynamic child `noxc` env forwarding, user-project replay + counterexample match, OS-thread load `peak_concurrency`, delta-minimized crash clusters, validator-first sequence shrinking + SUT model runner, length-prefixed Atlas signatures + `nox.csv`/`nox.db.Row` connectors, Feather SQL transactions | [x] DONE |
 | 2026-11-03 | Phase 14.4 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 26/26 tests pass, dynamic CLI E2E in CI, tagged `v0.9.14`, published | [x] DONE |
+| 2026-11-03 | Phase 14.5 | Bugfixes & Hardening | `load/`, `adapters/`, `property/`, `fuzz/`, `core/` | Real concurrent task/HTTP load callbacks (`ConcurrentWaveScope`), ref-counted atomic lifetime safety, real `nox.sqlite` + `nox.orm` integration & `COMMIT` recovery rollback, Atlas `NULL` vs `""` preservation, escaped replay artifact paths + custom generators, negative tag tests, `StateModelStr` & `ModelStepOutcome` | [x] DONE |
+| 2026-11-03 | Phase 14.5 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 26/26 tests pass, tagged `v0.9.15`, published | [x] DONE |

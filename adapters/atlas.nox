@@ -10,10 +10,12 @@ from core.prng import Prng
 class AtlasTable:
     headers: list[str]
     rows: list[list[str]]
+    null_mask: list[list[bool]]
 
     def __init__(self: AtlasTable, headers: list[str], rows: list[list[str]]) -> None:
         self.headers = headers
         self.rows = rows
+        self.null_mask = []
 
     def row_count(self: AtlasTable) -> int:
         return len(self.rows)
@@ -28,6 +30,18 @@ class AtlasTable:
                 return i
             i = i + 1
         return -1
+
+    def is_null_pos(self: AtlasTable, row_idx: int, col_idx: int) -> bool:
+        if row_idx < 0 or row_idx >= len(self.null_mask):
+            return False
+        nrow: list[bool] = self.null_mask[row_idx]
+        if col_idx < 0 or col_idx >= len(nrow):
+            return False
+        return nrow[col_idx]
+
+    def is_null_cell(self: AtlasTable, row_idx: int, col_name: str) -> bool:
+        idx: int = self.col_index(col_name)
+        return self.is_null_pos(row_idx, idx)
 
     def get_cell(self: AtlasTable, row_idx: int, col_name: str) -> str:
         idx: int = self.col_index(col_name)
@@ -393,15 +407,29 @@ def inner_join_tables(left: AtlasTable, right: AtlasTable, left_key: str, right_
     return AtlasTable(out_headers, out_rows)
 
 # Length-prefixed canonical row encoding — immune to delimiter / control-character collisions
-# (e.g. cells containing \x1f, \x1e, commas, or newlines can never collide across cell boundaries).
-def row_signature(row: list[str]) -> str:
+# and preserving NULL vs empty-string ("") distinction ("N;" vs "V0:;").
+def row_signature_with_nulls(row: list[str], nulls: list[bool]) -> str:
     s: str = str(len(row)) + "#"
     i: int = 0
     while i < len(row):
-        cell: str = row[i]
-        s = s + str(len(cell)) + ":" + cell + ";"
+        if i < len(nulls) and nulls[i]:
+            s = s + "N;"
+        else:
+            cell: str = row[i]
+            s = s + "V" + str(len(cell)) + ":" + cell + ";"
         i = i + 1
     return s
+
+def row_signature(row: list[str]) -> str:
+    return row_signature_with_nulls(row, [])
+
+def table_row_signature(table: AtlasTable, row_idx: int) -> str:
+    if row_idx < 0 or row_idx >= len(table.rows):
+        return "0#"
+    nulls: list[bool] = []
+    if row_idx < len(table.null_mask):
+        nulls = table.null_mask[row_idx]
+    return row_signature_with_nulls(table.rows[row_idx], nulls)
 
 def verify_inner_join_contract(
     left: AtlasTable,
@@ -440,7 +468,7 @@ def verify_inner_join_contract(
     left_key_pos: int = l_idx
     right_key_pos: int = left.col_count() + r_idx
 
-    # 3. Build the ground-truth multiset of full-row length-prefixed signatures (ALL cells, positional)
+    # 3. Build the ground-truth multiset of full-row length-prefixed signatures (ALL cells + null flags, positional)
     expected_sigs: list[str] = []
     ei: int = 0
     while ei < left.row_count():
@@ -448,15 +476,18 @@ def verify_inner_join_contract(
         while ej < right.row_count():
             if left.get_cell(ei, left_key) == right.get_cell(ej, right_key):
                 combined_expected: list[str] = []
+                combined_nulls: list[bool] = []
                 lc: int = 0
                 while lc < len(left.rows[ei]):
                     combined_expected.append(left.rows[ei][lc])
+                    combined_nulls.append(left.is_null_pos(ei, lc))
                     lc = lc + 1
                 rc: int = 0
                 while rc < len(right.rows[ej]):
                     combined_expected.append(right.rows[ej][rc])
+                    combined_nulls.append(right.is_null_pos(ej, rc))
                     rc = rc + 1
-                expected_sigs.append(row_signature(combined_expected))
+                expected_sigs.append(row_signature_with_nulls(combined_expected, combined_nulls))
             ej = ej + 1
         ei = ei + 1
 
@@ -474,7 +505,7 @@ def verify_inner_join_contract(
         # Key columns on both sides of the joined row must match each other
         if jrow[left_key_pos] != jrow[right_key_pos]:
             return False
-        sig: str = row_signature(jrow)
+        sig: str = table_row_signature(joined_table, row_i)
         found_match: bool = False
         mi: int = 0
         while mi < len(expected_sigs):
@@ -551,7 +582,7 @@ def verify_sort_contract(input_table: AtlasTable, sorted_table: AtlasTable, sort
             return False
         r = r + 1
 
-    # Permutation check (multiset of full rows)
+    # Permutation check (multiset of full rows + NULL flags)
     used: list[bool] = []
     u: int = 0
     while u < input_table.row_count():
@@ -559,11 +590,11 @@ def verify_sort_contract(input_table: AtlasTable, sorted_table: AtlasTable, sort
         u = u + 1
     s: int = 0
     while s < sorted_table.row_count():
-        sig: str = row_signature(sorted_table.rows[s])
+        sig: str = table_row_signature(sorted_table, s)
         matched: bool = False
         k: int = 0
         while k < input_table.row_count():
-            if not used[k] and row_signature(input_table.rows[k]) == sig:
+            if not used[k] and table_row_signature(input_table, k) == sig:
                 used[k] = True
                 matched = True
                 break
@@ -678,7 +709,8 @@ def from_dict_records(headers: list[str], records: list[dict[str, str]]) -> Atla
         r = r + 1
     return AtlasTable(headers, rows)
 
-# Builds an AtlasTable directly from `nox.db.Row` query results (`conn.query(...)` or `nox.orm.select(...)`).
+# Builds an AtlasTable directly from `nox.db.Row` query results (`conn.query(...)` or `nox.orm.select(...)`),
+# preserving SQL NULL vs empty-string ("") cells via `null_mask`.
 def from_db_rows(rows: list[Row]) -> AtlasTable:
     if len(rows) == 0:
         return AtlasTable([], [])
@@ -690,19 +722,27 @@ def from_db_rows(rows: list[Row]) -> AtlasTable:
         c = c + 1
 
     data_rows: list[list[str]] = []
+    null_rows: list[list[bool]] = []
     r: int = 0
     while r < len(rows):
         db_row: Row = rows[r]
         vals: list[str] = []
+        nulls: list[bool] = []
         vc: int = 0
         while vc < db_row.column_count():
             if db_row.is_null(vc):
                 vals.append("")
+                nulls.append(True)
             else:
                 vals.append(db_row.get_str(vc))
+                nulls.append(False)
             vc = vc + 1
         while len(vals) < len(headers):
             vals.append("")
+            nulls.append(True)
         data_rows.append(vals)
+        null_rows.append(nulls)
         r = r + 1
-    return AtlasTable(headers, data_rows)
+    out_t: AtlasTable = AtlasTable(headers, data_rows)
+    out_t.null_mask = null_rows
+    return out_t
