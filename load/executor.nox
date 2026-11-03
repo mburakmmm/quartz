@@ -101,27 +101,24 @@ def _update_atomic_peak(peak_cell: AtomicInt, cur_val: int) -> None:
             break
         prev = peak_cell.load()
 
-# Real OS-thread worker (`nox.thread.start`) executing concurrent Virtual User quota and measuring active concurrency
-async def _os_vu_slot_worker(cfg_str: str) -> int:
-    parts: list[str] = nox.strings.split(cfg_str, ",")
-    quota: int = int(parts[0])
-    work_ms: int = int(parts[1])
-    active_c: AtomicInt = AtomicInt(int(parts[2]))
-    peak_c: AtomicInt = AtomicInt(int(parts[3]))
-    barrier_c: AtomicInt = AtomicInt(int(parts[4]))
-    target_wave: int = int(parts[5])
-    done_c: AtomicInt = AtomicInt(int(parts[6]))
-    dur_c: AtomicInt = AtomicInt(int(parts[7]))
+async def _vu_fiber_task(
+    quota: int,
+    work_ms: int,
+    active_h: int,
+    peak_h: int,
+    ready_ch: Channel[int],
+    go_ch: Channel[int],
+    done_ch: Channel[int]
+) -> None:
+    active_c: AtomicInt = AtomicInt(active_h)
+    peak_c: AtomicInt = AtomicInt(peak_h)
 
     cur_active: int = active_c.increment()
     _update_atomic_peak(peak_c, cur_active)
-    barrier_c.increment()
 
-    # Wait briefly at rendezvous barrier so all concurrent OS threads overlap in-flight
-    wait_ms: int = 0
-    while barrier_c.load() < target_wave and wait_ms < 50:
-        nox.time.sleep_ms(1)
-        wait_ms = wait_ms + 1
+    # Signal ready to coordinator and suspend fiber (yielding worker thread without blocking OS thread)
+    await ready_ch.send(1)
+    _go: int = await go_ch.recv()
 
     _update_atomic_peak(peak_c, active_c.load())
 
@@ -135,18 +132,29 @@ async def _os_vu_slot_worker(cfg_str: str) -> int:
         step = step + 1
 
     active_c.decrement()
-    dur_c.add(total_elapsed)
-    done_c.increment()
-    return total_elapsed
+    await done_ch.send(total_elapsed)
 
-def _execute_concurrent_vu_wave(vu_count: int, total_cases: int, work_ms: int, active_cell: AtomicInt, peak_cell: AtomicInt) -> int:
-    barrier_cell: AtomicInt = nox.atomic.new_int(0)
-    done_cell: AtomicInt = nox.atomic.new_int(0)
-    dur_cell: AtomicInt = nox.atomic.new_int(0)
+async def _run_concurrent_vu_fibers(cfg_str: str) -> int:
+    parts: list[str] = nox.strings.split(cfg_str, ",")
+    vu_count: int = int(parts[0])
+    total_cases: int = int(parts[1])
+    work_ms: int = int(parts[2])
+    active_h: int = int(parts[3])
+    peak_h: int = int(parts[4])
+    done_h: int = int(parts[5])
+    dur_h: int = int(parts[6])
+
+    active_c: AtomicInt = AtomicInt(active_h)
+    peak_c: AtomicInt = AtomicInt(peak_h)
+    done_c: AtomicInt = AtomicInt(done_h)
+    dur_c: AtomicInt = AtomicInt(dur_h)
+
+    ready_ch: Channel[int] = Channel[int](64)
+    go_ch: Channel[int] = Channel[int](64)
+    done_ch: Channel[int] = Channel[int](64)
 
     base_q: int = total_cases // vu_count
     rem_q: int = total_cases % vu_count
-    spawned: int = 0
 
     w_i: int = 0
     while w_i < vu_count:
@@ -155,16 +163,47 @@ def _execute_concurrent_vu_wave(vu_count: int, total_cases: int, work_ms: int, a
             q = q + 1
         if q < 1:
             q = 1
-        cfg_s: str = str(q) + "," + str(work_ms) + "," + str(active_cell.handle) + "," + str(peak_cell.handle) + "," + str(barrier_cell.handle) + "," + str(vu_count) + "," + str(done_cell.handle) + "," + str(dur_cell.handle)
-        h: ThreadHandle[int] = nox.thread.start(_os_vu_slot_worker, cfg_s)
-        spawned = spawned + 1
+        spawn _vu_fiber_task(q, work_ms, active_h, peak_h, ready_ch, go_ch, done_ch)
         w_i = w_i + 1
 
-    while done_cell.load() < spawned:
+    # Wait for all VU fibers to be simultaneously active in-flight
+    r_i: int = 0
+    while r_i < vu_count:
+        _r: int = await ready_ch.recv()
+        r_i = r_i + 1
+
+    _update_atomic_peak(peak_c, active_c.load())
+
+    # Release all VU fibers to execute their quota concurrently
+    g_i: int = 0
+    while g_i < vu_count:
+        await go_ch.send(1)
+        g_i = g_i + 1
+
+    total_elapsed: int = 0
+    d_i: int = 0
+    while d_i < vu_count:
+        el: int = await done_ch.recv()
+        total_elapsed = total_elapsed + el
+        d_i = d_i + 1
+
+    dur_c.add(total_elapsed)
+    done_c.increment()
+    return total_elapsed
+
+def _execute_concurrent_vu_wave(vu_count: int, total_cases: int, work_ms: int, active_cell: AtomicInt, peak_cell: AtomicInt) -> int:
+    done_cell: AtomicInt = nox.atomic.new_int(0)
+    dur_cell: AtomicInt = nox.atomic.new_int(0)
+
+    cfg_s: str = str(vu_count) + "," + str(total_cases) + "," + str(work_ms) + "," + str(active_cell.handle) + "," + str(peak_cell.handle) + "," + str(done_cell.handle) + "," + str(dur_cell.handle)
+    h: ThreadHandle[int] = nox.thread.start(_run_concurrent_vu_fibers, cfg_s)
+
+    wait_ticks: int = 0
+    while done_cell.load() < 1 and wait_ticks < 5000:
         nox.time.sleep_ms(1)
+        wait_ticks = wait_ticks + 1
 
     total_wave_dur: int = dur_cell.load()
-    barrier_cell.free()
     done_cell.free()
     dur_cell.free()
     return total_wave_dur
