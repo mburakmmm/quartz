@@ -1,11 +1,17 @@
-# Quartz Property — Replay Engine
+# Quartz Property — Replay Engine & User Property Registry
 from core.prng import Prng, PRNG_VERSION, derive_case_seed
 from property.generator import IntGen, StringGen, ListIntGen
-from property.property import PropertyResult
+from property.property import PropertyResult, format_int_list
 import nox.fs
+import nox.json
+from nox.json import JsonValue
+import nox.os
+import nox.strings
 
-def save_failure_artifact(path: str, result: PropertyResult) -> None:
+def save_failure_artifact(path: str, result: PropertyResult, target_file: str = "") -> None:
     json_data: str = result.to_json()
+    if len(target_file) > 0:
+        json_data = nox.strings.replace(json_data, "{\"schema_version\":", "{\"target_file\":\"" + target_file + "\",\"schema_version\":")
     nox.fs.write_string_atomic(path, json_data)
 
 def replay_int_case(test_id: str, seed: int, case_index: int, gen: IntGen, predicate: (int) -> bool) -> bool:
@@ -48,12 +54,50 @@ def replay_list_int_case(test_id: str, seed: int, case_index: int, gen: ListIntG
 
     return not passed
 
+class ReplayVerification:
+    found_in_registry: bool
+    generated_candidate: str
+    expected_counterexample: str
+    candidate_matches_artifact: bool
+    predicate_failed_again: bool
+
+    def __init__(self: ReplayVerification, found: bool, generated: str, expected: str, matches: bool, failed_again: bool) -> None:
+        self.found_in_registry = found
+        self.generated_candidate = generated
+        self.expected_counterexample = expected
+        self.candidate_matches_artifact = matches
+        self.predicate_failed_again = failed_again
+
+    def is_verified(self: ReplayVerification) -> bool:
+        return self.found_in_registry and self.candidate_matches_artifact and self.predicate_failed_again
+
+def _json_has_key(obj: JsonValue, target_key: str) -> bool:
+    n: int = nox.json.object_len(obj)
+    i: int = 0
+    while i < n:
+        if nox.json.object_key(obj, i) == target_key:
+            return True
+        i = i + 1
+    return False
+
+def _json_get_key(obj: JsonValue, target_key: str) -> JsonValue:
+    n: int = nox.json.object_len(obj)
+    i: int = 0
+    while i < n:
+        if nox.json.object_key(obj, i) == target_key:
+            return nox.json.object_value(obj, i)
+        i = i + 1
+    return nox.json.parse("null")
+
 # Explicit (non-global) registry mapping stable test IDs to the ORIGINAL generator + predicate,
-# so a saved failure artifact is replayed against the real property function.
+# verifying both exact candidate regeneration against original_counterexample and predicate failure.
 class PropertyRegistry:
     int_ids: list[str]
     int_gens: list[IntGen]
     int_preds: list[(int) -> bool]
+    str_ids: list[str]
+    str_gens: list[StringGen]
+    str_preds: list[(str) -> bool]
     list_ids: list[str]
     list_gens: list[ListIntGen]
     list_preds: list[(list[int]) -> bool]
@@ -62,6 +106,9 @@ class PropertyRegistry:
         self.int_ids = []
         self.int_gens = []
         self.int_preds = []
+        self.str_ids = []
+        self.str_gens = []
+        self.str_preds = []
         self.list_ids = []
         self.list_gens = []
         self.list_preds = []
@@ -70,6 +117,11 @@ class PropertyRegistry:
         self.int_ids.append(test_id)
         self.int_gens.append(gen)
         self.int_preds.append(predicate)
+
+    def register_str(self: PropertyRegistry, test_id: str, gen: StringGen, predicate: (str) -> bool) -> None:
+        self.str_ids.append(test_id)
+        self.str_gens.append(gen)
+        self.str_preds.append(predicate)
 
     def register_list_int(self: PropertyRegistry, test_id: str, gen: ListIntGen, predicate: (list[int]) -> bool) -> None:
         self.list_ids.append(test_id)
@@ -85,6 +137,11 @@ class PropertyRegistry:
             if self.int_ids[i] == test_id:
                 return "int"
             i = i + 1
+        s: int = 0
+        while s < len(self.str_ids):
+            if self.str_ids[s] == test_id:
+                return "str"
+            s = s + 1
         j: int = 0
         while j < len(self.list_ids):
             if self.list_ids[j] == test_id:
@@ -92,23 +149,125 @@ class PropertyRegistry:
             j = j + 1
         return ""
 
-    # Returns 1 if failure reproduced, 0 if the case now passes, -1 if test_id is not registered.
-    def replay(self: PropertyRegistry, test_id: str, seed: int, case_index: int) -> int:
+    # Regenerates the candidate from (seed, test_id, case_index), compares it against expected_original
+    # (when non-empty), and runs the original registered predicate.
+    def verify_replay(self: PropertyRegistry, test_id: str, seed: int, case_index: int, expected_original: str) -> ReplayVerification:
+        case_seed: int = derive_case_seed(seed, test_id, case_index, PRNG_VERSION)
+        case_prng: Prng = Prng(case_seed)
+
         i: int = 0
         while i < len(self.int_ids):
             if self.int_ids[i] == test_id:
-                if replay_int_case(test_id, seed, case_index, self.int_gens[i], self.int_preds[i]):
-                    return 1
-                return 0
+                cand_int: int = self.int_gens[i].generate(case_prng)
+                gen_str: str = str(cand_int)
+                matches: bool = (len(expected_original) == 0) or (gen_str == expected_original)
+                passed: bool = False
+                try:
+                    passed = self.int_preds[i](cand_int)
+                except Exception as e:
+                    passed = False
+                return ReplayVerification(True, gen_str, expected_original, matches, not passed)
             i = i + 1
+
+        s: int = 0
+        while s < len(self.str_ids):
+            if self.str_ids[s] == test_id:
+                cand_str: str = self.str_gens[s].generate(case_prng)
+                matches_s: bool = (len(expected_original) == 0) or (cand_str == expected_original)
+                passed_s: bool = False
+                try:
+                    passed_s = self.str_preds[s](cand_str)
+                except Exception as e:
+                    passed_s = False
+                return ReplayVerification(True, cand_str, expected_original, matches_s, not passed_s)
+            s = s + 1
+
         j: int = 0
         while j < len(self.list_ids):
             if self.list_ids[j] == test_id:
-                if replay_list_int_case(test_id, seed, case_index, self.list_gens[j], self.list_preds[j]):
-                    return 1
-                return 0
+                cand_list: list[int] = self.list_gens[j].generate(case_prng)
+                gen_list_str: str = format_int_list(cand_list)
+                legacy_len_str: str = "len=" + str(len(cand_list))
+                matches_l: bool = (len(expected_original) == 0) or (gen_list_str == expected_original) or (legacy_len_str == expected_original)
+                passed_l: bool = False
+                try:
+                    passed_l = self.list_preds[j](cand_list)
+                except Exception as e:
+                    passed_l = False
+                return ReplayVerification(True, gen_list_str, expected_original, matches_l, not passed_l)
             j = j + 1
-        return -1
+
+        return ReplayVerification(False, "", expected_original, False, False)
+
+    # Returns 1 if failure reproduced, 0 if the case now passes, -1 if test_id is not registered.
+    def replay(self: PropertyRegistry, test_id: str, seed: int, case_index: int) -> int:
+        v: ReplayVerification = self.verify_replay(test_id, seed, case_index, "")
+        if not v.found_in_registry:
+            return -1
+        if v.predicate_failed_again:
+            return 1
+        return 0
 
     def replay_result(self: PropertyRegistry, result: PropertyResult) -> bool:
-        return self.replay(result.test_id, result.seed, result.failing_case_index) == 1
+        v: ReplayVerification = self.verify_replay(result.test_id, result.seed, result.failing_case_index, result.original_counterexample)
+        return v.is_verified()
+
+    def verify_artifact_file(self: PropertyRegistry, path: str) -> ReplayVerification:
+        if not nox.fs.exists(path):
+            return ReplayVerification(False, "", "", False, False)
+        content: str = nox.fs.read_to_string(path)
+        artifact: JsonValue = nox.json.parse(content)
+        test_id: str = _json_get_key(artifact, "test_id").s
+        seed_val: int = int(_json_get_key(artifact, "seed").n)
+        case_idx: int = 0
+        if _json_has_key(artifact, "failing_case_index"):
+            case_idx = int(_json_get_key(artifact, "failing_case_index").n)
+        elif _json_has_key(artifact, "failing_case"):
+            case_idx = int(_json_get_key(artifact, "failing_case").n)
+        orig_str: str = ""
+        if _json_has_key(artifact, "original_counterexample"):
+            orig_str = _json_get_key(artifact, "original_counterexample").s
+        elif _json_has_key(artifact, "original"):
+            orig_str = _json_get_key(artifact, "original").s
+        return self.verify_replay(test_id, seed_val, case_idx, orig_str)
+
+    # Allows any user property test file to act as a replay target via:
+    #   noxc run user_property_test.nox -- --replay path/to/failure.json
+    # or:
+    #   quartz replay path/to/failure.json --target user_property_test.nox
+    def run_argv_replay(self: PropertyRegistry) -> bool:
+        n: int = nox.os.arg_count()
+        artifact_path: str = ""
+        i: int = 1
+        while i < n:
+            a: str = nox.os.arg(i)
+            if a == "--replay" and (i + 1) < n:
+                artifact_path = nox.os.arg(i + 1)
+                break
+            elif nox.strings.starts_with(a, "--replay="):
+                artifact_path = nox.strings.replace(a, "--replay=", "")
+                break
+            i = i + 1
+
+        if len(artifact_path) == 0:
+            return False
+
+        v: ReplayVerification = self.verify_artifact_file(artifact_path)
+        if not v.found_in_registry:
+            print("Error: test_id in '" + artifact_path + "' is not registered in this PropertyRegistry.")
+            nox.os.exit(2)
+            return False
+        if not v.candidate_matches_artifact:
+            print("Error: regenerated candidate '" + v.generated_candidate + "' does not match artifact original_counterexample '" + v.expected_counterexample + "'.")
+            nox.os.exit(1)
+            return False
+        if not v.predicate_failed_again:
+            print("  Replay executed: PASS (original predicate now holds)")
+            print("[REPLAY FAILED] Counterexample could not be reproduced from seed and case index.")
+            nox.os.exit(1)
+            return False
+
+        print("  Regenerated candidate matches artifact: " + v.generated_candidate)
+        print("  Replay executed: FAIL (original predicate violated again)")
+        print("[REPLAY SUCCESS] Deterministic counterexample reproduction verified.")
+        return True

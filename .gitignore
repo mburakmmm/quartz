@@ -18,6 +18,7 @@ cache/
 # Test artifacts & scratch
 fixtures/*.txt
 fixtures/*.json
+!fixtures/custom_replay_artifact.json
 fixtures/*.xml
 fixtures/corpus/*/
 artifacts/

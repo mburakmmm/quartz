@@ -51,6 +51,7 @@ class LoadMetrics:
     min_latency_ms: int
     max_latency_ms: int
     sum_latency_ms: int
+    peak_concurrency: int
     buckets: list[int]
 
     def __init__(self: LoadMetrics) -> None:
@@ -64,6 +65,7 @@ class LoadMetrics:
         self.min_latency_ms = -1
         self.max_latency_ms = 0
         self.sum_latency_ms = 0
+        self.peak_concurrency = 0
 
         # Initialize 246 buckets to 0
         b: list[int] = []
@@ -78,6 +80,10 @@ class LoadMetrics:
 
     def record_rejected(self: LoadMetrics) -> None:
         self.rejected = self.rejected + 1
+
+    def record_concurrency(self: LoadMetrics, active_count: int) -> None:
+        if active_count > self.peak_concurrency:
+            self.peak_concurrency = active_count
 
     def record_result(self: LoadMetrics, status: int, duration_ms: int, is_timeout: bool, is_success: bool) -> None:
         self.completed = self.completed + 1
@@ -180,6 +186,7 @@ class LoadMetrics:
         s = s + "\"p99_latency_ms\": " + str(self.p99()) + ", "
         s = s + "\"throughput_rps\": " + str(self.throughput_rps(total_duration_ms)) + ", "
         s = s + "\"error_rate\": " + str(self.error_rate()) + ", "
-        s = s + "\"unfulfilled_rate\": " + str(self.unfulfilled_rate())
+        s = s + "\"unfulfilled_rate\": " + str(self.unfulfilled_rate()) + ", "
+        s = s + "\"peak_concurrency\": " + str(self.peak_concurrency)
         s = s + "}"
         return s

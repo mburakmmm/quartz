@@ -44,7 +44,7 @@ import adapters.atlas
 import adapters.feather
 
 def version() -> str:
-    return "0.9.13"
+    return "0.9.14"
 
 def framework_info() -> str:
     return "Quartz Test Framework v" + version() + " for NOX Ecosystem"

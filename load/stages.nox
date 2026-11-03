@@ -3,11 +3,13 @@
 # with dynamic virtual user scaling, per-stage latency histograms, and live stage telemetry.
 
 import nox.time
+import nox.atomic
 from nox.time import Instant
+from nox.atomic import AtomicInt
 from load.safety import SafetyLimits, CircuitBreaker, default_safety_limits, CircuitBreakerTrippedError
 from load.metrics import LoadMetrics
 from load.thresholds import Threshold, ThresholdResult, evaluate_all_thresholds, all_thresholds_passed
-from load.executor import VirtualUserState, LoadTestSummary
+from load.executor import VirtualUserState, LoadTestSummary, _execute_concurrent_vu_wave
 from core.report import escape_json, JsonlStreamReporter
 
 class LoadStage:
@@ -165,12 +167,20 @@ def run_staged_task_workload_internal(config: StagedWorkloadConfig, task_func: (
             payload_start: str = "{\"start_vus\":" + str(start_vus) + ",\"target_vus\":" + str(target_vus) + ",\"duration_s\":" + str(stg.duration_s) + "}"
             reporter.emit("stage_start", "stage_" + str(stage_idx), "PASS", 0, payload_start)
 
-        # Allocate virtual users for this stage
+        # Allocate virtual users for this stage and execute concurrent VU wave
         vu_states: list[VirtualUserState] = []
         v_i: int = 0
         while v_i < target_vus:
             vu_states.append(VirtualUserState(v_i))
             v_i = v_i + 1
+
+        stg_active_cell: AtomicInt = nox.atomic.new_int(0)
+        stg_peak_cell: AtomicInt = nox.atomic.new_int(0)
+        _execute_concurrent_vu_wave(target_vus, target_vus, 0, stg_active_cell, stg_peak_cell)
+        stage_metrics.record_concurrency(stg_peak_cell.load())
+        cumulative_metrics.record_concurrency(stg_peak_cell.load())
+        stg_active_cell.free()
+        stg_peak_cell.free()
 
         stage_completed: int = 0
         stage_successful: int = 0

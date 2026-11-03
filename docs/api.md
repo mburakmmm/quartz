@@ -582,11 +582,13 @@ Published as the `quartz` binary via `nox.json` and runnable via `noxc run cli/m
 - `SequenceFuzzResult`: Fuzz outcome containing failure status and minimal sequence counterexample.
   - `found_failure: bool`, `iterations_run: int`, `failing_sequence: ActionSequence | None`, `shrunk_sequence: ActionSequence | None`
   - `.to_json() -> str`
-- `shrink_valid_sequence(seq: ActionSequence, target_runner: (ActionSequence) -> bool, validator: (ActionSequence) -> bool, max_steps: int = 50) -> ActionSequence`: Delta-debugging minimizer that rejects shrink candidates violating `validator`.
-- `shrink_failing_sequence(seq: ActionSequence, target_runner: (ActionSequence) -> bool, max_steps: int = 50) -> ActionSequence`: Delta-debugging minimizer for action sequences.
+- `shrink_valid_sequence(seq: ActionSequence, target_runner: (ActionSequence) -> bool, validator: (ActionSequence) -> bool, max_steps: int = 100) -> ActionSequence`: Delta-debugging minimizer that evaluates `validator(candidate)` BEFORE `target_runner(candidate)` so side-effecting targets are never invoked on invalid sequence candidates.
+- `shrink_failing_sequence(seq: ActionSequence, target_runner: (ActionSequence) -> bool, max_steps: int = 100) -> ActionSequence`: Delta-debugging minimizer for action sequences.
 - `StateModel(initial_state: int, precondition: (int, FuzzAction) -> bool, apply_fn: (int, FuzzAction) -> int, postcondition: (int, FuzzAction, int) -> bool)`: Explicit model state machine verifier.
-- `run_model_sequence(model: StateModel, seq: ActionSequence) -> str`: Runs `seq` against `model`, skipping actions whose precondition is false and returning `""` on pass or a diagnostic message on postcondition failure.
-- `model_sequence_runner(model: StateModel) -> (ActionSequence) -> bool`: Adapts a `StateModel` into a `target_runner` callback for `run_sequence_fuzz`.
+- `run_model_sequence(model: StateModel, seq: ActionSequence, fail_on_precondition: bool = False) -> str`: Runs `seq` against `model`, skipping actions whose precondition is false by default (or returning a precondition error when `fail_on_precondition=True`) and returning `""` on pass or a diagnostic message on postcondition failure.
+- `model_sequence_runner(model: StateModel, fail_on_precondition: bool = False) -> (ActionSequence) -> bool`: Adapts a `StateModel` into a `target_runner` callback for `run_sequence_fuzz`.
+- `run_sut_against_model(model: StateModel, sut_reset: () -> None, sut_step: (FuzzAction) -> int, seq: ActionSequence, fail_on_precondition: bool = False) -> str`: Steps a real System-Under-Test (`sut_step`) alongside `model` and reports any state divergence or postcondition/precondition violation.
+- `sut_model_runner(model: StateModel, sut_reset: () -> None, sut_step: (FuzzAction) -> int, fail_on_precondition: bool = False) -> (ActionSequence) -> bool`: Adapts `run_sut_against_model` into a `target_runner` callback for `run_sequence_fuzz`.
 - `run_sequence_fuzz(fuzzer: SequenceFuzzer, target_runner: (ActionSequence) -> bool, iterations: int = 100, shrink: bool = True) -> SequenceFuzzResult`: Executes bounded stateful fuzzing campaign.
 
 ---
@@ -599,17 +601,21 @@ Published as the `quartz` binary via `nox.json` and runnable via `noxc run cli/m
   - `.col_index(col_name: str) -> int`
   - `.get_cell(row_idx: int, col_name: str) -> str`
   - `.to_csv(delimiter: str = ",", quote_char: str = "\"") -> str`: Formats table into standard CSV with automatic quoting and quote doubling.
+- `row_signature(row: list[str]) -> str`: Length-prefixed canonical row encoding (`<col_count>#<len>:<cell>;...`) immune to delimiter and control-character collisions.
 - `escape_csv_field(field: str, delimiter: str, quote_char: str) -> str`: Escapes internal quotes and wraps in quotes if delimiter/newline/quote is present.
 - `parse_csv(raw_csv: str, delimiter: str = ",", quote_char: str = "\"") -> AtlasTable`: Robust state-machine CSV parser handling embedded quotes, commas, CRLF/LF line breaks.
+- `from_nox_csv(raw_csv: str) -> AtlasTable` & `to_nox_csv(table: AtlasTable) -> str`: Direct connectors for NOX standard library `nox.csv.parse` and `nox.csv.dump`.
+- `from_dict_records(headers: list[str], records: list[dict[str, str]]) -> AtlasTable`: Builds an `AtlasTable` from `nox.csv.parse_dicts` output.
+- `from_db_rows(rows: list[Row]) -> AtlasTable`: Builds an `AtlasTable` directly from `nox.db.Row` query results.
 - `sort_table(table: AtlasTable, sort_col: str, is_numeric: bool = False, ascending: bool = True) -> AtlasTable`: Stable insertion sort of tabular rows.
 - `verify_sort_idempotence(table: AtlasTable, sort_col: str, is_numeric: bool = False, ascending: bool = True) -> bool`: Verifies `sort(sort(T)) == sort(T)`.
 - `verify_sort_contract(original: AtlasTable, sorted_table: AtlasTable, sort_col: str, is_numeric: bool = False, ascending: bool = True) -> bool`: Verifies monotonic ordering on `sort_col` and exact full-row multiset preservation.
 - `verify_csv_roundtrip(table: AtlasTable, delimiter: str = ",", quote_char: str = "\"") -> bool`: Verifies `parse_csv(to_csv(T)) == T` without corruption.
-- `verify_groupby_contract(table: AtlasTable, grouped_table: AtlasTable, group_col: str) -> bool`: Verifies distinct group keys (rejecting duplicate groups) and exact ground-truth group counts.
+- `verify_groupby_contract(table: AtlasTable, group_col: str, grouped_table: AtlasTable, count_col: str = "count") -> bool`: Verifies distinct group keys (rejecting duplicate groups) and exact ground-truth group counts.
 - `verify_groupby_conservation(table: AtlasTable, group_col: str) -> bool`: Verifies that the sum of grouped row counts equals the original table row count.
-- `verify_inner_join_contract(left: AtlasTable, right: AtlasTable, joined: AtlasTable, left_key: str, right_key: str) -> bool`: Verifies column layout, independent left/right key equality (including `right_` prefixed keys), and exact full-row cell multiset against ground truth.
+- `verify_inner_join_contract(left: AtlasTable, right: AtlasTable, left_key: str, right_key: str, joined_table: AtlasTable) -> bool`: Verifies column layout, independent left/right key equality (including `right_` prefixed keys), and exact full-row cell multiset against ground truth.
 - `verify_inner_join_conservation(left: AtlasTable, right: AtlasTable, left_key: str, right_key: str) -> bool`: Verifies row count bounds and join key integrity.
-- `AtlasEngine(name, sort_fn, groupby_fn, join_fn)` & `run_atlas_engine_contract(engine, table, sort_col, group_col, right_table, left_key, right_key) -> bool`: Pluggable contract harness for testing external tabular engines.
+- `AtlasEngine(name, sort_fn, groupby_fn, join_fn)` & `run_atlas_engine_contract(engine, table, sort_col, sort_numeric, group_col, other, left_key, right_key) -> list[str]`: Pluggable contract harness for testing external tabular engines.
 - `mutate_csv(raw_csv: str, prng: Prng) -> str`: Fuzzing mutator generating delimiter swaps, unclosed quotes, broken line endings, null bytes, and mid-stream truncations.
 
 ---
@@ -636,8 +642,9 @@ Published as the `quartz` binary via `nox.json` and runnable via `noxc run cli/m
   - `.restore_snapshot(snapshot: list[FeatherRecord]) -> None`
 - `verify_crud_lifecycle(repo: FeatherRepository, initial_record: FeatherRecord, update_field: str, updated_val: str) -> bool`: Asserts full Create-Read-Update-Delete sequence consistency.
 - `verify_idempotent_upsert(repo: FeatherRepository, record: FeatherRecord) -> bool`: Asserts calling upsert twice leaves state bit-for-bit identical without duplicating records.
-- `TxResult(outcome: str, state_restored: bool, error_message: str)`: Explicit transaction outcome (`TX_COMMITTED`, `TX_ABORTED`, `TX_ROLLED_BACK_ON_ERROR`, `TX_ROLLBACK_FAILED`).
-- `run_transaction(repo: FeatherRepository, mutation_fn: (FeatherRepository) -> None, should_abort: bool) -> TxResult`: Executes `mutation_fn` under snapshot isolation and reports explicit outcome and restoration state.
+- `TxResult(outcome: str, error_message: str)`: Explicit transaction outcome (`TX_COMMITTED`, `TX_ABORTED`, `TX_ROLLED_BACK_ON_ERROR`, `TX_ROLLBACK_FAILED`).
+- `run_transaction(repo: FeatherRepository, mutation_fn: (FeatherRepository) -> None, commit: bool) -> TxResult`: Executes `mutation_fn` under snapshot isolation and reports explicit outcome and restoration state.
+- `SqlConnection` protocol (`execute(sql) -> int`, `query(sql) -> list[Row]`, `close() -> None`), `InMemorySqlConnection`, `row_to_feather_record(row: Row, pk_col: str) -> FeatherRecord`, `rows_to_feather_records(rows: list[Row], pk_col: str) -> list[FeatherRecord]`, `run_sql_transaction(conn: SqlConnection, table_name: str, pk_col: str, mutation_fn: () -> None, commit: bool) -> TxResult`, and `run_orm_transaction(conn: DbConnection, table: Table, pk_col: str, mutation_fn: () -> None, commit: bool) -> TxResult`: Real SQL `BEGIN TRANSACTION` / `COMMIT` / `ROLLBACK` transaction verifiers integrated with `nox.db` and `nox.orm`.
 - `verify_transaction_rollback(repo: FeatherRepository, mutation_fn: (FeatherRepository) -> None, should_abort: bool) -> bool`: Asserts pre-transaction state is restored upon abort or exception.
 - `FeatherFixture(repo: FeatherRepository)`: Test fixture taking snapshot on `.setup()` and restoring on `.teardown()`.
 
@@ -650,6 +657,7 @@ Published as the `quartz` binary via `nox.json` and runnable via `noxc run cli/m
 - `CrashDeduplicator()`: Engine that clusters crashes into defect groups.
   - `.normalize_signature(raw_error: str) -> str`: Normalizes line numbers (`line <N>:`) and memory addresses (`0x<ADDR>:`) to produce stable fingerprints.
   - `.record_crash(raw_error: str, input_payload: str, seed: int, case_index: int) -> CrashCluster`: Groups matching crash and updates `minimal_input` if a shorter reproducer is found.
+  - `.update_minimal_reproducer(signature: str, minimized_input: str) -> None`: Stores the delta-debugging verified minimal crashing reproducer on the cluster.
   - `.unique_cluster_count() -> int`
   - `.total_crashes() -> int`
   - `.find_cluster(signature: str) -> CrashCluster | None`

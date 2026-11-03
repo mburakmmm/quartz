@@ -1,0 +1,21 @@
+# User-project property replay target demo
+from core.suite import TestSuite
+from property.generator import IntGen
+from property.property import PropertyConfig, PropertyResult, run_int_property
+from property.replay import PropertyRegistry, save_failure_artifact
+
+def payment_limit_invariant(amount: int) -> bool:
+    return amount < 150
+
+gen: IntGen = IntGen(0, 500, False)
+reg: PropertyRegistry = PropertyRegistry()
+reg.register_int("payment_limit_check", gen, payment_limit_invariant)
+
+suite: TestSuite = TestSuite("replay_demo_suite")
+has_tag_filters: int = suite.apply_argv_filters()
+
+if (not reg.run_argv_replay()) and has_tag_filters == 0:
+    cfg: PropertyConfig = PropertyConfig(100, 5, 9999, 5000)
+    res: PropertyResult = run_int_property("payment_limit_check", cfg, gen, payment_limit_invariant)
+    save_failure_artifact("fixtures/custom_replay_artifact.json", res, "fixtures/custom_replay_demo.nox")
+    print("Saved custom failure artifact: original=" + res.original_counterexample + " shrunk=" + res.shrunk_counterexample)

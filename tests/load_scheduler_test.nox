@@ -7,7 +7,7 @@ from load.safety import validate_load_target, LoadSafetyError, HARD_CAP_VIRTUAL_
 from load.workload import WorkloadConfig, closed_workload, open_workload, MODEL_CLOSED, MODEL_OPEN
 from load.metrics import LoadMetrics
 from load.thresholds import Threshold
-from load.executor import LoadTestSummary, run_task_workload, run_handler_load_test
+from load.executor import LoadTestSummary, run_task_workload, run_handler_load_test, run_parallel_thread_workload
 from contract.http import build_request, empty_headers
 
 def test_safety_limits_clamping() -> None:
@@ -86,6 +86,21 @@ def test_closed_workload_execution() -> None:
     assert_eq_int(summary.metrics.completed, 30, "30 cases completed")
     assert_eq_int(summary.metrics.successful, 30, "30 cases successful")
     assert_eq_int(summary.metrics.failed, 0, "0 cases failed")
+    assert_true(summary.metrics.peak_concurrency >= 2, "closed workload with 3 VUs measures peak_concurrency >= 2")
+
+def test_parallel_os_thread_workload() -> None:
+    limits: SafetyLimits = default_safety_limits()
+    wl: WorkloadConfig = closed_workload("parallel_thread_test", 4, 2, 12)
+    thresholds: list[Threshold] = [
+        Threshold("p95_latency_ms", "<=", 500.0),
+        Threshold("error_rate", "<=", 0.0)
+    ]
+    summary: LoadTestSummary = run_parallel_thread_workload(wl, 5, True, thresholds, limits)
+    assert_true(summary.all_passed, "parallel OS-thread workload passed thresholds")
+    assert_eq_int(summary.metrics.completed, 12, "12 parallel tasks completed")
+    assert_eq_int(summary.metrics.successful, 12, "12 parallel tasks succeeded")
+    assert_true(summary.metrics.peak_concurrency >= 2, "parallel OS threads measured active peak_concurrency >= 2")
+    assert_contains_str(summary.to_json(), "\"peak_concurrency\":", "JSON summary includes peak_concurrency")
 
 def test_open_workload_execution() -> None:
     limits: SafetyLimits = default_safety_limits()
@@ -212,6 +227,7 @@ def run_all_load_scheduler_tests() -> None:
     test_load_target_validation()
     test_circuit_breaker()
     test_closed_workload_execution()
+    test_parallel_os_thread_workload()
     test_open_workload_execution()
     test_circuit_breaker_abort_in_workload()
     test_handler_load_runner()

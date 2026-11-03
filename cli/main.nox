@@ -15,7 +15,7 @@ from core.report_html import format_html_load_report, format_html_test_report, w
 from core.types import RunSummary, TestResult, STATUS_PASS
 from property.generator import IntGen, ListIntGen
 from property.property import PropertyConfig, run_list_int_property, PropertyResult
-from property.replay import replay_int_case, PropertyRegistry
+from property.replay import replay_int_case, PropertyRegistry, ReplayVerification
 from fuzz.corpus import CorpusManager, default_corpus_config
 from fuzz.fuzzer import run_fuzz, FuzzSummary
 from load.safety import SafetyLimits, default_safety_limits
@@ -266,14 +266,59 @@ def cmd_replay() -> None:
             nox.os.exit(1)
             return
 
-        # Replay against the ORIGINAL registered generator + predicate (no synthetic predicate).
+        # Support external user-project property replay via --target <file.nox> or artifact "target_file"
+        target_file: str = parse_flag_str("--target", "")
+        if len(target_file) == 0:
+            target_file = parse_flag_str("--file", "")
+        if len(target_file) == 0 and json_has_key(artifact, "target_file"):
+            target_file = json_get_key(artifact, "target_file").s
+
+        if len(target_file) > 0:
+            if not nox.fs.exists(target_file):
+                print("Error: replay target file not found: " + target_file)
+                nox.os.exit(2)
+                return
+            env_bin: str = find_env_binary()
+            bins: list[str] = candidate_noxc_bins()
+            b_i: int = 0
+            while b_i < len(bins):
+                cmd_rep: Command = build_noxc_command(env_bin, bins[b_i])
+                cmd_rep.arg("run")
+                cmd_rep.arg(target_file)
+                cmd_rep.arg("--")
+                cmd_rep.arg("--replay")
+                cmd_rep.arg(path)
+                try:
+                    out_rep: Output = cmd_rep.run()
+                    if len(out_rep.stdout) > 0:
+                        print(out_rep.stdout)
+                    if out_rep.success():
+                        return
+                    elif not is_binary_not_found(out_rep.stderr, out_rep.status):
+                        if len(out_rep.stderr) > 0:
+                            print(out_rep.stderr)
+                        nox.os.exit(out_rep.status)
+                        return
+                except Exception as e:
+                    pass
+                b_i = b_i + 1
+            print("Error: Could not execute replay target file: " + target_file)
+            nox.os.exit(1)
+            return
+
+        # Replay against the ORIGINAL registered generator + predicate and verify candidate == original_counterexample.
         registry: PropertyRegistry = build_cli_registry()
-        replay_code: int = registry.replay(test_id, seed_val, case_idx)
-        if replay_code < 0:
-            print("Error: test_id '" + test_id + "' is not registered in the CLI property registry; cannot replay with the original predicate.")
+        v: ReplayVerification = registry.verify_replay(test_id, seed_val, case_idx, orig_str)
+        if not v.found_in_registry:
+            print("Error: test_id '" + test_id + "' is not registered in the CLI property registry (pass --target <file.nox> for custom project properties).")
             nox.os.exit(2)
             return
-        if replay_code == 1:
+        if not v.candidate_matches_artifact:
+            print("Error: regenerated candidate '" + v.generated_candidate + "' does not match artifact original_counterexample '" + v.expected_counterexample + "'.")
+            nox.os.exit(1)
+            return
+        if v.predicate_failed_again:
+            print("  Regenerated candidate matches artifact: " + v.generated_candidate)
             print("  Replay executed: FAIL (original predicate violated again)")
             print("[REPLAY SUCCESS] Deterministic counterexample reproduction verified.")
         else:
@@ -327,12 +372,97 @@ def cmd_contract() -> None:
             print("Contract check failed: " + check.error_summary())
             nox.os.exit(1)
 
+def find_env_binary() -> str:
+    env_candidates: list[str] = [
+        "/usr/bin/env",
+        "/bin/env",
+        "C:\\Program Files\\Git\\usr\\bin\\env.exe",
+        "C:/Program Files/Git/usr/bin/env.exe"
+    ]
+    i: int = 0
+    while i < len(env_candidates):
+        if nox.fs.exists(env_candidates[i]):
+            return env_candidates[i]
+        i = i + 1
+    return ""
+
+def attach_parent_env(cmd: Command) -> None:
+    env_keys: list[str] = ["PATH", "Path", "HOME", "USERPROFILE", "TEMP", "TMP", "TMPDIR", "SystemRoot", "SYSTEMROOT", "LOCALAPPDATA", "APPDATA", "PATHEXT"]
+    i: int = 0
+    while i < len(env_keys):
+        k: str = env_keys[i]
+        try:
+            v: str = nox.os.getenv(k)
+            if len(v) > 0:
+                if k == "Path":
+                    cmd.arg("PATH=" + v)
+                else:
+                    cmd.arg(k + "=" + v)
+        except Exception as e:
+            pass
+        i = i + 1
+
+def build_noxc_command(env_bin: str, noxc_bin: str) -> Command:
+    if len(env_bin) > 0:
+        cmd: Command = Command(env_bin)
+        attach_parent_env(cmd)
+        cmd.arg(noxc_bin)
+        return cmd
+    return Command(noxc_bin)
+
 def is_binary_not_found(err: str, status: int) -> bool:
     if status == 127:
         return True
     if len(err) == 0:
         return True
     return nox.strings.contains(err, "FileNotFound") or nox.strings.contains(err, "not found") or nox.strings.contains(err, "No such file")
+
+def candidate_noxc_bins() -> list[str]:
+    candidate_bins: list[str] = []
+    try:
+        user_prof: str = nox.os.getenv("USERPROFILE")
+        candidate_bins.append(user_prof + "\\.nox-lang\\bin\\noxc.exe")
+        candidate_bins.append(user_prof + "/.nox-lang/bin/noxc.exe")
+    except Exception as e:
+        pass
+
+    try:
+        home_dir: str = nox.os.getenv("HOME")
+        candidate_bins.append(home_dir + "/.nox-lang/bin/noxc")
+    except Exception as e:
+        pass
+
+    candidate_bins.append("/home/runner/.nox-lang/bin/noxc")
+    candidate_bins.append("/Users/runner/.nox-lang/bin/noxc")
+    candidate_bins.append("/root/.nox-lang/bin/noxc")
+    candidate_bins.append("/usr/local/bin/noxc")
+    candidate_bins.append("/usr/bin/noxc")
+    candidate_bins.append("noxc.exe")
+    candidate_bins.append("noxc")
+    return candidate_bins
+
+def collect_tag_targets(target_path: str) -> list[str]:
+    targets: list[str] = []
+    if nox.fs.is_file(target_path):
+        targets.append(target_path)
+        return targets
+    if nox.fs.is_dir(target_path):
+        entries: list[str] = nox.fs.read_dir(target_path)
+        # Prefer *_test.nox files; if none exist in the directory, include any .nox file
+        i: int = 0
+        while i < len(entries):
+            e: str = entries[i]
+            if nox.strings.ends_with(e, "_test.nox"):
+                targets.append(target_path + "/" + e)
+            i = i + 1
+        if len(targets) == 0:
+            j: int = 0
+            while j < len(entries):
+                e2: str = entries[j]
+                if nox.strings.ends_with(e2, ".nox"):
+                    targets.append(target_path + "/" + e2)
+                j = j + 1
+    return targets
 
 def cmd_test() -> None:
     target_path: str = "quartz.nox"
@@ -348,44 +478,38 @@ def cmd_test() -> None:
     if len(exclude_tag) > 0:
         print("Tag filter active: exclude [" + exclude_tag + "]")
     try:
-        candidate_bins: list[str] = []
-        try:
-            user_prof: str = nox.os.getenv("USERPROFILE")
-            candidate_bins.append(user_prof + "\\.nox-lang\\bin\\noxc.exe")
-            candidate_bins.append(user_prof + "/.nox-lang/bin/noxc.exe")
-        except Exception as e:
-            pass
-
-        try:
-            home_dir: str = nox.os.getenv("HOME")
-            candidate_bins.append(home_dir + "/.nox-lang/bin/noxc")
-        except Exception as e:
-            pass
-
-        candidate_bins.append("/home/runner/.nox-lang/bin/noxc")
-        candidate_bins.append("/Users/runner/.nox-lang/bin/noxc")
-        candidate_bins.append("/root/.nox-lang/bin/noxc")
-        candidate_bins.append("/usr/local/bin/noxc")
-        candidate_bins.append("/usr/bin/noxc")
-        candidate_bins.append("noxc.exe")
-        candidate_bins.append("noxc")
+        candidate_bins: list[str] = candidate_noxc_bins()
+        use_tag_mode: bool = len(tag_filter) > 0 or len(exclude_tag) > 0
+        tag_files: list[str] = []
+        if use_tag_mode:
+            tag_files = collect_tag_targets(target_path)
+            if len(tag_files) == 0:
+                print("Error: No .nox test files found for tag filtering at: " + target_path)
+                nox.os.exit(2)
+                return
 
         # Step 1: Static type check verification
+        check_target: str = target_path
+        if use_tag_mode and len(tag_files) > 0:
+            check_target = tag_files[0]
+
         chk_passed: bool = False
         chk_not_found: bool = True
         err_msg: str = ""
+        working_bin: str = ""
 
         c_i: int = 0
         while c_i < len(candidate_bins):
             bin_name: str = candidate_bins[c_i]
             check_cmd: Command = Command(bin_name)
             check_cmd.arg("check")
-            check_cmd.arg(target_path)
+            check_cmd.arg(check_target)
             try:
                 out_chk: Output = check_cmd.run()
                 if out_chk.success():
                     chk_passed = True
                     chk_not_found = False
+                    working_bin = bin_name
                     break
                 elif not is_binary_not_found(out_chk.stderr, out_chk.status):
                     # Real type error from compiler
@@ -408,41 +532,50 @@ def cmd_test() -> None:
             nox.os.exit(1)
             return
 
-        # Step 2: Attempt dynamic test execution
-        # Tag filters are forwarded as program argv via 'noxc run <file> -- --tag X' because
-        # 'noxc test' cannot forward argv; the test file applies them via TestSuite.apply_argv_filters().
-        use_tag_mode: bool = len(tag_filter) > 0 or len(exclude_tag) > 0
-        if use_tag_mode and not nox.fs.is_file(target_path):
-            print("Error: --tag/--exclude-tag require a single test file path (got: " + target_path + ").")
-            nox.os.exit(2)
-            return
-        t_i: int = 0
-        while t_i < len(candidate_bins):
-            bin_t: str = candidate_bins[t_i]
-            cmd: Command = Command(bin_t)
-            if use_tag_mode:
-                cmd.arg("run")
-                cmd.arg(target_path)
-                cmd.arg("--")
+        # Step 2: Dynamic test execution with parent environment forwarded via env_bin
+        env_bin: str = find_env_binary()
+        if use_tag_mode:
+            f_idx: int = 0
+            while f_idx < len(tag_files):
+                tf: str = tag_files[f_idx]
+                cmd_t: Command = build_noxc_command(env_bin, working_bin)
+                cmd_t.arg("run")
+                cmd_t.arg(tf)
+                cmd_t.arg("--")
                 if len(tag_filter) > 0:
-                    cmd.arg("--tag")
-                    cmd.arg(tag_filter)
+                    cmd_t.arg("--tag")
+                    cmd_t.arg(tag_filter)
                 if len(exclude_tag) > 0:
-                    cmd.arg("--exclude-tag")
-                    cmd.arg(exclude_tag)
-            else:
-                cmd.arg("test")
-                cmd.arg(target_path)
-            try:
-                out: Output = cmd.run()
-                if out.success():
-                    if len(out.stdout) > 0:
-                        print(out.stdout)
-                    print("All test suites executed successfully.")
+                    cmd_t.arg("--exclude-tag")
+                    cmd_t.arg(exclude_tag)
+                out_t: Output = cmd_t.run()
+                if len(out_t.stdout) > 0:
+                    print(out_t.stdout)
+                if not out_t.success():
+                    if len(out_t.stderr) > 0:
+                        print(out_t.stderr)
+                    nox.os.exit(1)
                     return
-            except Exception as e:
-                pass
-            t_i = t_i + 1
+                f_idx = f_idx + 1
+            print("All test suites executed successfully.")
+            return
+
+        cmd_run: Command = build_noxc_command(env_bin, working_bin)
+        cmd_run.arg("test")
+        cmd_run.arg(target_path)
+        out_run: Output = cmd_run.run()
+        if out_run.success():
+            if len(out_run.stdout) > 0:
+                print(out_run.stdout)
+            print("All test suites executed successfully.")
+            return
+        elif not is_binary_not_found(out_run.stderr, out_run.status):
+            if len(out_run.stdout) > 0:
+                print(out_run.stdout)
+            if len(out_run.stderr) > 0:
+                print(out_run.stderr)
+            nox.os.exit(1)
+            return
 
         allow_static: bool = (parse_flag_str("--allow-static-only", "") == "true") or (parse_flag_str("--allow-static", "") == "true")
         if allow_static:

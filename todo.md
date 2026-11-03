@@ -846,6 +846,41 @@
 
 ---
 
+## Phase 14.4: v0.9.14 — Bugfix & Hardening Release (GPT-6 Sol v0.9.13 findings)
+*Objective: Resolve ALL P1 and P2 findings from GPT-6 Sol's evaluation of Quartz v0.9.13 without omission. Never label any version 1.0 unless explicitly instructed by the user. Registry note: NOX Registry submission status is `awaiting approval` (never claim approved).*
+
+- [x] **14.4.1 [P1] CLI Dynamic Child Execution & Real E2E Tag Filtering (`cli/main.nox`, `.github/workflows/ci.yml`)**
+  - [x] Forward parent environment (`PATH`, `HOME`, `USERPROFILE`, `TEMP`, `TMP`, `TMPDIR`, `SystemRoot`, `PATHEXT`, etc.) to child `noxc` processes via non-shell `/usr/bin/env` (POSIX) and `C:\Program Files\Git\usr\bin\env.exe` (Windows) so child `noxc test` and `noxc run` compile and execute test binaries dynamically without falling back to `--allow-static`.
+  - [x] Support directory-level `--tag` and `--exclude-tag` execution in `cmd_test()` by discovering and running `*_test.nox` and `*_demo.nox` files in the target directory.
+  - [x] Propagate real child test failures (`exit_code != 0`) immediately as CLI exit code `1` instead of masking them behind static fallback.
+  - [x] Remove `--allow-static=true` from `.github/workflows/ci.yml` and assert in CI that `RAN:smoke_case, PASS=1 SKIP=2` is printed on all 4 platforms.
+- [x] **14.4.2 [P1] General-Purpose Property Replay & Counterexample Verification (`property/replay.nox`, `cli/main.nox`)**
+  - [x] Add `ReplayVerification` (`found_in_registry`, `generated_candidate`, `expected_counterexample`, `candidate_matches_artifact`, `predicate_failed_again`, `is_verified()`) and `PropertyRegistry.verify_replay()` so replay regenerates the candidate from `(seed, test_id, case_index)` and explicitly verifies that the regenerated value matches `original_counterexample` in the artifact AND violates the original predicate.
+  - [x] Add `register_str()` to `PropertyRegistry` alongside `register_int()` and `register_list_int()`, and format `list[int]` counterexamples via `format_int_list()`.
+  - [x] Support user-project replay in `quartz replay <artifact.json> [--target <user_test.nox>]` (and `"target_file"` in artifact JSON) by forwarding `--replay <artifact.json>` to the user's test file via child `noxc run` and providing `PropertyRegistry.run_argv_replay()`.
+- [x] **14.4.3 [P1] Concurrent Load Engine & Measured Active Concurrency (`load/metrics.nox`, `load/executor.nox`, `load/stages.nox`)**
+  - [x] Add `peak_concurrency: int` and `record_concurrency(active: int)` to `LoadMetrics` (and `"peak_concurrency"` in JSON reports).
+  - [x] Upgrade `load/executor.nox` and `load/stages.nox` to spawn concurrent OS-thread Virtual User workers (`_os_vu_slot_worker`, `_execute_concurrent_vu_wave`, and `run_parallel_thread_workload` using `nox.thread.start` and `nox.atomic.AtomicInt`) that measure true simultaneous active Virtual Users (`peak_concurrency >= 2`).
+- [x] **14.4.4 [P2] Crash Cluster Verified Minimized Reproducer (`fuzz/cluster.nox`, `fuzz/fuzzer.nox`, `fuzz/minimize.nox`)**
+  - [x] Run delta-debugging `minimize_crash()` before/when updating `CrashCluster.minimal_input` and add `CrashDeduplicator.update_minimal_reproducer(signature, minimized_input)` so `cluster.minimal_input` is always the verified delta-minimized reproducer, not merely the shortest unminimized crash seen so far.
+- [x] **14.4.5 [P2] Stateful Fuzzing Validator-First Shrinking, Precondition Policy & SUT Harness (`fuzz/sequence.nox`)**
+  - [x] In `shrink_valid_sequence()`, evaluate `validator(candidate)` BEFORE invoking `target_runner(candidate)` so side-effecting targets are never called with invalid sequences.
+  - [x] Add `fail_on_precondition: bool = False` option to `StateModel` / `run_model_sequence()` so invalid actions can either be skipped or flagged as precondition failures.
+  - [x] Add `run_sut_against_model(model, sut_reset, sut_step, seq, fail_on_precondition)` and `sut_model_runner(...)` to compare a real System-Under-Test's state against `StateModel`'s expected state at every transition step.
+- [x] **14.4.6 [P2] Atlas Length-Prefixed Row Signatures & `nox.csv` / `nox.db.Row` Connectors (`adapters/atlas.nox`)**
+  - [x] Replace control-character delimiter concatenation in `row_signature()` with collision-free length-prefixed encoding (`<col_count>#<len>:<cell>;...`) so cells containing control characters can never collide.
+  - [x] Add real NOX stdlib connectors `from_nox_csv(raw_csv: str) -> AtlasTable`, `to_nox_csv(table: AtlasTable) -> str`, `from_dict_records(headers: list[str], records: list[dict[str, str]]) -> AtlasTable`, and `from_db_rows(rows: list[Row]) -> AtlasTable` integrating directly with `nox.csv` and `nox.db.Row`.
+- [x] **14.4.7 [P2] Feather Real `nox.db.DbConnection` & `nox.orm` SQL Transaction Connector (`adapters/feather.nox`)**
+  - [x] Add `SqlConnection` protocol, `InMemorySqlConnection`, `row_to_feather_record()`, `rows_to_feather_records()`, `run_sql_transaction()`, and `run_orm_transaction()` integrating with `nox.db.Row`, `nox.db.DbConnection`, and `nox.orm.Table`, executing SQL `BEGIN TRANSACTION`, `COMMIT`, and `ROLLBACK` on error/abort and verifying post-rollback state (including `TX_ROLLBACK_FAILED` detection).
+- [x] **14.4.8 Verification, Docs & Release (`v0.9.14`)**
+  - [x] Expand unit and E2E tests covering all 7 areas above; verify 26/26 test suites pass.
+  - [x] Update `quartz.nox` (`0.9.14`), `CHANGELOG.md`, `docs/api.md`, and `todo.md`.
+  - [x] Commit, tag `v0.9.14`, push, publish to NOX Registry, and verify 4/4 CI platforms pass (including real E2E CLI test execution in CI logs).
+
+*Phase 14.4 Exit Gate:* PASSED. Dynamic CLI child process execution without `--allow-static`, user-project property replay + counterexample verification, real OS-thread concurrent load execution (`peak_concurrency >= 2`), delta-minimized crash cluster reproducers, validator-first sequence shrinking + SUT model harness, length-prefixed Atlas signatures + `nox.csv`/`nox.db.Row` connectors, and Feather SQL transaction verifiers all verified across 26/26 test suites.
+
+---
+
 ## Execution Log & Audit Trail
 
 | Date | Phase | Task | Action / Command | Result / Evidence | Status |
@@ -930,3 +965,5 @@
 | 2026-11-03 | Phase 14.2 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 26/26 tests pass, tagged `v0.9.12`, published | [x] DONE |
 | 2026-11-03 | Phase 14.3 | Bugfixes & Hardening | `adapters/`, `core/`, `property/`, `fuzz/`, `cli/` | Real CLI tag forwarding, full-row join/sort/groupby contracts, `TxResult`, canonical crash identity, `StateModel`, `PropertyRegistry` | [x] DONE |
 | 2026-11-03 | Phase 14.3 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 26/26 tests pass, tagged `v0.9.13`, published | [x] DONE |
+| 2026-11-03 | Phase 14.4 | Bugfixes & Hardening | `cli/`, `property/`, `load/`, `fuzz/`, `adapters/` | Dynamic child `noxc` env forwarding, user-project replay + counterexample match, OS-thread load `peak_concurrency`, delta-minimized crash clusters, validator-first sequence shrinking + SUT model runner, length-prefixed Atlas signatures + `nox.csv`/`nox.db.Row` connectors, Feather SQL transactions | [x] DONE |
+| 2026-11-03 | Phase 14.4 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 26/26 tests pass, dynamic CLI E2E in CI, tagged `v0.9.14`, published | [x] DONE |

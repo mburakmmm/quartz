@@ -1,7 +1,9 @@
 # Quartz Tests — Atlas Ecosystem Adapter & Tabular Invariant Tests
+import nox.csv
+from nox.db import Row
 from core.suite import TestSuite
 from core.prng import Prng
-from adapters.atlas import AtlasTable, parse_csv, sort_table, verify_sort_idempotence, verify_csv_roundtrip, groupby_count, verify_groupby_contract, verify_groupby_conservation, inner_join_tables, verify_inner_join_contract, verify_inner_join_conservation, mutate_csv, verify_sort_contract, AtlasEngine, reference_atlas_engine, run_atlas_engine_contract
+from adapters.atlas import AtlasTable, parse_csv, sort_table, verify_sort_idempotence, verify_csv_roundtrip, groupby_count, verify_groupby_contract, verify_groupby_conservation, inner_join_tables, verify_inner_join_contract, verify_inner_join_conservation, mutate_csv, verify_sort_contract, AtlasEngine, reference_atlas_engine, run_atlas_engine_contract, row_signature, from_nox_csv, to_nox_csv, from_dict_records, from_db_rows
 
 def broken_groupby(table: AtlasTable, group_col: str) -> AtlasTable:
     # Returns duplicated group rows: A:2, A:2 style corruption
@@ -63,6 +65,37 @@ def run_contract_hardening_tests(suite: TestSuite) -> None:
     bad_engine: AtlasEngine = AtlasEngine("broken", sort_table, broken_groupby, broken_join)
     bad_fail: list[str] = run_atlas_engine_contract(bad_engine, src, "g", False, "g", right, "g", "rid")
     suite.check_true("broken_engine_detected", len(bad_fail) >= 1)
+
+    # Length-prefixed row_signature collision immunity (cells containing \x1f and \x1e)
+    sig_a: str = row_signature(["a\x1fb", "c"])
+    sig_b: str = row_signature(["a", "b\x1fc"])
+    suite.check_true("row_signature_length_prefixed_no_collision", sig_a != sig_b)
+    sig_e1: str = row_signature(["x\x1ey", "z"])
+    sig_e2: str = row_signature(["x", "y\x1ez"])
+    suite.check_true("row_signature_record_sep_no_collision", sig_e1 != sig_e2)
+
+    ctrl_input: AtlasTable = AtlasTable(["k", "c1", "c2"], [["1", "a\x1fb", "c"]])
+    ctrl_spoof: AtlasTable = AtlasTable(["k", "c1", "c2"], [["1", "a", "b\x1fc"]])
+    suite.check_false("sort_contract_rejects_control_char_boundary_spoof", verify_sort_contract(ctrl_input, ctrl_spoof, "k", True, True))
+
+    # NOX stdlib connectors: nox.csv & nox.db.Row
+    nox_csv_raw: str = to_nox_csv(left)
+    from_std_csv: AtlasTable = from_nox_csv(nox_csv_raw)
+    suite.check_eq_int("from_nox_csv_row_count", from_std_csv.row_count(), 2)
+    suite.check_eq_str("from_nox_csv_cell", from_std_csv.get_cell(0, "name"), "Ann")
+
+    dict_recs: list[dict[str, str]] = nox.csv.parse_dicts("id,name\n10,Zoe\n20,Max\n")
+    from_dicts_t: AtlasTable = from_dict_records(["id", "name"], dict_recs)
+    suite.check_eq_int("from_dict_records_rows", from_dicts_t.row_count(), 2)
+    suite.check_eq_str("from_dict_records_cell", from_dicts_t.get_cell(1, "name"), "Max")
+
+    db_rows: list[Row] = [
+        Row(["1", "Istanbul"], [False, False], ["id", "city"]),
+        Row(["2", "Ankara"], [False, False], ["id", "city"])
+    ]
+    from_db_t: AtlasTable = from_db_rows(db_rows)
+    suite.check_eq_int("from_db_rows_count", from_db_t.row_count(), 2)
+    suite.check_eq_str("from_db_rows_cell", from_db_t.get_cell(0, "city"), "Istanbul")
 
 def run_atlas_adapter_tests() -> None:
     suite: TestSuite = TestSuite("atlas_adapter_suite")

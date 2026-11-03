@@ -3,6 +3,31 @@
 All notable changes to the Quartz test framework will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.14] - 2026-11-03 - Bugfix Release: Dynamic CLI Execution, User-Project Property Replay, Concurrent Load Engine & Stdlib DB/CSV Connectors
+
+### Fixed & Hardened
+- **Dynamic CLI Child Process Execution & Directory Tag Filtering (`cli/main.nox`)**:
+  - Diagnosed and resolved the root cause of `nox.process.Command` child `noxc` failures: Zig's `std.process.run` spawns child processes with an empty environment block unless forwarded. Implemented non-shell `build_noxc_command()` forwarding `PATH`, `HOME`, `USERPROFILE`, `TEMP`, `TMP`, and `SystemRoot` via discrete `KEY=VALUE` argv entries to `/usr/bin/env` (POSIX) and `env.exe` (Windows), strictly complying with `AGENTS.md` Rule 11 (zero shell-string construction).
+  - `noxc run cli/main.nox -- test <file_or_dir> [--tag <tag>] [--exclude-tag <tag>]` now executes child `noxc` processes dynamically without `--allow-static=true`, and `collect_tag_targets()` discovers both `*_test.nox` and `*_demo.nox` files when a directory is passed.
+- **General-Purpose User-Project Property Replay & Counterexample Verification (`property/property.nox`, `property/replay.nox`, `cli/main.nox` & `fixtures/custom_replay_demo.nox`)**:
+  - Formatted `list[int]` counterexamples in `run_list_int_property()` via `format_int_list()` so `original_counterexample` and `shrunk_counterexample` record exact list contents instead of `"[list]"`.
+  - Added `ReplayVerification` (`found_in_registry`, `generated_candidate`, `expected_counterexample`, `candidate_matches_artifact`, `predicate_failed_again`, `is_verified()`), `PropertyRegistry.verify_replay()`, `PropertyRegistry.verify_artifact_file()`, `PropertyRegistry.register_str()`, and `PropertyRegistry.run_argv_replay()`.
+  - Updated `save_failure_artifact(path, result, target_file)` to record `"target_file"` in the artifact JSON, and updated `quartz replay <artifact.json> [--target <file.nox>]` to support replaying arbitrary user-defined properties dynamically while verifying both candidate regeneration match AND original predicate failure.
+- **Concurrent OS-Thread Load Engine & Measured Active Concurrency (`load/metrics.nox`, `load/executor.nox` & `load/stages.nox`)**:
+  - Added `peak_concurrency: int` and `record_concurrency(active_count: int)` to `LoadMetrics` (and `"peak_concurrency"` in JSON reports).
+  - Implemented real OS-thread concurrent Virtual User execution (`_os_vu_slot_worker`, `_execute_concurrent_vu_wave`, and `run_parallel_thread_workload`) using `nox.thread.start` and cross-thread `nox.atomic.AtomicInt` (`increment`, `decrement`, `compare_and_swap` with a rendezvous barrier) so multi-VU workloads execute concurrently and record actual simultaneous active Virtual Users (`peak_concurrency >= 2`).
+- **Crash Cluster Verified Minimized Reproducer (`fuzz/cluster.nox` & `fuzz/fuzzer.nox`)**:
+  - Added `CrashDeduplicator.update_minimal_reproducer(signature, minimized_input)` and wired `minimize_crash()` in `run_fuzz()` so `cluster.minimal_input` stores the delta-debugging verified minimal crashing input (`"MAGIC_CRASH"`) rather than only the shortest raw mutated input.
+- **Stateful Sequence Fuzzing Validator-First Shrinking, Precondition Policy & SUT Harness (`fuzz/sequence.nox`)**:
+  - Updated `shrink_valid_sequence()` to evaluate `seq_acceptable(candidate, validator)` **before** invoking `target_runner(candidate)` across all three shrinking phases so side-effecting targets are never invoked on invalid sequence candidates.
+  - Added `fail_on_precondition: bool = False` to `run_model_sequence()` and `model_sequence_runner()`.
+  - Added `run_sut_against_model()` and `sut_model_runner()` to step a real System-Under-Test alongside a reference `StateModel` and detect state divergence at any transition step.
+- **Atlas Length-Prefixed Row Signatures & `nox.csv` / `nox.db.Row` Connectors (`adapters/atlas.nox`)**:
+  - Replaced control-character delimiter concatenation (`\x1f` / `\x1e`) in `row_signature()` and `verify_inner_join_contract()` with canonical length-prefixed encoding (`<col_count>#<len>:<cell>;...`), eliminating delimiter collision vulnerabilities.
+  - Added `from_nox_csv()`, `to_nox_csv()`, `from_dict_records()`, and `from_db_rows()` connecting `AtlasTable` directly to `nox.csv` and `nox.db.Row`.
+- **Feather SQL Transaction Connector (`nox.db.Row`, `nox.db.DbConnection`, `nox.orm.Table`) (`adapters/feather.nox`)**:
+  - Added `SqlConnection` structural protocol, `InMemorySqlConnection`, `row_to_feather_record()`, `rows_to_feather_records()`, `records_equal()`, `run_sql_transaction()`, and `run_orm_transaction()` executing `BEGIN TRANSACTION`, `COMMIT`, and `ROLLBACK` while verifying post-rollback state against pre-transaction `nox.db.Row` snapshots (including explicit `TX_ROLLBACK_FAILED` detection).
+
 ## [0.9.13] - 2026-11-03 - Bugfix Release: Real CLI Tag Filtering, Full-Row Atlas Contracts, Feather Transaction Outcomes, Canonical Crash Identity & State Models
 
 ### Fixed & Hardened

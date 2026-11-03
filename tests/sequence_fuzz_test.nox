@@ -2,7 +2,7 @@
 # Validates action sequence modeling, mutations, state machine fuzzing, and counterexample shrinking.
 
 from core.assert import assert_eq_int, assert_eq_str, assert_true, assert_false, assert_contains_str
-from fuzz.sequence import FuzzAction, ActionSequence, SequenceFuzzer, SequenceFuzzResult, run_sequence_fuzz, shrink_failing_sequence, shrink_valid_sequence, StateModel, run_model_sequence, model_sequence_runner
+from fuzz.sequence import FuzzAction, ActionSequence, SequenceFuzzer, SequenceFuzzResult, run_sequence_fuzz, shrink_failing_sequence, shrink_valid_sequence, StateModel, run_model_sequence, model_sequence_runner, run_sut_against_model, sut_model_runner
 
 def test_action_and_sequence_basics() -> None:
     act1: FuzzAction = FuzzAction("push", "alpha", 10)
@@ -248,6 +248,79 @@ def test_state_model() -> None:
     assert_false(runner(long_seq), "model runner reports failure")
     assert_true(runner(seq), "model runner passes short sequence")
 
+    # Precondition failure policy: fail_on_precondition=True treats pop on empty state as failure
+    pre_err: str = run_model_sequence(good, seq, True)
+    assert_true(len(pre_err) > 0, "precondition violation reported when fail_on_precondition=True")
+    assert_contains_str(pre_err, "precondition violated at step 0", "violation points at step 0 pop")
+    strict_runner: (ActionSequence) -> bool = model_sequence_runner(good, True)
+    assert_false(strict_runner(seq), "strict runner rejects sequence with precondition violation")
+
+def test_validator_evaluated_before_target_runner() -> None:
+    actions: list[str] = ["connect", "auth", "query", "disconnect"]
+    fuzzer: SequenceFuzzer = SequenceFuzzer(88, actions, 4, 8)
+    fuzzer.add_transition_rule("connect", ["auth"])
+    fuzzer.add_transition_rule("auth", ["query", "disconnect"])
+    fuzzer.add_transition_rule("query", ["query", "disconnect"])
+    fuzzer.add_transition_rule("disconnect", ["connect"])
+    fuzzer.set_initial_actions(["connect"])
+
+    invalid_target_calls: list[int] = [0]
+
+    def validator(s: ActionSequence) -> bool:
+        return fuzzer.is_valid_sequence(s)
+
+    def side_effect_sensitive_target(s: ActionSequence) -> bool:
+        if not fuzzer.is_valid_sequence(s):
+            invalid_target_calls[0] = invalid_target_calls[0] + 1
+        i: int = 0
+        while i < s.len():
+            if s.get(i).name == "query":
+                return False
+            i = i + 1
+        return True
+
+    original: ActionSequence = ActionSequence([
+        FuzzAction("connect"),
+        FuzzAction("auth"),
+        FuzzAction("query"),
+        FuzzAction("query"),
+        FuzzAction("disconnect")
+    ])
+    shrunk: ActionSequence = shrink_valid_sequence(original, side_effect_sensitive_target, validator)
+    assert_eq_int(invalid_target_calls[0], 0, "target_runner must NEVER be called with an invalid sequence candidate")
+    assert_true(fuzzer.is_valid_sequence(shrunk), "shrunk sequence is valid")
+    assert_eq_int(shrunk.len(), 3, "shrunk to minimal valid [connect, auth, query]")
+
+def test_sut_against_model() -> None:
+    model: StateModel = StateModel(0, model_pre, model_apply, model_post_ok)
+    sut_depth: list[int] = [0]
+
+    def sut_reset() -> None:
+        sut_depth[0] = 0
+
+    # Buggy SUT: when pushing with payload_int >= 50, accidentally increments depth by 2 instead of 1
+    def buggy_sut_step(act: FuzzAction) -> int:
+        if act.name == "push":
+            if act.payload_int >= 50:
+                sut_depth[0] = sut_depth[0] + 2
+            else:
+                sut_depth[0] = sut_depth[0] + 1
+        elif act.name == "pop":
+            sut_depth[0] = sut_depth[0] - 1
+        return sut_depth[0]
+
+    ok_seq: ActionSequence = ActionSequence([FuzzAction("push", "", 10), FuzzAction("pop", "", 0)])
+    assert_eq_str(run_sut_against_model(model, sut_reset, buggy_sut_step, ok_seq), "", "SUT matches model on small payload")
+
+    div_seq: ActionSequence = ActionSequence([FuzzAction("push", "", 10), FuzzAction("push", "", 75)])
+    err: str = run_sut_against_model(model, sut_reset, buggy_sut_step, div_seq)
+    assert_true(len(err) > 0, "SUT divergence detected")
+    assert_contains_str(err, "SUT state divergence at step 1", "reports exact step of SUT divergence")
+
+    runner: (ActionSequence) -> bool = sut_model_runner(model, sut_reset, buggy_sut_step)
+    assert_true(runner(ok_seq), "sut_model_runner passes matching sequence")
+    assert_false(runner(div_seq), "sut_model_runner fails diverging sequence")
+
 test_action_and_sequence_basics()
 test_sequence_generator_and_mutation()
 test_sequence_fuzzing_and_shrinking()
@@ -256,4 +329,6 @@ test_sequence_transition_rules()
 test_sequence_payload_shrinking()
 test_initial_actions_and_valid_shrinking()
 test_state_model()
+test_validator_evaluated_before_target_runner()
+test_sut_against_model()
 print("quartz sequence fuzz test: ALL PASS")

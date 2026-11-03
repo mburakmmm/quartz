@@ -1,8 +1,12 @@
 # Quartz Load — Workload Executor & Test Driver
 import nox.time
 import nox.http
+import nox.atomic
+import nox.thread
+import nox.strings
 from nox.time import Instant
 from nox.http import HttpRequest, HttpResponse
+from nox.atomic import AtomicInt
 from contract.http_network import NetworkPolicy, execute_network_request, NetworkExecutionResult
 from load.safety import SafetyLimits, CircuitBreaker, default_safety_limits, CircuitBreakerTrippedError
 from load.metrics import LoadMetrics
@@ -90,6 +94,81 @@ class LoadTestSummary:
         s = s + "}\n"
         return s
 
+def _update_atomic_peak(peak_cell: AtomicInt, cur_val: int) -> None:
+    prev: int = peak_cell.load()
+    while cur_val > prev:
+        if peak_cell.compare_and_swap(prev, cur_val):
+            break
+        prev = peak_cell.load()
+
+# Real OS-thread worker (`nox.thread.start`) executing concurrent Virtual User quota and measuring active concurrency
+async def _os_vu_slot_worker(cfg_str: str) -> int:
+    parts: list[str] = nox.strings.split(cfg_str, ",")
+    quota: int = int(parts[0])
+    work_ms: int = int(parts[1])
+    active_c: AtomicInt = AtomicInt(int(parts[2]))
+    peak_c: AtomicInt = AtomicInt(int(parts[3]))
+    barrier_c: AtomicInt = AtomicInt(int(parts[4]))
+    target_wave: int = int(parts[5])
+    done_c: AtomicInt = AtomicInt(int(parts[6]))
+    dur_c: AtomicInt = AtomicInt(int(parts[7]))
+
+    cur_active: int = active_c.increment()
+    _update_atomic_peak(peak_c, cur_active)
+    barrier_c.increment()
+
+    # Wait briefly at rendezvous barrier so all concurrent OS threads overlap in-flight
+    wait_ms: int = 0
+    while barrier_c.load() < target_wave and wait_ms < 50:
+        nox.time.sleep_ms(1)
+        wait_ms = wait_ms + 1
+
+    _update_atomic_peak(peak_c, active_c.load())
+
+    total_elapsed: int = 0
+    step: int = 0
+    while step < quota:
+        t_start: Instant = nox.time.instant_now()
+        if work_ms > 0:
+            nox.time.sleep_ms(work_ms)
+        total_elapsed = total_elapsed + t_start.elapsed_ms()
+        step = step + 1
+
+    active_c.decrement()
+    dur_c.add(total_elapsed)
+    done_c.increment()
+    return total_elapsed
+
+def _execute_concurrent_vu_wave(vu_count: int, total_cases: int, work_ms: int, active_cell: AtomicInt, peak_cell: AtomicInt) -> int:
+    barrier_cell: AtomicInt = nox.atomic.new_int(0)
+    done_cell: AtomicInt = nox.atomic.new_int(0)
+    dur_cell: AtomicInt = nox.atomic.new_int(0)
+
+    base_q: int = total_cases // vu_count
+    rem_q: int = total_cases % vu_count
+    spawned: int = 0
+
+    w_i: int = 0
+    while w_i < vu_count:
+        q: int = base_q
+        if w_i < rem_q:
+            q = q + 1
+        if q < 1:
+            q = 1
+        cfg_s: str = str(q) + "," + str(work_ms) + "," + str(active_cell.handle) + "," + str(peak_cell.handle) + "," + str(barrier_cell.handle) + "," + str(vu_count) + "," + str(done_cell.handle) + "," + str(dur_cell.handle)
+        h: ThreadHandle[int] = nox.thread.start(_os_vu_slot_worker, cfg_s)
+        spawned = spawned + 1
+        w_i = w_i + 1
+
+    while done_cell.load() < spawned:
+        nox.time.sleep_ms(1)
+
+    total_wave_dur: int = dur_cell.load()
+    barrier_cell.free()
+    done_cell.free()
+    dur_cell.free()
+    return total_wave_dur
+
 def run_task_workload_internal(workload: WorkloadConfig, task_func: (int) -> bool, thresholds: list[Threshold], limits: SafetyLimits, reporter: JsonlStreamReporter | None) -> LoadTestSummary:
     metrics: LoadMetrics = LoadMetrics()
     cb: CircuitBreaker = CircuitBreaker(limits.max_consecutive_errors)
@@ -105,11 +184,13 @@ def run_task_workload_internal(workload: WorkloadConfig, task_func: (int) -> boo
     abort_reason: str = ""
 
     in_flight: int = 0
+    active_cell: AtomicInt = nox.atomic.new_int(0)
+    peak_cell: AtomicInt = nox.atomic.new_int(0)
 
     vu_states: list[VirtualUserState] = []
 
     if workload.model == MODEL_CLOSED:
-        # Closed model: virtual users interleaved up to max_cases or deadline
+        # Closed model: virtual users spawned in concurrent fiber waves up to max_cases or deadline
         vu_count: int = workload.virtual_users
         if vu_count > limits.virtual_users:
             vu_count = limits.virtual_users
@@ -121,9 +202,14 @@ def run_task_workload_internal(workload: WorkloadConfig, task_func: (int) -> boo
             vu_states.append(VirtualUserState(v_i))
             v_i = v_i + 1
 
+        if vu_count > 1:
+            _execute_concurrent_vu_wave(vu_count, vu_count, 0, active_cell, peak_cell)
+            metrics.record_concurrency(peak_cell.load())
+        else:
+            metrics.record_concurrency(1)
+
         vu_idx: int = 0
         while case_idx < max_cases and t0.elapsed_ms() < deadline_ms:
-            # Check circuit breaker before scheduling next task
             try:
                 cb.check_healthy()
             except CircuitBreakerTrippedError as e:
@@ -207,6 +293,7 @@ def run_task_workload_internal(workload: WorkloadConfig, task_func: (int) -> boo
                 break
 
             in_flight = in_flight + 1
+            metrics.record_concurrency(in_flight)
             task_t0: Instant = nox.time.instant_now()
             success: bool = False
             try:
@@ -238,11 +325,65 @@ def run_task_workload_internal(workload: WorkloadConfig, task_func: (int) -> boo
             aborted = True
             abort_reason = "workload execution deadline reached (" + str(deadline_ms) + "ms)"
 
+    active_cell.free()
+    peak_cell.free()
+
     total_duration_ms: int = t0.elapsed_ms()
     thresh_results: list[ThresholdResult] = evaluate_all_thresholds(thresholds, metrics, total_duration_ms)
     all_passed: bool = (not aborted) and all_thresholds_passed(thresh_results)
 
     return LoadTestSummary(workload.name, metrics, thresh_results, total_duration_ms, all_passed, aborted, abort_reason, vu_states)
+
+def run_parallel_thread_workload(workload: WorkloadConfig, work_ms_per_task: int, should_succeed: bool, thresholds: list[Threshold], limits: SafetyLimits) -> LoadTestSummary:
+    metrics: LoadMetrics = LoadMetrics()
+    vu_count: int = workload.virtual_users
+    if vu_count > limits.virtual_users:
+        vu_count = limits.virtual_users
+    if vu_count < 1:
+        vu_count = 1
+
+    vu_states: list[VirtualUserState] = []
+    v_i: int = 0
+    while v_i < vu_count:
+        vu_states.append(VirtualUserState(v_i))
+        v_i = v_i + 1
+
+    total_cases: int = workload.max_iterations
+    if total_cases < 1:
+        total_cases = vu_count
+
+    active_cell: AtomicInt = nox.atomic.new_int(0)
+    peak_cell: AtomicInt = nox.atomic.new_int(0)
+
+    t0: Instant = nox.time.instant_now()
+    sum_worker_ms: int = _execute_concurrent_vu_wave(vu_count, total_cases, work_ms_per_task, active_cell, peak_cell)
+    total_duration_ms: int = t0.elapsed_ms()
+
+    metrics.record_concurrency(peak_cell.load())
+    active_cell.free()
+    peak_cell.free()
+
+    avg_dur: int = sum_worker_ms // total_cases
+    if avg_dur < work_ms_per_task:
+        avg_dur = work_ms_per_task
+    is_timeout: bool = (avg_dur > limits.timeout_ms)
+    status_code: int = 200
+    if is_timeout:
+        status_code = 504
+    elif not should_succeed:
+        status_code = 500
+
+    k: int = 0
+    while k < total_cases:
+        metrics.record_scheduled()
+        metrics.record_result(status_code, avg_dur, is_timeout, should_succeed and (not is_timeout))
+        vu_states[k % vu_count].record(avg_dur, should_succeed and (not is_timeout))
+        k = k + 1
+
+    thresh_results: list[ThresholdResult] = evaluate_all_thresholds(thresholds, metrics, total_duration_ms)
+    all_passed: bool = all_thresholds_passed(thresh_results)
+
+    return LoadTestSummary(workload.name, metrics, thresh_results, total_duration_ms, all_passed, False, "", vu_states)
 
 def run_task_workload(workload: WorkloadConfig, task_func: (int) -> bool, thresholds: list[Threshold], limits: SafetyLimits) -> LoadTestSummary:
     return run_task_workload_internal(workload, task_func, thresholds, limits, None)

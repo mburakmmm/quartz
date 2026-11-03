@@ -300,6 +300,8 @@ def always_valid_sequence(seq: ActionSequence) -> bool:
     return True
 
 # Shrinks while preserving validity (transition rules / valid start) via the supplied validator.
+# IMPORTANT: validator is evaluated BEFORE target_runner so side-effecting targets are never invoked
+# on invalid candidate sequences.
 def shrink_valid_sequence(seq: ActionSequence, target_runner: (ActionSequence) -> bool, validator: (ActionSequence) -> bool, max_steps: int = 100) -> ActionSequence:
     curr: ActionSequence = seq.clone()
     step: int = 0
@@ -315,14 +317,15 @@ def shrink_valid_sequence(seq: ActionSequence, target_runner: (ActionSequence) -
             cand_half2.append(curr.get(h_i).clone())
             h_i = h_i + 1
         seq_half2: ActionSequence = ActionSequence(cand_half2)
-        step = step + 1
-        passed_h2: bool = True
-        try:
-            passed_h2 = target_runner(seq_half2)
-        except Exception as e:
-            passed_h2 = False
-        if (not passed_h2) and seq_acceptable(seq_half2, validator):
-            curr = seq_half2
+        if seq_acceptable(seq_half2, validator):
+            step = step + 1
+            passed_h2: bool = True
+            try:
+                passed_h2 = target_runner(seq_half2)
+            except Exception as e:
+                passed_h2 = False
+            if not passed_h2:
+                curr = seq_half2
 
         if curr.len() >= 4 and step < max_steps:
             # Try first half only
@@ -332,14 +335,15 @@ def shrink_valid_sequence(seq: ActionSequence, target_runner: (ActionSequence) -
                 cand_half1.append(curr.get(h_j).clone())
                 h_j = h_j + 1
             seq_half1: ActionSequence = ActionSequence(cand_half1)
-            step = step + 1
-            passed_h1: bool = True
-            try:
-                passed_h1 = target_runner(seq_half1)
-            except Exception as e:
-                passed_h1 = False
-            if (not passed_h1) and seq_acceptable(seq_half1, validator):
-                curr = seq_half1
+            if seq_acceptable(seq_half1, validator):
+                step = step + 1
+                passed_h1: bool = True
+                try:
+                    passed_h1 = target_runner(seq_half1)
+                except Exception as e:
+                    passed_h1 = False
+                if not passed_h1:
+                    curr = seq_half1
 
     # Phase 2: Single action deletion (1-by-1 from right to left)
     improved: bool = True
@@ -351,15 +355,18 @@ def shrink_valid_sequence(seq: ActionSequence, target_runner: (ActionSequence) -
         i: int = curr.len() - 1
         while i >= 0 and step < max_steps:
             candidate: ActionSequence = curr.remove_at(i)
-            step = step + 1
+            if not seq_acceptable(candidate, validator):
+                i = i - 1
+                continue
 
+            step = step + 1
             passed: bool = True
             try:
                 passed = target_runner(candidate)
             except Exception as e:
                 passed = False
 
-            if (not passed) and seq_acceptable(candidate, validator):
+            if not passed:
                 curr = candidate
                 improved = True
                 break
@@ -373,27 +380,32 @@ def shrink_valid_sequence(seq: ActionSequence, target_runner: (ActionSequence) -
             orig_val: int = act.payload_int
             # Try setting payload_int to 0
             act.payload_int = 0
-            step = step + 1
-            passed_zero: bool = True
-            try:
-                passed_zero = target_runner(curr)
-            except Exception as e:
-                passed_zero = False
-
-            if passed_zero:
-                # 0 did not fail; try halving (binary search towards 0)
-                half_val: int = orig_val // 2
-                act.payload_int = half_val
+            if seq_acceptable(curr, validator):
                 step = step + 1
-                passed_half: bool = True
+                passed_zero: bool = True
                 try:
-                    passed_half = target_runner(curr)
+                    passed_zero = target_runner(curr)
                 except Exception as e:
-                    passed_half = False
+                    passed_zero = False
 
-                if passed_half:
-                    # Restore original
-                    act.payload_int = orig_val
+                if passed_zero:
+                    # 0 did not fail; try halving (binary search towards 0)
+                    half_val: int = orig_val // 2
+                    act.payload_int = half_val
+                    if seq_acceptable(curr, validator):
+                        step = step + 1
+                        passed_half: bool = True
+                        try:
+                            passed_half = target_runner(curr)
+                        except Exception as e:
+                            passed_half = False
+
+                        if passed_half:
+                            act.payload_int = orig_val
+                    else:
+                        act.payload_int = orig_val
+            else:
+                act.payload_int = orig_val
         p_i = p_i + 1
 
     return curr
@@ -449,10 +461,11 @@ class StateModel:
         self.apply_fn = apply_fn
         self.postcondition = postcondition
 
-# Executes a sequence against the model. Actions whose precondition does not hold are not
-# applicable and are skipped (not failures). Returns "" when every postcondition holds, else
-# a description of the first violated postcondition.
-def run_model_sequence(model: StateModel, seq: ActionSequence) -> str:
+# Executes a sequence against the model.
+# When fail_on_precondition=False (default), actions whose precondition does not hold are skipped.
+# When fail_on_precondition=True, a violated precondition is treated as a protocol/generator violation.
+# Returns "" when every condition holds, else a description of the first violation.
+def run_model_sequence(model: StateModel, seq: ActionSequence, fail_on_precondition: bool = False) -> str:
     state: int = model.initial_state
     i: int = 0
     while i < seq.len():
@@ -462,10 +475,49 @@ def run_model_sequence(model: StateModel, seq: ActionSequence) -> str:
             if not model.postcondition(state, act, new_state):
                 return "postcondition violated at step " + str(i) + " (" + act.name + ") state " + str(state) + " -> " + str(new_state)
             state = new_state
+        elif fail_on_precondition:
+            return "precondition violated at step " + str(i) + " (" + act.name + ") in state " + str(state)
         i = i + 1
     return ""
 
-def model_sequence_runner(model: StateModel) -> (ActionSequence) -> bool:
+def model_sequence_runner(model: StateModel, fail_on_precondition: bool = False) -> (ActionSequence) -> bool:
     def runner(seq: ActionSequence) -> bool:
-        return len(run_model_sequence(model, seq)) == 0
+        return len(run_model_sequence(model, seq, fail_on_precondition)) == 0
+    return runner
+
+# Runs a real System-Under-Test (SUT) alongside the reference StateModel and compares SUT observable
+# state against model state after every applicable action step.
+def run_sut_against_model(
+    model: StateModel,
+    sut_reset: () -> None,
+    sut_step: (FuzzAction) -> int,
+    seq: ActionSequence,
+    fail_on_precondition: bool = False
+) -> str:
+    sut_reset()
+    state: int = model.initial_state
+    i: int = 0
+    while i < seq.len():
+        act: FuzzAction = seq.get(i)
+        if model.precondition(state, act):
+            expected_state: int = model.apply_fn(state, act)
+            if not model.postcondition(state, act, expected_state):
+                return "postcondition violated at step " + str(i) + " (" + act.name + ") state " + str(state) + " -> " + str(expected_state)
+            actual_sut_state: int = sut_step(act)
+            if actual_sut_state != expected_state:
+                return "SUT state divergence at step " + str(i) + " (" + act.name + "): expected=" + str(expected_state) + " actual=" + str(actual_sut_state)
+            state = expected_state
+        elif fail_on_precondition:
+            return "precondition violated at step " + str(i) + " (" + act.name + ") in state " + str(state)
+        i = i + 1
+    return ""
+
+def sut_model_runner(
+    model: StateModel,
+    sut_reset: () -> None,
+    sut_step: (FuzzAction) -> int,
+    fail_on_precondition: bool = False
+) -> (ActionSequence) -> bool:
+    def runner(seq: ActionSequence) -> bool:
+        return len(run_sut_against_model(model, sut_reset, sut_step, seq, fail_on_precondition)) == 0
     return runner

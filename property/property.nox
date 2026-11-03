@@ -109,6 +109,16 @@ def run_str_property(test_id: str, config: PropertyConfig, gen: StringGen, predi
 
     return PropertyResult(test_id, STATUS_PASS, case_idx, discards, config.seed, -1, "", "", 0, "")
 
+def format_int_list(xs: list[int]) -> str:
+    s: str = "["
+    i: int = 0
+    while i < len(xs):
+        if i > 0:
+            s = s + ", "
+        s = s + str(xs[i])
+        i = i + 1
+    return s + "]"
+
 def run_list_int_property(test_id: str, config: PropertyConfig, gen: ListIntGen, predicate: (list[int]) -> bool) -> PropertyResult:
     case_idx: int = 0
     discards: int = 0
@@ -125,9 +135,9 @@ def run_list_int_property(test_id: str, config: PropertyConfig, gen: ListIntGen,
             passed = False
 
         if not passed:
-            orig_str: str = "len=" + str(len(candidate))
+            orig_str: str = format_int_list(candidate)
             shrink_res: ShrinkResultListInt = shrink_list_int(candidate, predicate, 500)
-            shrunk_str: str = "len=" + str(len(shrink_res.value))
+            shrunk_str: str = format_int_list(shrink_res.value)
             return PropertyResult(test_id, STATUS_FAIL, case_idx + 1, discards, config.seed, case_idx, orig_str, shrunk_str, shrink_res.attempts, "invariant violated")
 
         case_idx = case_idx + 1

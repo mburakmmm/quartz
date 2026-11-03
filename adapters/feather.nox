@@ -3,6 +3,8 @@
 # Quartz Core never depends on this adapter.
 
 import nox.strings
+from nox.db import DbConnection, Row
+from nox.orm import Table, select
 
 class FeatherField:
     name: str
@@ -74,10 +76,12 @@ class FeatherRecord:
 class FeatherRepository:
     table_name: str
     records: list[FeatherRecord]
+    reject_restore: bool
 
     def __init__(self: FeatherRepository, table_name: str) -> None:
         self.table_name = table_name
         self.records = []
+        self.reject_restore = False
 
     def insert(self: FeatherRepository, record: FeatherRecord) -> bool:
         # Fails if ID already exists (primary key uniqueness)
@@ -152,6 +156,8 @@ class FeatherRepository:
         return snap
 
     def restore_snapshot(self: FeatherRepository, snapshot: list[FeatherRecord]) -> None:
+        if self.reject_restore:
+            return
         restored: list[FeatherRecord] = []
         i: int = 0
         while i < len(snapshot):
@@ -329,3 +335,250 @@ class FeatherFixture:
             fn()
         finally:
             self.teardown()
+
+# ── Standard Library DB / ORM Connectors (`nox.db.Row`, `nox.db.DbConnection`, `nox.orm.Table`) ──
+
+# Structural SQL connection protocol satisfied by `nox.sqlite.Connection`,
+# `nox.postgres.Connection`, `nox.mysql.Connection`, and `InMemorySqlConnection`.
+protocol SqlConnection:
+    def execute(self: SqlConnection, sql: str) -> int:
+        pass
+
+    def query(self: SqlConnection, sql: str) -> list[Row]:
+        pass
+
+    def close(self: SqlConnection) -> None:
+        pass
+
+# Converts a `nox.db.Row` into a `FeatherRecord`, using `pk_col` as the record ID.
+def row_to_feather_record(row: Row, pk_col: str) -> FeatherRecord:
+    pk_val: str = ""
+    n: int = row.column_count()
+    i: int = 0
+    while i < n:
+        if row.column_name(i) == pk_col:
+            if not row.is_null(i):
+                pk_val = row.get_str(i)
+            break
+        i = i + 1
+
+    rec: FeatherRecord = FeatherRecord(pk_val)
+    j: int = 0
+    while j < n:
+        cname: str = row.column_name(j)
+        cval: str = ""
+        if not row.is_null(j):
+            cval = row.get_str(j)
+        rec.set(cname, cval)
+        j = j + 1
+    return rec
+
+# Converts `list[nox.db.Row]` query output into `list[FeatherRecord]`.
+def rows_to_feather_records(rows: list[Row], pk_col: str) -> list[FeatherRecord]:
+    out: list[FeatherRecord] = []
+    i: int = 0
+    while i < len(rows):
+        out.append(row_to_feather_record(rows[i], pk_col))
+        i = i + 1
+    return out
+
+# Checks whether two `list[FeatherRecord]` snapshots are identical regardless of row order.
+def records_equal(a: list[FeatherRecord], b: list[FeatherRecord]) -> bool:
+    if len(a) != len(b):
+        return False
+    i: int = 0
+    while i < len(a):
+        rec_a: FeatherRecord = a[i]
+        matched: bool = False
+        j: int = 0
+        while j < len(b):
+            if b[j].id == rec_a.id and b[j].equals(rec_a):
+                matched = True
+                break
+            j = j + 1
+        if not matched:
+            return False
+        i = i + 1
+    return True
+
+# Runs a real SQL transaction (`BEGIN TRANSACTION` / `COMMIT` / `ROLLBACK`) against any
+# `SqlConnection` (`nox.sqlite.Connection`, `nox.postgres.Connection`, `nox.mysql.Connection`, etc.)
+# and verifies post-rollback state against pre-transaction rows queried via `SELECT * FROM <table>`.
+def run_sql_transaction(
+    conn: SqlConnection,
+    table_name: str,
+    pk_col: str,
+    mutation_fn: () -> None,
+    commit: bool
+) -> TxResult:
+    select_sql: str = "SELECT * FROM " + table_name
+    pre_snap: list[FeatherRecord] = rows_to_feather_records(conn.query(select_sql), pk_col)
+    conn.execute("BEGIN TRANSACTION")
+    err: str = ""
+    threw: bool = False
+    try:
+        mutation_fn()
+    except Exception as e:
+        threw = True
+        err = str(e)
+
+    if threw:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception as rb_err:
+            return TxResult(TX_ROLLBACK_FAILED, err + " (rollback failed: " + str(rb_err) + ")")
+        post_err_snap: list[FeatherRecord] = rows_to_feather_records(conn.query(select_sql), pk_col)
+        if records_equal(pre_snap, post_err_snap):
+            return TxResult(TX_ROLLED_BACK_ON_ERROR, err)
+        return TxResult(TX_ROLLBACK_FAILED, err)
+
+    if commit:
+        try:
+            conn.execute("COMMIT")
+        except Exception as cm_err:
+            return TxResult(TX_ROLLBACK_FAILED, "commit failed: " + str(cm_err))
+        return TxResult(TX_COMMITTED, "")
+
+    try:
+        conn.execute("ROLLBACK")
+    except Exception as ab_err:
+        return TxResult(TX_ROLLBACK_FAILED, "rollback failed: " + str(ab_err))
+    post_abort_snap: list[FeatherRecord] = rows_to_feather_records(conn.query(select_sql), pk_col)
+    if records_equal(pre_snap, post_abort_snap):
+        return TxResult(TX_ABORTED, "")
+    return TxResult(TX_ROLLBACK_FAILED, "state mismatch after SQL ROLLBACK")
+
+# Runs a real SQL transaction against a full `nox.db.DbConnection` + `nox.orm.Table` schema,
+# querying pre/post state via `nox.orm.select(conn, table, "", [])`.
+def run_orm_transaction(
+    conn: DbConnection,
+    table: Table,
+    pk_col: str,
+    mutation_fn: () -> None,
+    commit: bool
+) -> TxResult:
+    pre_snap: list[FeatherRecord] = rows_to_feather_records(select(conn, table, "", []), pk_col)
+    conn.execute("BEGIN TRANSACTION")
+    err: str = ""
+    threw: bool = False
+    try:
+        mutation_fn()
+    except Exception as e:
+        threw = True
+        err = str(e)
+
+    if threw:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception as rb_err:
+            return TxResult(TX_ROLLBACK_FAILED, err + " (rollback failed: " + str(rb_err) + ")")
+        post_err_snap: list[FeatherRecord] = rows_to_feather_records(select(conn, table, "", []), pk_col)
+        if records_equal(pre_snap, post_err_snap):
+            return TxResult(TX_ROLLED_BACK_ON_ERROR, err)
+        return TxResult(TX_ROLLBACK_FAILED, err)
+
+    if commit:
+        try:
+            conn.execute("COMMIT")
+        except Exception as cm_err:
+            return TxResult(TX_ROLLBACK_FAILED, "commit failed: " + str(cm_err))
+        return TxResult(TX_COMMITTED, "")
+
+    try:
+        conn.execute("ROLLBACK")
+    except Exception as ab_err:
+        return TxResult(TX_ROLLBACK_FAILED, "rollback failed: " + str(ab_err))
+    post_abort_snap: list[FeatherRecord] = rows_to_feather_records(select(conn, table, "", []), pk_col)
+    if records_equal(pre_snap, post_abort_snap):
+        return TxResult(TX_ABORTED, "")
+    return TxResult(TX_ROLLBACK_FAILED, "state mismatch after SQL ROLLBACK")
+
+# Portable in-process `SqlConnection` implementation that executes `BEGIN TRANSACTION`, `COMMIT`,
+# `ROLLBACK`, `INSERT INTO <table> VALUES (a, b)`, `DELETE FROM <table>`, and `SELECT * FROM <table>`,
+# producing genuine `nox.db.Row` lists for deterministic multi-platform CI testing.
+class InMemorySqlConnection:
+    columns: list[str]
+    rows: list[list[str]]
+    tx_backup: list[list[str]]
+    in_tx: bool
+    simulate_broken_rollback: bool
+
+    def __init__(self: InMemorySqlConnection, columns: list[str]) -> None:
+        self.columns = columns
+        self.rows = []
+        self.tx_backup = []
+        self.in_tx = False
+        self.simulate_broken_rollback = False
+
+    def _clone_rows(self: InMemorySqlConnection, src: list[list[str]]) -> list[list[str]]:
+        out: list[list[str]] = []
+        i: int = 0
+        while i < len(src):
+            r: list[str] = []
+            j: int = 0
+            while j < len(src[i]):
+                r.append(src[i][j])
+                j = j + 1
+            out.append(r)
+            i = i + 1
+        return out
+
+    def insert_row(self: InMemorySqlConnection, values: list[str]) -> int:
+        new_rows: list[list[str]] = self.rows
+        new_rows.append(values)
+        self.rows = new_rows
+        return 1
+
+    def execute(self: InMemorySqlConnection, sql: str) -> int:
+        s: str = nox.strings.trim(sql)
+        if s == "BEGIN" or s == "BEGIN TRANSACTION":
+            self.tx_backup = self._clone_rows(self.rows)
+            self.in_tx = True
+            return 0
+        if s == "COMMIT":
+            self.tx_backup = []
+            self.in_tx = False
+            return 0
+        if s == "ROLLBACK":
+            if not self.simulate_broken_rollback and self.in_tx:
+                self.rows = self._clone_rows(self.tx_backup)
+            self.tx_backup = []
+            self.in_tx = False
+            return 0
+        if nox.strings.starts_with(s, "DELETE FROM"):
+            cnt: int = len(self.rows)
+            self.rows = []
+            return cnt
+        if nox.strings.starts_with(s, "INSERT INTO"):
+            lp: int = nox.strings.index_of(s, "(")
+            rp: int = nox.strings.index_of(s, ")")
+            if lp >= 0 and rp > lp:
+                inner: str = s[lp + 1:rp]
+                parts: list[str] = nox.strings.split(inner, ",")
+                cleaned: list[str] = []
+                pi: int = 0
+                while pi < len(parts):
+                    v: str = nox.strings.trim(parts[pi])
+                    if len(v) >= 2 and v[0:1] == "'" and v[len(v) - 1:len(v)] == "'":
+                        v = v[1:len(v) - 1]
+                    cleaned.append(v)
+                    pi = pi + 1
+                return self.insert_row(cleaned)
+        return 0
+
+    def query(self: InMemorySqlConnection, sql: str) -> list[Row]:
+        out: list[Row] = []
+        i: int = 0
+        while i < len(self.rows):
+            vals: list[str] = self.rows[i]
+            nulls: list[bool] = []
+            c: int = 0
+            while c < len(vals):
+                nulls.append(False)
+                c = c + 1
+            out.append(Row(vals, nulls, self.columns))
+            i = i + 1
+        return out
+
+    def close(self: InMemorySqlConnection) -> None:
+        self.in_tx = False

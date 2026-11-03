@@ -80,5 +80,7 @@ jobs:
           noxc run cli/main.nox -- property --cases 10
           noxc run cli/main.nox -- load --requests 10
           noxc run cli/main.nox -- contract
-          noxc run cli/main.nox -- test tests/baseline_test.nox --allow-static=true
-          noxc run cli/main.nox -- test fixtures/tag_demo.nox --tag smoke --allow-static=true
+          noxc run cli/main.nox -- test tests/baseline_test.nox
+          noxc run cli/main.nox -- test fixtures/tag_demo.nox --tag smoke
+          noxc run cli/main.nox -- test fixtures --tag smoke
+          noxc run cli/main.nox -- replay fixtures/custom_replay_artifact.json

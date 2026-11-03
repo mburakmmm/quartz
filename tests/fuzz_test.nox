@@ -202,13 +202,14 @@ def test_crash_clustering() -> None:
     assert_contains_str(summary_json, "\"total_crashes\": 4", "summary json total crashes")
     assert_contains_str(summary_json, "\"minimal_input\": \"12\"", "summary json minimal input")
 
-    # 3. Automated clustering inside run_fuzz()
+    # 3. Automated clustering + verified delta-debugging minimization inside run_fuzz()
     cfg_auto: CorpusConfig = default_corpus_config()
     cm_auto: CorpusManager = CorpusManager("auto_cluster_test", "fixtures/corpus", cfg_auto)
-    auto_summary: FuzzSummary = run_fuzz("auto_cluster_test", target_unexpected_error_with_word, ["trigger"], 20, 999, cm_auto, 64)
+    auto_summary: FuzzSummary = run_fuzz("auto_cluster_test", target_parser_with_flaw, ["PREFIX_12345_MAGIC_CRASH_SUFFIX_67890"], 20, 999, cm_auto, 64)
     assert_true(auto_summary.crashes_found > 0, "run_fuzz found simulated crashes")
     assert_true(auto_summary.cluster_count() >= 1, "run_fuzz cluster_count automatically available")
     assert_true(auto_summary.deduplicator.total_crashes() > 0, "deduplicator embedded in FuzzSummary")
+    assert_eq_str(auto_summary.deduplicator.clusters[0].minimal_input, "MAGIC_CRASH", "cluster minimal_input is verified delta-minimized reproducer")
     # Single canonical crash identity: both counters must agree
     assert_eq_int(auto_summary.unique_crashes, auto_summary.cluster_count(), "unique_crashes equals cluster_count (canonical identity)")
     assert_eq_int(auto_summary.crashes_found, auto_summary.deduplicator.total_crashes(), "crashes_found equals deduplicator total")

@@ -3,6 +3,8 @@
 # Quartz Core never depends on this adapter.
 
 import nox.strings
+import nox.csv
+from nox.db import Row
 from core.prng import Prng
 
 class AtlasTable:
@@ -390,11 +392,14 @@ def inner_join_tables(left: AtlasTable, right: AtlasTable, left_key: str, right_
 
     return AtlasTable(out_headers, out_rows)
 
+# Length-prefixed canonical row encoding — immune to delimiter / control-character collisions
+# (e.g. cells containing \x1f, \x1e, commas, or newlines can never collide across cell boundaries).
 def row_signature(row: list[str]) -> str:
-    s: str = ""
+    s: str = str(len(row)) + "#"
     i: int = 0
     while i < len(row):
-        s = s + row[i] + "\x1f"
+        cell: str = row[i]
+        s = s + str(len(cell)) + ":" + cell + ";"
         i = i + 1
     return s
 
@@ -435,14 +440,23 @@ def verify_inner_join_contract(
     left_key_pos: int = l_idx
     right_key_pos: int = left.col_count() + r_idx
 
-    # 3. Build the ground-truth multiset of full-row signatures (ALL cells, positional)
+    # 3. Build the ground-truth multiset of full-row length-prefixed signatures (ALL cells, positional)
     expected_sigs: list[str] = []
     ei: int = 0
     while ei < left.row_count():
         ej: int = 0
         while ej < right.row_count():
             if left.get_cell(ei, left_key) == right.get_cell(ej, right_key):
-                expected_sigs.append(row_signature(left.rows[ei]) + "\x1e" + row_signature(right.rows[ej]))
+                combined_expected: list[str] = []
+                lc: int = 0
+                while lc < len(left.rows[ei]):
+                    combined_expected.append(left.rows[ei][lc])
+                    lc = lc + 1
+                rc: int = 0
+                while rc < len(right.rows[ej]):
+                    combined_expected.append(right.rows[ej][rc])
+                    rc = rc + 1
+                expected_sigs.append(row_signature(combined_expected))
             ej = ej + 1
         ei = ei + 1
 
@@ -460,17 +474,7 @@ def verify_inner_join_contract(
         # Key columns on both sides of the joined row must match each other
         if jrow[left_key_pos] != jrow[right_key_pos]:
             return False
-        # Split joined row back into left part and right part and compare ALL cells
-        lpart: list[str] = []
-        rpart: list[str] = []
-        cc: int = 0
-        while cc < expected_cols:
-            if cc < left.col_count():
-                lpart.append(jrow[cc])
-            else:
-                rpart.append(jrow[cc])
-            cc = cc + 1
-        sig: str = row_signature(lpart) + "\x1e" + row_signature(rpart)
+        sig: str = row_signature(jrow)
         found_match: bool = False
         mi: int = 0
         while mi < len(expected_sigs):
@@ -626,3 +630,79 @@ def run_atlas_engine_contract(
     except Exception as e3:
         failures.append(engine.name + ": join raised " + str(e3))
     return failures
+
+# ── Standard Library Tabular / DB Connectors (nox.csv & nox.db.Row) ──
+
+# Parses CSV via NOX standard library `nox.csv.parse` into an AtlasTable.
+def from_nox_csv(raw_csv: str) -> AtlasTable:
+    parsed: list[list[str]] = nox.csv.parse(raw_csv)
+    if len(parsed) == 0:
+        return AtlasTable([], [])
+    headers: list[str] = parsed[0]
+    expected_cols: int = len(headers)
+    data_rows: list[list[str]] = []
+    r: int = 1
+    while r < len(parsed):
+        row: list[str] = parsed[r]
+        while len(row) < expected_cols:
+            row.append("")
+        data_rows.append(row)
+        r = r + 1
+    return AtlasTable(headers, data_rows)
+
+# Serializes an AtlasTable via NOX standard library `nox.csv.dump`.
+def to_nox_csv(table: AtlasTable) -> str:
+    all_rows: list[list[str]] = [table.headers]
+    i: int = 0
+    while i < len(table.rows):
+        all_rows.append(table.rows[i])
+        i = i + 1
+    return nox.csv.dump(all_rows)
+
+# Builds an AtlasTable from `nox.csv.parse_dicts` or external `list[dict[str, str]]` records.
+def from_dict_records(headers: list[str], records: list[dict[str, str]]) -> AtlasTable:
+    rows: list[list[str]] = []
+    r: int = 0
+    while r < len(records):
+        rec: dict[str, str] = records[r]
+        row: list[str] = []
+        c: int = 0
+        while c < len(headers):
+            h: str = headers[c]
+            if rec.contains(h):
+                row.append(rec[h])
+            else:
+                row.append("")
+            c = c + 1
+        rows.append(row)
+        r = r + 1
+    return AtlasTable(headers, rows)
+
+# Builds an AtlasTable directly from `nox.db.Row` query results (`conn.query(...)` or `nox.orm.select(...)`).
+def from_db_rows(rows: list[Row]) -> AtlasTable:
+    if len(rows) == 0:
+        return AtlasTable([], [])
+    headers: list[str] = []
+    first_row: Row = rows[0]
+    c: int = 0
+    while c < first_row.column_count():
+        headers.append(first_row.column_name(c))
+        c = c + 1
+
+    data_rows: list[list[str]] = []
+    r: int = 0
+    while r < len(rows):
+        db_row: Row = rows[r]
+        vals: list[str] = []
+        vc: int = 0
+        while vc < db_row.column_count():
+            if db_row.is_null(vc):
+                vals.append("")
+            else:
+                vals.append(db_row.get_str(vc))
+            vc = vc + 1
+        while len(vals) < len(headers):
+            vals.append("")
+        data_rows.append(vals)
+        r = r + 1
+    return AtlasTable(headers, data_rows)

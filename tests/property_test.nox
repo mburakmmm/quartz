@@ -1,7 +1,7 @@
 # Quartz Property Test — Deterministic Runs, Failure Shrinking and Replay
 from property.generator import IntGen, StringGen, ListIntGen, CHARSET_TURKISH_UNICODE
 from property.property import PropertyConfig, PropertyResult, run_int_property, run_str_property, run_list_int_property, default_property_config
-from property.replay import replay_int_case, replay_list_int_case, PropertyRegistry, save_failure_artifact
+from property.replay import replay_int_case, replay_list_int_case, PropertyRegistry, ReplayVerification, save_failure_artifact
 from core.assert import assert_eq_int, assert_eq_str, assert_true, assert_false
 import nox.fs
 
@@ -57,7 +57,29 @@ def test_failure_shrinking_and_replay() -> None:
     assert_true(reg.has("bounded_int_fail"), "registry has bounded_int_fail")
     assert_true(reg.replay_result(res), "PropertyRegistry replays actual predicate failure from PropertyResult")
     assert_eq_int(reg.replay("unknown_test", res.seed, res.failing_case_index), -1, "unknown test returns -1")
+
+    # Full artifact verification: candidate must match original_counterexample AND violate predicate
+    ver_ok: ReplayVerification = reg.verify_artifact_file(artifact_path)
+    assert_true(ver_ok.is_verified(), "verify_artifact_file confirms candidate match + predicate failure")
+    assert_true(ver_ok.candidate_matches_artifact, "regenerated candidate matches original_counterexample")
+    assert_true(ver_ok.predicate_failed_again, "predicate failed again on replay")
+
+    # Tampered original_counterexample must be rejected by verify_replay
+    ver_tampered: ReplayVerification = reg.verify_replay("bounded_int_fail", res.seed, res.failing_case_index, "999999")
+    assert_false(ver_tampered.candidate_matches_artifact, "tampered original_counterexample detected as mismatch")
+    assert_false(ver_tampered.is_verified(), "tampered artifact is NOT verified")
+
     nox.fs.remove_file(artifact_path)
+
+    # List[int] property counterexample formatting & replay verification
+    list_gen: ListIntGen = ListIntGen(1, 5, IntGen(0, 100, False))
+    def prop_list_len_under_3(xs: list[int]) -> bool:
+        return len(xs) < 3
+    list_res: PropertyResult = run_list_int_property("list_len_fail", cfg, list_gen, prop_list_len_under_3)
+    assert_false(list_res.is_passed(), "list property fails when len >= 3")
+    reg.register_list_int("list_len_fail", list_gen, prop_list_len_under_3)
+    ver_list: ReplayVerification = reg.verify_replay("list_len_fail", list_res.seed, list_res.failing_case_index, list_res.original_counterexample)
+    assert_true(ver_list.is_verified(), "list_int replay verifies formatted original_counterexample and predicate failure")
 
 def test_unicode_string_property() -> None:
     cfg: PropertyConfig = PropertyConfig(100, 5, 4242, 5000)

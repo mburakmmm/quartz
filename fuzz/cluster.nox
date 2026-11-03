@@ -144,6 +144,17 @@ class CrashDeduplicator:
             i = i + 1
         return None
 
+    def update_minimal_reproducer(self: CrashDeduplicator, signature: str, minimized_input: str) -> None:
+        norm: str = self.normalize_signature(signature)
+        i: int = 0
+        while i < len(self.clusters):
+            c: CrashCluster = self.clusters[i]
+            if c.signature == norm:
+                if len(minimized_input) <= len(c.minimal_input):
+                    c.minimal_input = minimized_input
+                return
+            i = i + 1
+
     def to_summary_json(self: CrashDeduplicator) -> str:
         res: str = "{\n"
         res = res + "  \"total_crashes\": " + str(self.total_recorded) + ",\n"

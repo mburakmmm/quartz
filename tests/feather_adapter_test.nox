@@ -1,6 +1,7 @@
 # Quartz Tests — Feather Ecosystem Adapter & Persistence Invariant Tests
+from nox.db import Row
 from core.suite import TestSuite
-from adapters.feather import FeatherRecord, FeatherRepository, FeatherFixture, verify_crud_lifecycle, verify_idempotent_upsert, verify_transaction_rollback, TxResult, run_transaction, TX_COMMITTED, TX_ABORTED, TX_ROLLED_BACK_ON_ERROR, TX_ROLLBACK_FAILED
+from adapters.feather import FeatherRecord, FeatherRepository, FeatherFixture, verify_crud_lifecycle, verify_idempotent_upsert, verify_transaction_rollback, TxResult, run_transaction, TX_COMMITTED, TX_ABORTED, TX_ROLLED_BACK_ON_ERROR, TX_ROLLBACK_FAILED, SqlConnection, InMemorySqlConnection, run_sql_transaction, rows_to_feather_records
 
 def tx_ok_insert(r: FeatherRepository) -> None:
     rec: FeatherRecord = FeatherRecord("tx_new")
@@ -41,6 +42,57 @@ def run_tx_outcome_tests(suite: TestSuite) -> None:
     # Outcomes are mutually distinct
     suite.check_true("tx_outcomes_distinct", committed.outcome != aborted.outcome and aborted.outcome != errored.outcome and TX_ROLLBACK_FAILED != errored.outcome)
     suite.check_false("tx_rollback_not_failed", errored.is_rollback_failed())
+
+    # ROLLBACK_FAILED: when restore_snapshot fails to restore pre-transaction state
+    repo.reject_restore = True
+    failed_rb: TxResult = run_transaction(repo, tx_ok_insert, False)
+    suite.check_eq_str("tx_outcome_rollback_failed", failed_rb.outcome, TX_ROLLBACK_FAILED)
+    suite.check_true("tx_is_rollback_failed_true", failed_rb.is_rollback_failed())
+    repo.reject_restore = False
+    repo.delete("tx_new")
+
+    # Real SQL Transaction Connector (SqlConnection / nox.db.Row)
+    sql_conn: InMemorySqlConnection = InMemorySqlConnection(["id", "name"])
+    sql_conn.execute("INSERT INTO users VALUES ('1', 'Ada')")
+
+    def sql_insert_ok() -> None:
+        sql_conn.execute("INSERT INTO users VALUES ('2', 'Grace')")
+
+    def sql_insert_raises() -> None:
+        sql_conn.execute("INSERT INTO users VALUES ('3', 'CrashUser')")
+        raise ValueError("sql constraint failure")
+
+    # 1. SQL COMMITTED
+    sql_com: TxResult = run_sql_transaction(sql_conn, "users", "id", sql_insert_ok, True)
+    suite.check_eq_str("sql_tx_committed", sql_com.outcome, TX_COMMITTED)
+    suite.check_eq_int("sql_rows_after_commit", len(sql_conn.query("SELECT * FROM users")), 2)
+
+    # 2. SQL ABORTED
+    def sql_insert_temp() -> None:
+        sql_conn.execute("INSERT INTO users VALUES ('99', 'Temp')")
+
+    sql_abt: TxResult = run_sql_transaction(sql_conn, "users", "id", sql_insert_temp, False)
+    suite.check_eq_str("sql_tx_aborted", sql_abt.outcome, TX_ABORTED)
+    suite.check_eq_int("sql_rows_after_abort", len(sql_conn.query("SELECT * FROM users")), 2)
+
+    # 3. SQL ROLLED_BACK_ON_ERROR
+    sql_err: TxResult = run_sql_transaction(sql_conn, "users", "id", sql_insert_raises, True)
+    suite.check_eq_str("sql_tx_rolled_back_on_error", sql_err.outcome, TX_ROLLED_BACK_ON_ERROR)
+    suite.check_eq_int("sql_rows_after_error_rollback", len(sql_conn.query("SELECT * FROM users")), 2)
+
+    # 4. SQL ROLLBACK_FAILED (when driver fails to roll back state on ROLLBACK)
+    sql_conn.simulate_broken_rollback = True
+    sql_rb_fail: TxResult = run_sql_transaction(sql_conn, "users", "id", sql_insert_temp, False)
+    suite.check_eq_str("sql_tx_rollback_failed_detected", sql_rb_fail.outcome, TX_ROLLBACK_FAILED)
+    suite.check_true("sql_tx_is_rollback_failed", sql_rb_fail.is_rollback_failed())
+    sql_conn.close()
+
+    # 5. rows_to_feather_records from nox.db.Row
+    db_rows: list[Row] = [Row(["u1", "Linus"], [False, False], ["id", "name"])]
+    f_recs: list[FeatherRecord] = rows_to_feather_records(db_rows, "id")
+    suite.check_eq_int("rows_to_feather_records_len", len(f_recs), 1)
+    suite.check_eq_str("rows_to_feather_records_id", f_recs[0].id, "u1")
+    suite.check_eq_str("rows_to_feather_records_field", f_recs[0].get("name"), "Linus")
 
 def run_feather_adapter_tests() -> None:
     suite: TestSuite = TestSuite("feather_adapter_suite")
