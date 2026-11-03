@@ -1057,4 +1057,4 @@
 | 2026-11-03 | Phase 14.6 | Bugfixes & Hardening | `load/`, `adapters/`, `.github/` | Concurrency lifecycle coroutines, circuit breaker network load test, CI step-level SQLite env | [x] DONE |
 | 2026-11-03 | Phase 14.6 | Verification & Publish | `noxc test`, `ci.yml`, `noxc publish` | 26/26 tests pass across 4 platforms, tagged `v0.9.16`, published | [x] DONE |
 | 2026-11-03 | Phase 15 | Real Concurrency & Latency | `load/executor.nox`, `tests/load_scheduler_test.nox` | Real OS-thread concurrent network load (`_net_vu_thread_worker`), server-side verified HTTP overlap (`srv_peak >= 2`), user callback concurrency proof (`callback_observed_peak >= 2`), individual request latency histogram tracking | [x] DONE |
-| 2026-11-03 | Phase 15 | Verification & Release | `noxc test`, `ci.yml`, `noxc publish` | 26/26 tests pass, tagged `v0.9.17`, ready for publish | [x] DONE |
+| 2026-11-03 | Phase 15 | Verification & Release | `noxc test`, `ci.yml`, `noxc publish` | 26/26 tests pass across 4 platforms (Linux x64, Linux ARM64, macOS ARM64, Windows x64), tagged `v0.9.17`, published & verified green | [x] DONE |
