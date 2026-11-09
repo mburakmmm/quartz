@@ -41,8 +41,26 @@ jobs:
 
       - name: Install NOX (Linux / macOS)
         if: runner.os != 'Windows'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          curl -fsSL https://raw.githubusercontent.com/mburakmmm/nox-lang/main/install.sh | bash
+          if ! curl -fsSL https://raw.githubusercontent.com/mburakmmm/nox-lang/main/install.sh | bash; then
+            echo "install.sh failed via CDN; downloading via GitHub API..."
+            ASSET="linux-x64"
+            [ "$RUNNER_ARCH" = "ARM64" ] && [ "$RUNNER_OS" = "Linux" ] && ASSET="linux-arm64"
+            [ "$RUNNER_OS" = "macOS" ] && ASSET="macos-arm64"
+            STAGE="nox-lang-${NOX_VERSION:-v2.0.123}-${ASSET}"
+            TMP_DIR=$(mktemp -d)
+            ASSET_ID=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/mburakmmm/nox-lang/releases/tags/${NOX_VERSION:-v2.0.123}" | jq -r ".assets[] | select(.name == \"${STAGE}.tar.gz\") | .id")
+            curl -fsSL -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+                 -H "Accept: application/octet-stream" \
+                 -o "$TMP_DIR/${STAGE}.tar.gz" \
+                 "https://api.github.com/repos/mburakmmm/nox-lang/releases/assets/${ASSET_ID}"
+            mkdir -p "$HOME/.nox-lang"
+            tar xzf "$TMP_DIR/${STAGE}.tar.gz" -C "$TMP_DIR"
+            cp -R "$TMP_DIR/${STAGE}/." "$HOME/.nox-lang/"
+            chmod +x "$HOME/.nox-lang/bin/"*
+          fi
           echo "$HOME/.nox-lang/bin" >> $GITHUB_PATH
 
       - name: Install NOX (Windows)
