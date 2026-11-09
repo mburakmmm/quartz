@@ -196,6 +196,40 @@ def test_reference_distribution_percentiles() -> None:
     assert_true(m.p90() >= 49 and m.p90() <= 52, "p90 matches reference distribution (bucket [50, 52))")
     assert_true(m.p99() >= 100 and m.p99() <= 120, "p99 matches reference distribution (bucket [100, 120))")
 
+def test_small_sample_nearest_rank_percentiles() -> None:
+    # Verify exact nearest-rank ceil math on a small 10-sample distribution
+    # latencies: 10, 20, 30, 40, 50, 60, 70, 80, 90, 100 ms
+    m: LoadMetrics = LoadMetrics()
+    lat: int = 10
+    while lat <= 100:
+        m.record_scheduled()
+        m.record_result(200, lat, False, True)
+        lat = lat + 10
+
+    assert_eq_int(m.successful, 10, "10 successful samples")
+
+    # With nearest-rank ceil((10 * 95)/100) = ceil(9.5) = 10th sample (100ms bucket)
+    # The old truncating math picked sample 9 (90ms bucket); nearest-rank selects sample 10.
+    p95: int = m.p95()
+    # 100ms is bucket 50 ([100, 120ms), midpoint 110ms)
+    assert_true(p95 >= 100, "nearest-rank p95 selects 10th sample (100ms), p95=" + str(p95))
+
+    # p90: ceil((10 * 90)/100) = 9th sample (90ms)
+    # 90ms is bucket 45 ([90, 92ms), midpoint 91ms)
+    p90: int = m.p90()
+    assert_true(p90 >= 85 and p90 < 100, "nearest-rank p90 selects 9th sample (90ms), p90=" + str(p90))
+
+    # p50: ceil((10 * 50)/100) = 5th sample (50ms)
+    p50: int = m.p50()
+    assert_true(p50 >= 45 and p50 <= 55, "nearest-rank p50 selects 5th sample (50ms), p50=" + str(p50))
+
+    # Single-sample edge case: N=1
+    m1: LoadMetrics = LoadMetrics()
+    m1.record_scheduled()
+    m1.record_result(200, 42, False, True)
+    assert_eq_int(m1.p50(), m1.p95(), "single sample p50 equals p95")
+    assert_eq_int(m1.p95(), m1.p99(), "single sample p95 equals p99")
+
 def run_all_load_metrics_tests() -> None:
     test_histogram_bucketing()
     test_percentile_calculations_and_monotonicity()
@@ -203,6 +237,7 @@ def run_all_load_metrics_tests() -> None:
     test_high_latency_overflow()
     test_exact_error_rate_calculation()
     test_reference_distribution_percentiles()
+    test_small_sample_nearest_rank_percentiles()
     print("quartz load metrics test: ALL PASS")
 
 run_all_load_metrics_tests()

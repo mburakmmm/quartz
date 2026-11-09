@@ -114,9 +114,14 @@ class LoadMetrics:
         if self.successful <= 0:
             return 0
         
-        target_count: int = int(float(self.successful) * p / 100.0)
+        # Nearest-rank method: ceil(N * p / 100.0)
+        # Using exact integer arithmetic scaled by 10000 to preserve fractional percentiles (e.g. 99.9%):
+        p_x100: int = int(p * 100.0 + 0.5)
+        target_count: int = (self.successful * p_x100 + 9999) // 10000
         if target_count < 1:
             target_count = 1
+        if target_count > self.successful:
+            target_count = self.successful
 
         accum: int = 0
         idx: int = 0

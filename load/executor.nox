@@ -361,8 +361,12 @@ def _make_task_vu_coroutine(vu_id: int, task_func: (int) -> bool, active_c: Atom
         except Exception as e:
             ok = False
 
+        # Phase 2: yield callback result while holding active_c in-flight
+        _post_sig: int = yield (1 if ok else 0)
+
+        # Phase 3: decrement after all wave callbacks complete
         active_c.decrement()
-        case_idx = yield (1 if ok else 0)
+        case_idx = yield _post_sig
     return
 
 def _make_scoped_task_vu_coroutine(vu_id: int, scoped_task_func: (int, int) -> bool, active_c: AtomicInt, peak_c: AtomicInt) -> Generator[int, int]:
@@ -381,8 +385,9 @@ def _make_scoped_task_vu_coroutine(vu_id: int, scoped_task_func: (int, int) -> b
         except Exception as e:
             ok = False
 
+        _post_sig: int = yield (1 if ok else 0)
         active_c.decrement()
-        case_idx = yield (1 if ok else 0)
+        case_idx = yield _post_sig
     return
 
 def _make_handler_vu_coroutine(vu_id: int, handler: (HttpRequest) -> HttpResponse, req: HttpRequest, active_c: AtomicInt, peak_c: AtomicInt) -> Generator[int, int]:
@@ -400,8 +405,9 @@ def _make_handler_vu_coroutine(vu_id: int, handler: (HttpRequest) -> HttpRespons
         except Exception as e:
             status_code = 500
 
+        _post_sig: int = yield status_code
         active_c.decrement()
-        case_idx = yield status_code
+        case_idx = yield _post_sig
     return
 
 def _close_vu_coroutines(coros: list[Generator[int, int]]) -> None:
@@ -527,6 +533,13 @@ def run_task_workload_internal(workload: WorkloadConfig, task_func: (int) -> boo
                     break
 
                 w_exec = w_exec + 1
+
+            # Phase 3: Wave completion - decrement active_requests after all callbacks in wave have executed
+            if not aborted:
+                w_exit: int = 0
+                while w_exit < wave_size:
+                    _post_done: int = vu_coros[w_exit].send(1)
+                    w_exit = w_exit + 1
 
             case_idx = case_idx + wave_size
 
@@ -703,6 +716,13 @@ def run_scoped_task_workload(workload: WorkloadConfig, scoped_task_func: (int, i
 
             w_exec = w_exec + 1
 
+        # Phase 3: Wave completion - decrement active_requests after all callbacks in wave have executed
+        if not aborted:
+            w_exit: int = 0
+            while w_exit < wave_size:
+                _post_done: int = vu_coros[w_exit].send(1)
+                w_exit = w_exit + 1
+
         case_idx = case_idx + wave_size
 
     _close_vu_coroutines(vu_coros)
@@ -811,6 +831,13 @@ def run_handler_load_test(workload: WorkloadConfig, handler: (HttpRequest) -> Ht
 
             w_exec = w_exec + 1
 
+        # Phase 3: Wave completion - decrement active_requests after all callbacks in wave have executed
+        if not aborted:
+            w_exit: int = 0
+            while w_exit < wave_size:
+                _post_done: int = vu_coros[w_exit].send(1)
+                w_exit = w_exit + 1
+
         case_idx = case_idx + wave_size
 
     _close_vu_coroutines(vu_coros)
@@ -827,54 +854,125 @@ def run_handler_load_test(workload: WorkloadConfig, handler: (HttpRequest) -> Ht
 # Drives concurrent Virtual User worker threads across network HTTP endpoints using `nox.thread.start`
 # with policy enforcement, monotonic timing, individual latency tracking, and circuit breakers.
 
+def _str_index_from(s: str, needle: str, start: int) -> int:
+    if start >= len(s):
+        return -1
+    sub: str = s[start:len(s)]
+    idx: int = nox.strings.index_of(sub, needle)
+    if idx < 0:
+        return -1
+    return start + idx
+
+def _pack_net_worker_config(meta: str, method: str, url: str, headers: dict[str, str], body: str) -> str:
+    res: str = meta + "\n" + method + "\n" + url + "\n"
+    hdr_keys: list[str] = []
+    for k in headers:
+        hdr_keys.append(k)
+    res = res + str(len(hdr_keys)) + "\n"
+    i: int = 0
+    while i < len(hdr_keys):
+        k: str = hdr_keys[i]
+        v: str = headers[k]
+        res = res + str(len(k)) + "," + str(len(v)) + "\n" + k + v + "\n"
+        i = i + 1
+    res = res + str(len(body)) + "\n" + body
+    return res
+
 async def _net_vu_thread_worker(cfg_str: str) -> int:
-    # Format: eff_timeout,act_h,pk_h,status_h,dur_h,done_h,vu_id,case_idx|method|full_url|body
-    sections: list[str] = nox.strings.split(cfg_str, "|")
-    nums: list[str] = nox.strings.split(sections[0], ",")
-    eff_timeout: int = int(nums[0])
-    act_h: int = int(nums[1])
-    pk_h: int = int(nums[2])
-    status_h: int = int(nums[3])
-    dur_h: int = int(nums[4])
-    done_h: int = int(nums[5])
-    vu_id: int = int(nums[6])
-    case_idx: int = int(nums[7])
-
-    method: str = sections[1]
-    full_url: str = sections[2]
-    req_body: str = ""
-    if len(sections) > 3:
-        req_body = sections[3]
-
-    act_c: AtomicInt = AtomicInt(act_h)
-    pk_c: AtomicInt = AtomicInt(pk_h)
-    status_c: AtomicInt = AtomicInt(status_h)
-    dur_c: AtomicInt = AtomicInt(dur_h)
-    done_c: AtomicInt = AtomicInt(done_h)
-
-    cur: int = act_c.increment()
-    _update_atomic_peak(pk_c, cur)
-
-    t0: Instant = nox.time.instant_now()
-    status_code: int = 500
     try:
-        hdrs: dict[str, str] = {"X-Quartz-VU": str(vu_id)}
-        res: HttpResponse = nox.http.request(method, full_url, req_body, hdrs, eff_timeout)
-        status_code = res.status
-    except HttpTimeoutError as te:
-        status_code = 504
-    except Exception as e:
-        status_code = 500
+        nl1: int = nox.strings.index_of(cfg_str, "\n")
+        meta_line: str = cfg_str[0:nl1]
+        nums: list[str] = nox.strings.split(meta_line, ",")
+        eff_timeout: int = int(nums[0])
+        act_h: int = int(nums[1])
+        pk_h: int = int(nums[2])
+        status_h: int = int(nums[3])
+        dur_h: int = int(nums[4])
+        done_h: int = int(nums[5])
+        ref_h: int = int(nums[6])
+        wv_ref_h: int = int(nums[7])
+        vu_id: int = int(nums[8])
+        case_idx: int = int(nums[9])
 
-    elapsed: int = t0.elapsed_ms()
-    if elapsed > eff_timeout:
-        status_code = 504
+        nl2: int = _str_index_from(cfg_str, "\n", nl1 + 1)
+        method: str = cfg_str[nl1 + 1:nl2]
 
-    act_c.decrement()
-    dur_c.store(elapsed)
-    status_c.store(status_code)
-    done_c.increment()
-    return status_code
+        nl3: int = _str_index_from(cfg_str, "\n", nl2 + 1)
+        full_url: str = cfg_str[nl2 + 1:nl3]
+
+        nl4: int = _str_index_from(cfg_str, "\n", nl3 + 1)
+        hdr_count: int = int(cfg_str[nl3 + 1:nl4])
+
+        hdrs: dict[str, str] = {}
+        cur_pos: int = nl4 + 1
+        h_i: int = 0
+        while h_i < hdr_count:
+            next_nl: int = _str_index_from(cfg_str, "\n", cur_pos)
+            lens_line: str = cfg_str[cur_pos:next_nl]
+            comma: int = nox.strings.index_of(lens_line, ",")
+            len_k: int = int(lens_line[0:comma])
+            len_v: int = int(lens_line[comma + 1:len(lens_line)])
+
+            kv_start: int = next_nl + 1
+            k: str = cfg_str[kv_start:kv_start + len_k]
+            v: str = cfg_str[kv_start + len_k:kv_start + len_k + len_v]
+            hdrs[k] = v
+
+            cur_pos = kv_start + len_k + len_v + 1
+            h_i = h_i + 1
+
+        next_nl_body: int = _str_index_from(cfg_str, "\n", cur_pos)
+        body_len: int = int(cfg_str[cur_pos:next_nl_body])
+        body_start: int = next_nl_body + 1
+        req_body: str = cfg_str[body_start:body_start + body_len]
+
+        hdrs["X-Quartz-VU"] = str(vu_id)
+
+        act_c: AtomicInt = AtomicInt(act_h)
+        pk_c: AtomicInt = AtomicInt(pk_h)
+        status_c: AtomicInt = AtomicInt(status_h)
+        dur_c: AtomicInt = AtomicInt(dur_h)
+        done_c: AtomicInt = AtomicInt(done_h)
+        ref_c: AtomicInt = AtomicInt(ref_h)
+        wv_ref_c: AtomicInt = AtomicInt(wv_ref_h)
+
+        cur: int = act_c.increment()
+        _update_atomic_peak(pk_c, cur)
+
+        t0: Instant = nox.time.instant_now()
+        status_code: int = 500
+        try:
+            res: HttpResponse = nox.http.request(method, full_url, req_body, hdrs, eff_timeout)
+            status_code = res.status
+        except Exception as e:
+            status_code = 500
+
+        elapsed: int = t0.elapsed_ms()
+        if elapsed > eff_timeout:
+            status_code = 504
+
+
+        act_c.decrement()
+        dur_c.store(elapsed)
+        status_c.store(status_code)
+        done_c.increment()
+
+        w_rem: int = ref_c.decrement()
+        if w_rem == 0:
+            status_c.free()
+            dur_c.free()
+            ref_c.free()
+
+        wv_rem: int = wv_ref_c.decrement()
+        if wv_rem == 0:
+            done_c.free()
+            wv_ref_c.free()
+            act_c.free()
+            pk_c.free()
+
+        return status_code
+    except Exception as top_e:
+        return 500
 
 def run_network_load_test(workload: WorkloadConfig, req: HttpRequest, base_url: str, policy: NetworkPolicy, thresholds: list[Threshold], limits: SafetyLimits) -> LoadTestSummary:
     metrics: LoadMetrics = LoadMetrics()
@@ -908,8 +1006,6 @@ def run_network_load_test(workload: WorkloadConfig, req: HttpRequest, base_url: 
     if eff_timeout < 10:
         eff_timeout = 10
 
-    active_requests: AtomicInt = nox.atomic.new_int(0)
-    peak_requests: AtomicInt = nox.atomic.new_int(0)
     vu_states: list[VirtualUserState] = []
 
     v_i: int = 0
@@ -932,7 +1028,12 @@ def run_network_load_test(workload: WorkloadConfig, req: HttpRequest, base_url: 
 
         w_status_cells: list[AtomicInt] = []
         w_dur_cells: list[AtomicInt] = []
+        w_ref_cells: list[AtomicInt] = []
         wave_done: AtomicInt = nox.atomic.new_int(0)
+        wave_act: AtomicInt = nox.atomic.new_int(0)
+        wave_pk: AtomicInt = nox.atomic.new_int(0)
+        # Wave-level reference count: 1 for coordinator + 1 for each worker
+        wave_ref: AtomicInt = nox.atomic.new_int(1 + wave_size)
 
         # Spawn all VU worker threads simultaneously in this wave
         w_spawn: int = 0
@@ -940,33 +1041,35 @@ def run_network_load_test(workload: WorkloadConfig, req: HttpRequest, base_url: 
             metrics.record_scheduled()
             st_cell: AtomicInt = nox.atomic.new_int(0)
             dur_cell: AtomicInt = nox.atomic.new_int(0)
+            ref_cell: AtomicInt = nox.atomic.new_int(2)
             w_status_cells.append(st_cell)
             w_dur_cells.append(dur_cell)
+            w_ref_cells.append(ref_cell)
 
             cur_case: int = case_idx + w_spawn
-            cfg_s: str = (
+            meta_s: str = (
                 str(eff_timeout) + "," +
-                str(active_requests.handle) + "," +
-                str(peak_requests.handle) + "," +
+                str(wave_act.handle) + "," +
+                str(wave_pk.handle) + "," +
                 str(st_cell.handle) + "," +
                 str(dur_cell.handle) + "," +
                 str(wave_done.handle) + "," +
+                str(ref_cell.handle) + "," +
+                str(wave_ref.handle) + "," +
                 str(w_spawn) + "," +
-                str(cur_case) + "|" +
-                req.method + "|" +
-                full_url + "|" +
-                req.body
+                str(cur_case)
             )
-            _th: ThreadHandle[int] = nox.thread.start(_net_vu_thread_worker, cfg_s)
+            cfg_s: str = _pack_net_worker_config(meta_s, req.method, full_url, req.headers, req.body)
+            th: ThreadHandle[int] = nox.thread.start(_net_vu_thread_worker, cfg_s)
             w_spawn = w_spawn + 1
 
         # Wait for all VU worker threads in this wave to complete (with timeout safety)
         t_wait: Instant = nox.time.instant_now()
-        max_wait: int = eff_timeout + 1500
+        max_wait: int = eff_timeout + 2500
         while wave_done.load() < wave_size and t_wait.elapsed_ms() < max_wait:
             nox.time.sleep_ms(1)
 
-        metrics.record_concurrency(peak_requests.load())
+        metrics.record_concurrency(wave_pk.load())
 
         # Collect each VU's individual latency and status
         w_collect: int = 0
@@ -977,8 +1080,12 @@ def run_network_load_test(workload: WorkloadConfig, req: HttpRequest, base_url: 
             if req_duration < 1:
                 req_duration = 1
 
-            w_status_cells[w_collect].free()
-            w_dur_cells[w_collect].free()
+            # Decrement worker ref-count; only free if worker already exited (rem == 0)
+            c_rem: int = w_ref_cells[w_collect].decrement()
+            if c_rem == 0:
+                w_status_cells[w_collect].free()
+                w_dur_cells[w_collect].free()
+                w_ref_cells[w_collect].free()
 
             is_timeout: bool = (status_code == 504) or (req_duration > limits.timeout_ms)
             success: bool = (status_code >= 200 and status_code < 400 and (not is_timeout))
@@ -1003,16 +1110,24 @@ def run_network_load_test(workload: WorkloadConfig, req: HttpRequest, base_url: 
 
             w_collect = w_collect + 1
 
-        while w_collect < wave_size:
-            w_status_cells[w_collect].free()
-            w_dur_cells[w_collect].free()
-            w_collect = w_collect + 1
+        w_drain: int = w_collect + 1
+        while w_drain < wave_size:
+            rem_drain: int = w_ref_cells[w_drain].decrement()
+            if rem_drain == 0:
+                w_status_cells[w_drain].free()
+                w_dur_cells[w_drain].free()
+                w_ref_cells[w_drain].free()
+            w_drain = w_drain + 1
 
-        wave_done.free()
+        # Decrement wave-level ref count; only free wave cells if all workers already exited (c_wv_rem == 0)
+        c_wv_rem: int = wave_ref.decrement()
+        if c_wv_rem == 0:
+            wave_done.free()
+            wave_ref.free()
+            wave_act.free()
+            wave_pk.free()
+
         case_idx = case_idx + wave_size
-
-    active_requests.free()
-    peak_requests.free()
 
     total_duration_ms: int = t0.elapsed_ms()
     thresh_results: list[ThresholdResult] = evaluate_all_thresholds(thresholds, metrics, total_duration_ms)

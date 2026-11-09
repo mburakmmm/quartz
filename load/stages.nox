@@ -280,6 +280,13 @@ def run_staged_task_workload_internal(config: StagedWorkloadConfig, task_func: (
 
                 w_exec = w_exec + 1
 
+            # Phase 3: release in-flight window after all wave callbacks completed
+            if not stage_aborted:
+                w_exit: int = 0
+                while w_exit < wave_size:
+                    _post_done: int = vu_coros[w_exit].send(1)
+                    w_exit = w_exit + 1
+
         _close_vu_coroutines(vu_coros)
         active_requests.free()
         peak_requests.free()

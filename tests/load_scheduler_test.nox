@@ -164,8 +164,22 @@ def _concurrent_loopback_srv_handler(req: HttpRequest) -> HttpResponse:
         while t_w.elapsed_ms() < 25:
             nox.time.sleep_ms(1)
         act_c.decrement()
+    # Validate preservation of custom headers, VU tracking header, and body with pipes & newlines
+    status: int = 200
+    if req.target != "/exit":
+        auth_ok: bool = False
+        vu_ok: bool = False
+        if "Authorization" in req.headers:
+            if req.headers["Authorization"] == "Bearer secret:tok:with|pipes":
+                auth_ok = True
+        if "X-Quartz-VU" in req.headers:
+            vu_ok = True
+        body_ok: bool = (req.body == "{\"action\": \"test|pipe\", \n \"details\": \"line1\\nline2\"}")
+        if not auth_ok or not vu_ok or not body_ok:
+            status = 400
+
     h: dict[str, str] = {"Content-Type": "application/json"}
-    return HttpResponse(200, "{\"ok\":true}", h)
+    return HttpResponse(status, "{\"ok\":true}", h)
 
 async def _concurrent_loopback_srv_worker(arg: str) -> int:
     fd: int = int(arg)
@@ -183,7 +197,12 @@ def test_network_load_concurrent_http_server() -> None:
     limits: SafetyLimits = default_safety_limits()
     wl_net: WorkloadConfig = closed_workload("net_concurrent_http", 4, 3, 8)
     target_path: str = "/conc_" + str(srv_active.handle) + "_" + str(srv_peak.handle)
-    req: HttpRequest = build_request("GET", target_path, "", empty_headers())
+    hdrs: dict[str, str] = {
+        "Authorization": "Bearer secret:tok:with|pipes",
+        "Content-Type": "application/json"
+    }
+    body: str = "{\"action\": \"test|pipe\", \n \"details\": \"line1\\nline2\"}"
+    req: HttpRequest = build_request("POST", target_path, body, hdrs)
     policy: NetworkPolicy = loopback_network_policy(2000)
 
     net_summary: LoadTestSummary = run_network_load_test(wl_net, req, "http://127.0.0.1:" + str(port), policy, [], limits)
@@ -461,10 +480,10 @@ def run_all_load_scheduler_tests() -> None:
     test_load_json_compliance_and_escaping()
     print("running test_task_timeout_guard...")
     test_task_timeout_guard()
-    print("running test_network_load_concurrent_http_server...")
-    test_network_load_concurrent_http_server()
     print("running test_network_load_runner...")
     test_network_load_runner()
+    print("running test_network_load_concurrent_http_server...")
+    test_network_load_concurrent_http_server()
 
 run_all_load_scheduler_tests()
 

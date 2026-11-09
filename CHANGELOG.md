@@ -3,6 +3,24 @@
 All notable changes to the Quartz test framework will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.18] - 2026-11-09 - Worker Lifetime Safety, Length-Prefixed HTTP Serialization & Nearest-Rank Percentiles
+
+### Fixed & Hardened
+- **Network Worker Lifetime & Double-Free Elimination (`load/executor.nox`)**:
+  - Implemented per-wave ref-counted atomic lifecycles (`wave_ref` initialized to `1 + wave_size`, `w_ref_cells` per worker).
+  - Coordinator decrements on collect/timeout; worker thread decrements on exit; only the final party reaching 0 frees atomic cells, preventing any use-after-free hazard when background connect threads exceed timeout floors.
+  - Fixed circuit-breaker abort drain loops to start at `w_collect + 1`, eliminating duplicate decrement/free on already processed worker cells.
+- **HTTP Request Header Preservation in Network Load (`load/executor.nox`)**:
+  - Implemented length-prefixed protocol packing (`_pack_net_worker_config`) preserving all incoming request headers (such as `Authorization`, `Content-Type`, and custom tokens) into worker threads alongside the `X-Quartz-VU` identification header.
+  - Verified end-to-end receipt of preserved headers on the loopback HTTP server.
+- **HTTP Request Body Serialization & Separator Safety (`load/executor.nox`)**:
+  - Replaced delimiter-based splitting with length-prefixed body framing (`body_len` + exact slice extraction), fully supporting bodies with `|`, newlines, quotes, binary bytes, and Unicode characters without truncation.
+- **Exact Nearest-Rank Latency Percentile Calculation (`load/metrics.nox`, `tests/load_metrics_test.nox`)**:
+  - Upgraded histogram percentile calculation from downward float truncation to exact integer ceiling nearest-rank math: `target_count = (self.successful * p_x100 + 9999) // 10000`.
+  - Added dedicated tests in `tests/load_metrics_test.nox` verifying nearest-rank percentiles for small sample sets ($N=10$, $p95 \to 10$, $p90 \to 9$, $p50 \to 5$, $N=1$).
+- **Release Engineering (`v0.9.18`)**:
+  - Clean patch release strictly numbered `v0.9.18`, maintaining historical git tags (`v0.9.17` and earlier untouched) and adhering strictly to pre-1.0 stability requirements.
+
 ## [0.9.17] - 2026-11-03 - Real OS-Thread Network Load Concurrency, Server-Side Overlap Verification & Individual Latency Tracking
 
 ### Fixed & Hardened
