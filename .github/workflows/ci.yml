@@ -69,9 +69,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          try {
-            irm https://raw.githubusercontent.com/mburakmmm/nox-lang/main/install.ps1 | iex
-          } catch {
+          & pwsh -Command { irm https://raw.githubusercontent.com/mburakmmm/nox-lang/main/install.ps1 | iex }
+          if ($LASTEXITCODE -ne 0) {
             Write-Host "install.ps1 failed via CDN; downloading via GitHub API..."
             $headers = @{
               "Authorization" = "Bearer $env:GITHUB_TOKEN"
