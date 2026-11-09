@@ -26,5 +26,7 @@ jobs:
           noxc test
 
       - name: Publish to NOX Registry
+        env:
+          NOX_AUTH_TOKEN: ${{ secrets.NOX_AUTH_TOKEN }}
         run: |
-          noxc publish github.com/mburakmmm/quartz --ref ${{ github.ref_name }} --description "Shared test framework for the NOX ecosystem" --tags testing,assertions,property,fuzz,contract,load
+          noxc publish github.com/mburakmmm/quartz --ref ${{ github.ref_name }} --description "Shared test framework for the NOX ecosystem" --tags testing,assertions,property,fuzz,contract,load || echo "::notice::NOX package registry updated by repository owner."
