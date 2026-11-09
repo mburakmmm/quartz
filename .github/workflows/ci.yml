@@ -66,8 +66,34 @@ jobs:
       - name: Install NOX (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          irm https://raw.githubusercontent.com/mburakmmm/nox-lang/main/install.ps1 | iex
+          try {
+            irm https://raw.githubusercontent.com/mburakmmm/nox-lang/main/install.ps1 | iex
+          } catch {
+            Write-Host "install.ps1 failed via CDN; downloading via GitHub API..."
+            $headers = @{
+              "Authorization" = "Bearer $env:GITHUB_TOKEN"
+              "Accept" = "application/octet-stream"
+              "User-Agent" = "Quartz-CI"
+            }
+            $relHeaders = @{
+              "Authorization" = "Bearer $env:GITHUB_TOKEN"
+              "User-Agent" = "Quartz-CI"
+            }
+            $v = if ($env:NOX_VERSION) { $env:NOX_VERSION } else { "v2.0.123" }
+            $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/mburakmmm/nox-lang/releases/tags/$v" -Headers $relHeaders
+            $asset = $rel.assets | Where-Object { $_.name -eq "nox-lang-$v-windows-x64.zip" }
+            $tmpDir = Join-Path $env:TEMP ([System.Guid]::NewGuid().ToString())
+            New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+            $zipPath = Join-Path $tmpDir "nox-windows.zip"
+            Invoke-RestMethod -Uri "https://api.github.com/repos/mburakmmm/nox-lang/releases/assets/$($asset.id)" -Headers $headers -OutFile $zipPath
+            $targetDir = Join-Path $env:USERPROFILE ".nox-lang"
+            New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+            Expand-Archive -Path $zipPath -DestinationPath $tmpDir -Force
+            Copy-Item -Recurse -Force (Join-Path $tmpDir "nox-lang-$v-windows-x64\*") $targetDir
+          }
           "$env:USERPROFILE\.nox-lang\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Verify NOX toolchain
