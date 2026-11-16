@@ -3,12 +3,14 @@ import nox.time
 import nox.http
 import nox.atomic
 import nox.thread
+import nox.tasks
 import nox.strings
 from nox.time import Instant
 from nox.http import HttpRequest, HttpResponse, HttpTimeoutError
-from nox.atomic import AtomicInt
+from nox.atomic import AtomicInt, AtomicRef
 from nox.thread import ThreadHandle
-from contract.http_network import NetworkPolicy, execute_network_request, validate_network_target, ParsedUrl, NetworkExecutionResult
+from nox.tasks import TaskGroup, TaskHandle
+from contract.http_network import NetworkPolicy, apply_network_transport_options, execute_network_request, validate_network_target, ParsedUrl, NetworkExecutionResult
 from load.safety import SafetyLimits, CircuitBreaker, default_safety_limits, CircuitBreakerTrippedError
 from load.metrics import LoadMetrics
 from load.workload import WorkloadConfig, MODEL_CLOSED, MODEL_OPEN
@@ -484,9 +486,12 @@ def run_task_workload_internal(workload: WorkloadConfig, task_func: (int) -> boo
             w_exec: int = 0
             while w_exec < wave_size:
                 cur_case: int = case_idx + w_exec
-                task_t0: Instant = nox.time.instant_now()
+                ns0: int = nox.time.monotonic_ns()
                 ok_int: int = vu_coros[w_exec].send(1)
-                task_duration: int = task_t0.elapsed_ms()
+                dur_ns: int = nox.time.monotonic_ns() - ns0
+                if dur_ns < 0:
+                    dur_ns = 0
+                task_duration: int = dur_ns // 1000000
                 metrics.record_concurrency(peak_requests.load())
 
                 success: bool = (ok_int == 1)
@@ -503,7 +508,7 @@ def run_task_workload_internal(workload: WorkloadConfig, task_func: (int) -> boo
                 else:
                     cb.record_success()
 
-                metrics.record_result(status, task_duration, is_timeout, success)
+                metrics.record_result_ns(status, dur_ns, is_timeout, success)
                 vu_states[w_exec].record(task_duration, success and (not is_timeout))
 
                 # Live intermediate streaming telemetry during execution
@@ -680,9 +685,12 @@ def run_scoped_task_workload(workload: WorkloadConfig, scoped_task_func: (int, i
         w_exec: int = 0
         while w_exec < wave_size:
             cur_case: int = case_idx + w_exec
-            task_t0: Instant = nox.time.instant_now()
+            ns0: int = nox.time.monotonic_ns()
             ok_int: int = vu_coros[w_exec].send(1)
-            task_duration: int = task_t0.elapsed_ms()
+            dur_ns: int = nox.time.monotonic_ns() - ns0
+            if dur_ns < 0:
+                dur_ns = 0
+            task_duration: int = dur_ns // 1000000
             metrics.record_concurrency(peak_requests.load())
 
             success: bool = (ok_int == 1)
@@ -699,7 +707,7 @@ def run_scoped_task_workload(workload: WorkloadConfig, scoped_task_func: (int, i
             else:
                 cb.record_success()
 
-            metrics.record_result(status, task_duration, is_timeout, success)
+            metrics.record_result_ns(status, dur_ns, is_timeout, success)
             vu_states[w_exec].record(task_duration, success and (not is_timeout))
 
             if cb.is_tripped:
@@ -798,9 +806,12 @@ def run_handler_load_test(workload: WorkloadConfig, handler: (HttpRequest) -> Ht
         w_exec: int = 0
         while w_exec < wave_size:
             cur_case: int = case_idx + w_exec
-            task_t0: Instant = nox.time.instant_now()
+            ns0: int = nox.time.monotonic_ns()
             status_code: int = vu_coros[w_exec].send(1)
-            task_duration: int = task_t0.elapsed_ms()
+            dur_ns: int = nox.time.monotonic_ns() - ns0
+            if dur_ns < 0:
+                dur_ns = 0
+            task_duration: int = dur_ns // 1000000
             metrics.record_concurrency(peak_requests.load())
 
             success: bool = (status_code >= 200 and status_code < 400)
@@ -814,7 +825,7 @@ def run_handler_load_test(workload: WorkloadConfig, handler: (HttpRequest) -> Ht
             else:
                 cb.record_success()
 
-            metrics.record_result(status_code, task_duration, is_timeout, success)
+            metrics.record_result_ns(status_code, dur_ns, is_timeout, success)
             vu_states[w_exec].record(task_duration, success and (not is_timeout))
 
             if cb.is_tripped:
@@ -939,7 +950,7 @@ async def _net_vu_thread_worker(cfg_str: str) -> int:
         cur: int = act_c.increment()
         _update_atomic_peak(pk_c, cur)
 
-        t0: Instant = nox.time.instant_now()
+        ns0: int = nox.time.monotonic_ns()
         status_code: int = 500
         try:
             res: HttpResponse = nox.http.request(method, full_url, req_body, hdrs, eff_timeout)
@@ -947,13 +958,15 @@ async def _net_vu_thread_worker(cfg_str: str) -> int:
         except Exception as e:
             status_code = 500
 
-        elapsed: int = t0.elapsed_ms()
-        if elapsed > eff_timeout:
+        elapsed_ns: int = nox.time.monotonic_ns() - ns0
+        if elapsed_ns < 0:
+            elapsed_ns = 0
+        if (elapsed_ns // 1000000) > eff_timeout:
             status_code = 504
 
 
         act_c.decrement()
-        dur_c.store(elapsed)
+        dur_c.store(elapsed_ns)
         status_c.store(status_code)
         done_c.increment()
 
@@ -999,6 +1012,7 @@ def run_network_load_test(workload: WorkloadConfig, req: HttpRequest, base_url: 
         target_path = "/" + target_path
     full_url: str = base_url + target_path
     _parsed: ParsedUrl = validate_network_target(full_url, policy)
+    apply_network_transport_options(policy)
 
     eff_timeout: int = limits.timeout_ms
     if policy.timeout_ms > 0 and policy.timeout_ms < eff_timeout:
@@ -1076,7 +1090,10 @@ def run_network_load_test(workload: WorkloadConfig, req: HttpRequest, base_url: 
         while w_collect < wave_size:
             cur_case = case_idx + w_collect
             status_code: int = w_status_cells[w_collect].load()
-            req_duration: int = w_dur_cells[w_collect].load()
+            req_dur_ns: int = w_dur_cells[w_collect].load()
+            if req_dur_ns < 0:
+                req_dur_ns = 0
+            req_duration: int = req_dur_ns // 1000000
             if req_duration < 1:
                 req_duration = 1
 
@@ -1097,7 +1114,7 @@ def run_network_load_test(workload: WorkloadConfig, req: HttpRequest, base_url: 
             else:
                 cb.record_success()
 
-            metrics.record_result(status_code, req_duration, is_timeout, success)
+            metrics.record_result_ns(status_code, req_dur_ns, is_timeout, success)
             vu_states[w_collect].record(req_duration, success)
 
             if cb.is_tripped:
@@ -1152,3 +1169,141 @@ def run_task_workload_streaming(workload: WorkloadConfig, task_func: (int) -> bo
     msg_str: str = summary.abort_reason if summary.aborted else ("completed in " + str(summary.total_duration_ms) + "ms")
     reporter.emit_case_result(workload.name, "workload_execution", status_str, summary.total_duration_ms, msg_str)
     return summary
+
+class AtomicConfigSnapshot:
+    ref: AtomicRef
+
+    def __init__(self: AtomicConfigSnapshot, initial_config: str) -> None:
+        self.ref = nox.atomic.new_ref(initial_config)
+
+    def publish(self: AtomicConfigSnapshot, updated_config: str) -> int:
+        return self.ref.set(updated_config)
+
+    def read(self: AtomicConfigSnapshot) -> str:
+        return self.ref.get()
+
+    def version(self: AtomicConfigSnapshot) -> int:
+        return self.ref.version()
+
+    def close(self: AtomicConfigSnapshot) -> None:
+        self.ref.free()
+
+class TaskGroupRunner:
+    workload: WorkloadConfig
+    thresholds: list[Threshold]
+    limits: SafetyLimits
+    metrics: LoadMetrics
+    cb: CircuitBreaker
+    group: TaskGroup[int]
+    t0: Instant
+    deadline_ms: int
+    vu_count: int
+    vu_states: list[VirtualUserState]
+    scheduled_ns: list[int]
+    aborted: bool
+    abort_reason: str
+
+    def __init__(self: TaskGroupRunner, workload: WorkloadConfig, thresholds: list[Threshold], limits: SafetyLimits) -> None:
+        self.workload = workload
+        self.thresholds = thresholds
+        self.limits = limits
+        self.metrics = LoadMetrics()
+        self.cb = CircuitBreaker(limits.max_consecutive_errors)
+        self.group = TaskGroup[int]()
+        self.t0 = nox.time.instant_now()
+        dl: int = limits.duration_seconds * 1000
+        if workload.duration_seconds > 0 and workload.duration_seconds * 1000 < dl:
+            dl = workload.duration_seconds * 1000
+        self.deadline_ms = dl
+        vc: int = workload.virtual_users
+        if vc > limits.virtual_users:
+            vc = limits.virtual_users
+        if vc < 1:
+            vc = 1
+        self.vu_count = vc
+        states: list[VirtualUserState] = []
+        v_i: int = 0
+        while v_i < vc:
+            states.append(VirtualUserState(v_i))
+            v_i = v_i + 1
+        self.vu_states = states
+        self.scheduled_ns = []
+        self.aborted = False
+        self.abort_reason = ""
+
+    def can_schedule(self: TaskGroupRunner) -> bool:
+        if self.aborted or nox.tasks.is_cancelled():
+            if not self.aborted:
+                self.aborted = True
+                self.abort_reason = "taskgroup workload cancelled"
+            return False
+        if self.group.size() >= self.workload.max_iterations:
+            return False
+        if self.t0.elapsed_ms() >= self.deadline_ms:
+            return False
+        if not self.group.wait_below(self.vu_count + 1, self.limits.timeout_ms):
+            self.aborted = True
+            self.abort_reason = "taskgroup concurrency drain timed out"
+            self.group.cancel_all()
+            return False
+        cur_inflight: int = self.group.size() - self.group.finished()
+        self.metrics.record_concurrency(cur_inflight)
+        return True
+
+    def submit(self: TaskGroupRunner, task_handle: Task[int]) -> None:
+        self.metrics.record_scheduled()
+        ns_list: list[int] = self.scheduled_ns
+        ns_list.append(nox.time.monotonic_ns())
+        self.scheduled_ns = ns_list
+        self.group.add(task_handle)
+        cur_inflight: int = self.group.size() - self.group.finished()
+        self.metrics.record_concurrency(cur_inflight)
+
+async def finish_taskgroup_runner(runner: TaskGroupRunner) -> LoadTestSummary:
+    rem_ms: int = runner.deadline_ms - runner.t0.elapsed_ms()
+    if rem_ms < 50:
+        rem_ms = 50
+    if not runner.group.wait_all(rem_ms):
+        runner.group.cancel_all()
+        if not runner.aborted:
+            runner.aborted = True
+            runner.abort_reason = "taskgroup deadline exceeded"
+
+    handles: list[TaskHandle[int]] = runner.group.handles()
+    h_i: int = 0
+    while h_i < len(handles):
+        res_code: int = 0
+        try:
+            res_code = await handles[h_i].task
+        except Exception as e:
+            res_code = 0
+
+        ns_end: int = nox.time.monotonic_ns()
+        dur_ns: int = ns_end - runner.scheduled_ns[h_i]
+        if dur_ns < 0:
+            dur_ns = 0
+        dur_ms: int = dur_ns // 1000000
+        is_timeout: bool = (res_code == -1) or (dur_ms > runner.limits.timeout_ms)
+        success: bool = (res_code == 1) and (not is_timeout)
+        status: int = 200 if success else (504 if is_timeout else 500)
+
+        if is_timeout:
+            runner.cb.record_failure("taskgroup case timed out")
+        elif not success:
+            runner.cb.record_failure("taskgroup case failed at " + str(h_i))
+        else:
+            runner.cb.record_success()
+
+        if runner.cb.is_tripped and (not runner.aborted):
+            runner.aborted = True
+            runner.abort_reason = "circuit breaker tripped in taskgroup workload"
+
+        runner.metrics.record_result_ns(status, dur_ns, is_timeout, success)
+        runner.vu_states[h_i % runner.vu_count].record(dur_ms, success)
+        h_i = h_i + 1
+
+    total_duration_ms: int = runner.t0.elapsed_ms()
+    thresh_results: list[ThresholdResult] = evaluate_all_thresholds(runner.thresholds, runner.metrics, total_duration_ms)
+    all_passed: bool = (not runner.aborted) and all_thresholds_passed(thresh_results)
+
+    return LoadTestSummary(runner.workload.name, runner.metrics, thresh_results, total_duration_ms, all_passed, runner.aborted, runner.abort_reason, runner.vu_states)

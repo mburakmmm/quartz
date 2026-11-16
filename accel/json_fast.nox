@@ -1,0 +1,149 @@
+# Quartz Desktop Accelerator — Fast JSON Contract Validation via `nox.yyjson`
+# Opt-in desktop module (uses `noxclibs.a`; keep separate from portable `quartz.nox`).
+
+import nox.yyjson
+import nox.regex
+from nox.yyjson import YyValue, YyjsonError
+from nox.regex import RegexError
+from contract.schema import SchemaDescriptor, PropertyRule, is_key_declared, SCHEMA_NULL, SCHEMA_BOOLEAN, SCHEMA_STRING, SCHEMA_NUMBER, SCHEMA_INTEGER, SCHEMA_ARRAY, SCHEMA_OBJECT, SAFE_INT_MAX, SAFE_INT_MIN
+
+def yyjson_is_supported() -> bool:
+    return nox.yyjson.is_supported()
+
+def parse_fast_json(text: str) -> YyValue:
+    return nox.yyjson.parse(text)
+
+def parse_relaxed_json(text: str) -> YyValue:
+    return nox.yyjson.parse_relaxed(text)
+
+def parse_json5(text: str) -> YyValue:
+    return nox.yyjson.parse_json5(text)
+
+def validate_yyjson_schema(schema: SchemaDescriptor, val: YyValue, path: str) -> list[str]:
+    errors: list[str] = []
+
+    if schema.type_name == SCHEMA_NULL:
+        if not nox.yyjson.is_null(val):
+            errors.append(path + ": expected null")
+        return errors
+
+    if schema.type_name == SCHEMA_BOOLEAN:
+        if not nox.yyjson.is_bool(val):
+            errors.append(path + ": expected boolean")
+        return errors
+
+    if schema.type_name == SCHEMA_STRING:
+        if not nox.yyjson.is_string(val):
+            errors.append(path + ": expected string")
+            return errors
+        s_val: str = nox.yyjson.as_string(val)
+        if schema.min_len >= 0 and len(s_val) < schema.min_len:
+            errors.append(path + ": string length " + str(len(s_val)) + " is less than minimum " + str(schema.min_len))
+        if schema.max_len >= 0 and len(s_val) > schema.max_len:
+            errors.append(path + ": string length " + str(len(s_val)) + " exceeds maximum " + str(schema.max_len))
+        if len(schema.enum_values) > 0:
+            found: bool = False
+            ei: int = 0
+            while ei < len(schema.enum_values):
+                if schema.enum_values[ei] == s_val:
+                    found = True
+                    break
+                ei = ei + 1
+            if not found:
+                errors.append(path + ": value '" + s_val + "' is not in allowed enum set")
+        if len(schema.pattern) > 0:
+            try:
+                if len(nox.regex.find_matches(schema.pattern, s_val)) == 0:
+                    errors.append(path + ": string '" + s_val + "' does not match pattern '" + schema.pattern + "'")
+            except RegexError as re_err:
+                errors.append(path + ": invalid regex pattern '" + schema.pattern + "': " + str(re_err))
+        return errors
+
+    if schema.type_name == SCHEMA_NUMBER:
+        if not nox.yyjson.is_number(val):
+            errors.append(path + ": expected number")
+            return errors
+        f_val: float = nox.yyjson.as_number(val)
+        if schema.has_min_val and f_val < schema.min_val:
+            errors.append(path + ": number " + str(f_val) + " is less than minimum " + str(schema.min_val))
+        if schema.has_max_val and f_val > schema.max_val:
+            errors.append(path + ": number " + str(f_val) + " exceeds maximum " + str(schema.max_val))
+        return errors
+
+    if schema.type_name == SCHEMA_INTEGER:
+        if not nox.yyjson.is_number(val):
+            errors.append(path + ": expected integer")
+            return errors
+        if schema.allow_i64:
+            try:
+                exact_i64: int = nox.yyjson.as_int(val)
+                if schema.has_min_val and exact_i64 < schema.min_i64:
+                    errors.append(path + ": int64 " + str(exact_i64) + " is less than minimum " + str(schema.min_i64))
+                if schema.has_max_val and exact_i64 > schema.max_i64:
+                    errors.append(path + ": int64 " + str(exact_i64) + " exceeds maximum " + str(schema.max_i64))
+            except YyjsonError as ye:
+                errors.append(path + ": invalid exact 64-bit integer (" + str(ye) + ")")
+            return errors
+        n_val: float = nox.yyjson.as_number(val)
+        int_cast: int = int(n_val)
+        if (int_cast * 1.0) != n_val:
+            errors.append(path + ": expected integer but got float with fractional part (" + str(n_val) + ")")
+            return errors
+        if n_val >= SAFE_INT_MAX or n_val <= SAFE_INT_MIN:
+            errors.append(path + ": integer exceeds safe 2^53 precision limit (loss of precision)")
+        if schema.has_min_val and n_val < schema.min_val:
+            errors.append(path + ": integer " + str(int_cast) + " is less than minimum " + str(int(schema.min_val)))
+        if schema.has_max_val and n_val > schema.max_val:
+            errors.append(path + ": integer " + str(int_cast) + " exceeds maximum " + str(int(schema.max_val)))
+        return errors
+
+    if schema.type_name == SCHEMA_ARRAY:
+        if not nox.yyjson.is_array(val):
+            errors.append(path + ": expected array")
+            return errors
+        arr_len: int = nox.yyjson.array_len(val)
+        if schema.min_len >= 0 and arr_len < schema.min_len:
+            errors.append(path + ": array length " + str(arr_len) + " is less than minimum " + str(schema.min_len))
+        if schema.max_len >= 0 and arr_len > schema.max_len:
+            errors.append(path + ": array length " + str(arr_len) + " exceeds maximum " + str(schema.max_len))
+        if len(schema.item_schemas) > 0:
+            sub_schema: SchemaDescriptor = schema.item_schemas[0]
+            ai: int = 0
+            while ai < arr_len:
+                item_val: YyValue = nox.yyjson.array_get(val, ai)
+                errors.extend(validate_yyjson_schema(sub_schema, item_val, path + "[" + str(ai) + "]"))
+                ai = ai + 1
+        return errors
+
+    if schema.type_name == SCHEMA_OBJECT:
+        if not nox.yyjson.is_object(val):
+            errors.append(path + ": expected object")
+            return errors
+
+        ri: int = 0
+        while ri < len(schema.required_keys):
+            req_k: str = schema.required_keys[ri]
+            if not nox.yyjson.has_key(val, req_k):
+                errors.append(path + ": missing required property '" + req_k + "'")
+            ri = ri + 1
+
+        pi: int = 0
+        while pi < len(schema.properties):
+            prop: PropertyRule = schema.properties[pi]
+            if nox.yyjson.has_key(val, prop.name):
+                prop_val: YyValue = nox.yyjson.get(val, prop.name)
+                errors.extend(validate_yyjson_schema(prop.schema, prop_val, path + "." + prop.name))
+            pi = pi + 1
+
+        if schema.is_strict:
+            obj_size: int = nox.yyjson.object_len(val)
+            oi: int = 0
+            while oi < obj_size:
+                k_name: str = nox.yyjson.object_key(val, oi)
+                if not is_key_declared(schema.properties, k_name):
+                    errors.append(path + ": unknown property '" + k_name + "' rejected by strict schema policy")
+                oi = oi + 1
+        return errors
+
+    errors.append(path + ": unsupported schema type '" + schema.type_name + "'")
+    return errors

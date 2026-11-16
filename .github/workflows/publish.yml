@@ -15,14 +15,14 @@ jobs:
 
       - name: Install NOX
         env:
-          NOX_VERSION: v2.0.123
+          NOX_VERSION: v2.1.186
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if ! curl -fsSL https://raw.githubusercontent.com/mburakmmm/nox-lang/main/install.sh | bash; then
             echo "install.sh failed via CDN; downloading via GitHub API..."
-            STAGE="nox-lang-${NOX_VERSION:-v2.0.123}-linux-x64"
+            STAGE="nox-lang-${NOX_VERSION:-v2.1.186}-linux-x64"
             TMP_DIR=$(mktemp -d)
-            ASSET_ID=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/mburakmmm/nox-lang/releases/tags/${NOX_VERSION:-v2.0.123}" | jq -r ".assets[] | select(.name == \"${STAGE}.tar.gz\") | .id")
+            ASSET_ID=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/mburakmmm/nox-lang/releases/tags/${NOX_VERSION:-v2.1.186}" | jq -r ".assets[] | select(.name == \"${STAGE}.tar.gz\") | .id")
             curl -fsSL -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
                  -H "Accept: application/octet-stream" \
                  -o "$TMP_DIR/${STAGE}.tar.gz" \

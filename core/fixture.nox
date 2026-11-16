@@ -1,4 +1,9 @@
 # Quartz Core — Fixture Lifecycle Management
+import nox.fs
+import nox.path
+import nox.tempfile
+import nox.mem
+from nox.mem import MemStats
 
 SCOPE_CASE: str = "case"
 SCOPE_SUITE: str = "suite"
@@ -38,3 +43,95 @@ def run_with_fixture(fixture: Fixture, action: () -> None) -> None:
         action()
     finally:
         fixture.teardown()
+
+class TempDirFixture:
+    prefix: str
+    path: str
+    is_active: bool
+    cleaned_up: bool
+
+    def __init__(self: TempDirFixture, prefix: str = "quartz_tmp_") -> None:
+        self.prefix = prefix
+        self.path = ""
+        self.is_active = False
+        self.cleaned_up = False
+
+    def setup(self: TempDirFixture) -> str:
+        if len(self.path) == 0:
+            self.path = nox.tempfile.mkdtemp(self.prefix, "", "")
+        elif not nox.fs.exists(self.path):
+            nox.fs.create_dir_all(self.path)
+        self.is_active = True
+        self.cleaned_up = False
+        return self.path
+
+    def resolve(self: TempDirFixture, rel_path: str) -> str:
+        if len(self.path) == 0 or not self.is_active:
+            self.setup()
+        return nox.path.safe_join(self.path, rel_path)
+
+    def teardown(self: TempDirFixture) -> None:
+        self.is_active = False
+        if len(self.path) > 0 and nox.fs.exists(self.path):
+            nox.fs.remove_dir_all(self.path)
+        self.cleaned_up = True
+
+    def __enter__(self: TempDirFixture) -> TempDirFixture:
+        self.setup()
+        return self
+
+    def __exit__(self: TempDirFixture) -> None:
+        self.teardown()
+
+class MemoryGuardFixture:
+    name: str
+    start_allocs: int
+    start_frees: int
+    start_bytes: int
+    delta_allocs: int
+    delta_frees: int
+    delta_live: int
+    delta_bytes: int
+    is_active: bool
+
+    def __init__(self: MemoryGuardFixture, name: str = "mem_guard") -> None:
+        self.name = name
+        self.start_allocs = 0
+        self.start_frees = 0
+        self.start_bytes = 0
+        self.delta_allocs = 0
+        self.delta_frees = 0
+        self.delta_live = 0
+        self.delta_bytes = 0
+        self.is_active = False
+
+    def setup(self: MemoryGuardFixture) -> None:
+        s0: MemStats = nox.mem.stats()
+        self.start_allocs = s0.allocations
+        self.start_frees = s0.frees
+        self.start_bytes = s0.bytes_allocated
+        self.delta_allocs = 0
+        self.delta_frees = 0
+        self.delta_live = 0
+        self.delta_bytes = 0
+        self.is_active = True
+
+    def sample(self: MemoryGuardFixture) -> int:
+        s1: MemStats = nox.mem.stats()
+        self.delta_allocs = s1.allocations - self.start_allocs
+        self.delta_frees = s1.frees - self.start_frees
+        self.delta_live = self.delta_allocs - self.delta_frees
+        self.delta_bytes = s1.bytes_allocated - self.start_bytes
+        return self.delta_live
+
+    def teardown(self: MemoryGuardFixture) -> None:
+        if self.is_active:
+            _dl: int = self.sample()
+            self.is_active = False
+
+    def __enter__(self: MemoryGuardFixture) -> MemoryGuardFixture:
+        self.setup()
+        return self
+
+    def __exit__(self: MemoryGuardFixture) -> None:
+        self.teardown()

@@ -999,6 +999,37 @@
 
 ---
 
+## Phase 17: v0.9.19 — NOX 2.1.x Integration (Sub-ms Precision, gRPC Contracts, Path Confinement, TaskGroup & C-Backed Accelerators)
+*Objective: Leverage NOX `v2.0.124 -> v2.1.186` language and stdlib advancements across Quartz Core, Property, Fuzz, Contract, Load, CLI, and opt-in Desktop Accelerators while preserving 100% Core portability and QBE+LLVM parity.*
+
+- [x] **17.0 [P0] NOX 2.1.186 Toolchain Audit & Capability Probes**
+  - [x] Verify `noxc 2.1.186`, inspect `nox-lang` commits/docs (`v2.0.123..v2.1.186`), and run compiling probes (`probes/probe_2_1_features.nox`, `probes/probe_2_1_clibs.nox`) on LLVM and QBE.
+- [x] **17.1 [P0] Core Assertions, Fixtures & Safe Path/FS Hardening (`core/assert.nox`, `core/fixture.nox`, `core/snapshot.nox`)**
+  - [x] Add `assert_matches_regex` / `assert_full_matches_regex` / `assert_not_matches_regex` (`nox.regex`) and order-independent `assert_eq_dict_str` / `assert_eq_dict_int` (`dict == dict`) in `core/assert.nox`.
+  - [x] Add `TempDirFixture` (`nox.tempfile.mkdtemp` + `nox.path.safe_join` + `nox.fs.remove_dir_all` deterministic cleanup) and `MemoryGuardFixture` (`nox.mem.stats`) in `core/fixture.nox`.
+  - [x] Upgrade `core/snapshot.nox` with `nox.fs.create_dir_all` and `nox.path.safe_join` directory confinement.
+- [x] **17.2 [P1] Property Interop & Fuzz Corpus Hardening (`property/nox_interop.nox`, `fuzz/corpus.nox`)**
+  - [x] Create `property/nox_interop.nox` bridging `nox.property` (`Rng`, `PropertyFailed`, `check`, `replay`) into `run_nox_property`, `replay_nox_property`, and `run_nox_property_in_suite`.
+  - [x] Harden `fuzz/corpus.nox` with `nox.fs.create_dir_all`, `nox.path.safe_join` target confinement, $O(1)$ `set[str]` signature deduplication, and `nox.crypto.blake3` artifact digests (`content_blake3`).
+- [x] **17.3 [P0] Sub-Millisecond Latency Precision, Memory Telemetry & Cooperative TaskGroup Load (`load/metrics.nox`, `load/executor.nox`)**
+  - [x] Integrate `nox.time.monotonic_ns()` into `LoadMetrics` (`min_latency_ns`, `max_latency_ns`, `sum_latency_ns`, `record_result_ns`, `min_latency_us`, `max_latency_us`, `mean_latency_us`) and workload executors.
+  - [x] Integrate `nox.mem.stats()` delta tracking (`MemDelta`, `capture_mem_baseline()`, `compute_mem_delta()`) into load/stress telemetry.
+  - [x] Add `TaskGroupRunner` + `finish_taskgroup_runner` built on `nox.tasks.TaskGroup[int]` (`wait_below`, `wait_all`, `cancel_all`), cooperative `nox.tasks.is_cancelled()`, and `AtomicConfigSnapshot` (`nox.atomic.AtomicRef`).
+- [x] **17.4 [P0] Contract Testing Modernization & Native gRPC Contracts (`contract/schema.nox`, `contract/http_network.nox`, `contract/grpc.nox`)**
+  - [x] Keep `schema_integer` $2^{53}$ guard intact while adding `schema_int64` (`nox.json.as_int`) for exact 64-bit integer contracts (`> 2^53`), plus `schema_string_pattern` (`nox.regex`).
+  - [x] Upgrade `contract/http_network.nox` to catch `HttpCapabilityError`, support HTTP/2 / HTTP/3 / `nox.http.client_pool` options (`apply_network_transport_options`), and measure nanosecond timing (`duration_ns`).
+  - [x] Implement `contract/grpc.nox` (`GrpcContractCase`, `GrpcCheckResult`) for in-process (`nox.grpc_server` + `nox.protobuf`) and policy-gated network (`nox.grpc.connect`/`connect_tls`) gRPC contract testing.
+- [x] **17.5 [P1] Opt-In C-Backed Desktop Accelerators (`accel/json_fast.nox`, `accel/pcre2_assert.nox`, `accel/xxhash_digest.nox`)**
+  - [x] Provide portable-isolated desktop accelerator modules wrapping `nox.yyjson`, `nox.pcre2`, and `nox.xxhash` without adding native link deps to `quartz.nox`.
+- [x] **17.6 [P1] CLI Glob Discovery, Toolchain Sync & Release `v0.9.19` (`cli/main.nox`, `.github/workflows/`, Docs, Tests)**
+  - [x] Upgrade `cli/main.nox` `collect_tag_targets` with `nox.glob.glob` + `nox.fnmatch` (`.nox` filter) and `--pattern <glob>` filtering; expose `Mean Latency: <x> us` in `cmd_load` and verify `noxc sbom` compatibility.
+  - [x] Update `.github/workflows/ci.yml` & `publish.yml` to `v2.1.186` baseline.
+  - [x] Add positive, negative, edge-case, security, deterministic & QBE/LLVM matrix tests (`tests/nox_2_1_features_test.nox`, `tests/grpc_contract_test.nox`, `tests/accel_test.nox`), verify 100% `noxc test` pass (29/29), update docs (`README.md`, `CHANGELOG.md`, `docs/api.md`, `docs/compatibility.md`), release `v0.9.19`.
+
+*Phase 17 Exit Gate:* PASSED (`noxc check` across `quartz.nox`, `cli/main.nox`, `accel/*`; `noxc run --backend qbe tests/backend_matrix_test.nox` -> `ALL PASS`; `noxc test` -> `29 passed, 0 failed (29 total)`; `noxc sbom` valid CycloneDX 1.5 JSON).
+
+---
+
 ---
 
 ---
@@ -1097,3 +1128,5 @@
 | 2026-11-03 | Phase 15 | Verification & Release | `noxc test`, `ci.yml`, `noxc publish` | 26/26 tests pass across 4 platforms (Linux x64, Linux ARM64, macOS ARM64, Windows x64), tagged `v0.9.17`, published & verified green | [x] DONE |
 | 2026-11-09 | Phase 16 | Worker Lifetime & Precision | `load/executor.nox`, `load/metrics.nox`, `load/stages.nox`, `tests/` | Ref-counted atomic lifecycles, zero use-after-free / double-free, header preservation, length-prefixed bodies, nearest-rank ceiling percentiles | [x] DONE |
 | 2026-11-09 | Phase 16 | Verification & Release | `noxc test`, `ci.yml`, `noxc publish` | 26/26 tests pass (100% green), tagged `v0.9.18`, published to NOX registry | [x] DONE |
+| 2026-11-16 | Phase 17 | NOX 2.1.x Stdlib & Language | `core/`, `property/`, `fuzz/`, `contract/`, `load/`, `accel/`, `cli/` | Regex/dict assertions, `TempDirFixture`/`MemoryGuardFixture`, `nox.path.safe_join` + `blake3` corpus, `property/nox_interop.nox`, `monotonic_ns` + `MemDelta` + `TaskGroupRunner`/`AtomicRef`, `schema_int64` + `schema_string_pattern` + HTTP/2/3/pool + `contract/grpc.nox`, opt-in `accel/` (`yyjson`/`pcre2`/`xxhash`), glob CLI discovery | [x] DONE |
+| 2026-11-16 | Phase 17 | Verification & Release | `noxc check`, `noxc test`, `ci.yml`, `noxc publish` | `noxc test` 29/29 pass, QBE backend matrix pass, `noxc sbom` valid, release `v0.9.19` | [x] DONE |

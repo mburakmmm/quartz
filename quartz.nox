@@ -14,6 +14,7 @@ import property.property
 import property.replay
 import property.suite
 import property.combinators
+import property.nox_interop
 import fuzz.harness
 import fuzz.mutation
 import fuzz.corpus
@@ -31,6 +32,7 @@ import contract.http_network
 import contract.property_contract
 import contract.sse
 import contract.websocket
+import contract.grpc
 import contract.mock
 import load.safety
 import load.metrics
@@ -44,7 +46,7 @@ import adapters.atlas
 import adapters.feather
 
 def version() -> str:
-    return "0.9.18"
+    return "0.9.19"
 
 def framework_info() -> str:
     return "Quartz Test Framework v" + version() + " for NOX Ecosystem"

@@ -6,8 +6,8 @@
 
 <p align="center">
   <a href="https://github.com/mburakmmm/quartz/actions/workflows/ci.yml"><img src="https://github.com/mburakmmm/quartz/actions/workflows/ci.yml/badge.svg" alt="CI Status" /></a>
-  <a href="https://github.com/mburakmmm/quartz/releases/latest"><img src="https://img.shields.io/badge/release-v0.9.18-0969da.svg" alt="Latest Release" /></a>
-  <a href="https://github.com/mburakmmm/nox-lang"><img src="https://img.shields.io/badge/nox--lang-v2.0+-8250df.svg" alt="NOX Language" /></a>
+  <a href="https://github.com/mburakmmm/quartz/releases/latest"><img src="https://img.shields.io/badge/release-v0.9.19-0969da.svg" alt="Latest Release" /></a>
+  <a href="https://github.com/mburakmmm/nox-lang"><img src="https://img.shields.io/badge/nox--lang-v2.1.186+-8250df.svg" alt="NOX Language" /></a>
   <a href="https://github.com/mburakmmm/quartz/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-success.svg" alt="License: MIT" /></a>
   <img src="https://img.shields.io/badge/platforms-Linux%20|%20macOS%20|%20Windows-2ea44f.svg" alt="Multi-Platform Support" />
   <img src="https://img.shields.io/badge/backends-LLVM%20|%20QBE-bf8700.svg" alt="Dual Backend" />
@@ -20,11 +20,12 @@
 **Quartz** is an industrial-strength, zero-dependency testing engine built from first principles for the [NOX programming language](https://github.com/mburakmmm/nox-lang). It seamlessly complements `nox.test` and `noxc test` without patching compiler internals or requiring runtime reflection.
 
 Designed to scale from unit assertions to mission-critical infrastructure verification, Quartz delivers:
-- **Quartz Core** — Non-raising assertions, explicit test suites, tagged lazy test execution, snapshot testing, run-to-run regression comparators, and streaming JSONL / responsive HTML5 reporting.
-- **Quartz Property** — Composable typed generators, explicit-state 64-bit Knuth LCG determinism, automated delta-debugging shrinking to minimal counterexamples, and full-artifact deterministic replay.
-- **Quartz Fuzz** — Byte and structure-aware mutations, crash signature deduplication and clustering, stateful sequence fuzzing with transition rules, and System-Under-Test (SUT) state models.
-- **Quartz Contract** — Zero-overhead in-process HTTP handler contracts, OpenAPI 3 subset validation, WHATWG Server-Sent Events (SSE), RFC 6455 WebSocket handshakes, and offline HTTP Mock record & playback.
-- **Quartz Load** — Safe bounded concurrent load testing (`ConcurrentWaveScope`), reference-counted atomic lifetime safety, closed VU and open rate pacing, monotonic timing, 136-bucket latency histograms (p50, p90, p95, p99), and safety circuit breakers.
+- **Quartz Core** — Non-raising assertions (including regex & order-independent dict equality), explicit test suites, `TempDirFixture` / `MemoryGuardFixture`, tagged lazy & `--pattern` glob test execution, safe-confined snapshot testing, run-to-run regression comparators, and streaming JSONL / responsive HTML5 reporting.
+- **Quartz Property** — Composable typed generators, explicit-state 64-bit Knuth LCG determinism, automated delta-debugging shrinking to minimal counterexamples, full-artifact deterministic replay, and `nox.property` interoperability (`property.nox_interop`).
+- **Quartz Fuzz** — Byte and structure-aware mutations, BLAKE3-indexed corpus management with `set[str]` $O(1)$ deduplication, crash signature clustering, stateful sequence fuzzing with transition rules, and System-Under-Test (SUT) state models.
+- **Quartz Contract** — Zero-overhead in-process HTTP & **native gRPC/Protobuf** (`contract.grpc`) handler contracts, HTTP/2 & connection pooling transport options, exact `schema_int64` ($> 2^{53}$) & regex pattern constraints, OpenAPI 3 subset validation, WHATWG SSE, RFC 6455 WebSockets, and offline HTTP Mock record & playback.
+- **Quartz Load** — Safe bounded concurrent load testing (`ConcurrentWaveScope` & `TaskGroupRunner`), reference-counted atomic lifetime safety (`AtomicInt` / `AtomicRef`), nanosecond sub-ms precision metrics (`monotonic_ns`), `nox.mem.stats` allocation telemetry, closed VU and open rate pacing, 246-bucket latency histograms (nearest-rank p50, p90, p95, p99), and safety circuit breakers.
+- **Opt-In Desktop Accelerators (`accel/`)** — Isolated C-backed high-throughput adapters for `nox.yyjson` (relaxed JSON/JSON5 schema validation), `nox.pcre2` (PCRE2 + JIT named-group regex matching), and `nox.xxhash` (XXH3-64 / XXH3-128 corpus indexing) without adding native link dependencies to portable `quartz.nox`.
 - **Ecosystem Adapters** — Zero-coupling reference models and verification bridges for **Atlas** (tabular DataFrames & CSV) and **Feather** (ORM & SQL transaction rollbacks with SQLite / PostgreSQL), plus **Nyx** and **Aether**.
 
 ---
@@ -86,7 +87,7 @@ Designed to scale from unit assertions to mission-critical infrastructure verifi
   "name": "my_nox_service",
   "version": "1.0.0",
   "dependencies": {
-    "github.com/mburakmmm/quartz": "v0.9.18"
+    "github.com/mburakmmm/quartz": "v0.9.19"
   }
 }
 ```

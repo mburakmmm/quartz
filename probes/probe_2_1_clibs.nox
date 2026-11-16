@@ -1,0 +1,17 @@
+import nox.yyjson
+import nox.pcre2
+import nox.xxhash
+
+assert nox.yyjson.is_supported(), "yyjson supported"
+doc: nox.yyjson.YyValue = nox.yyjson.parse_relaxed("{ /* comment */ \"k\": 123, }")
+assert nox.yyjson.get_int(doc, "k") == 123, "yyjson relaxed"
+
+assert nox.pcre2.is_supported(), "pcre2 supported"
+pat: nox.pcre2.Pcre2 = nox.pcre2.compile("^(?P<user>[a-z]+)-(\\d+)$")
+m: nox.pcre2.Match | None = pat.match("melih-42")
+assert m is not None, "pcre2 matched"
+
+h64: int = nox.xxhash.xxh3_64("quartz")
+h128: str = nox.xxhash.xxh3_128_hex("quartz")
+assert h64 != 0 and len(h128) == 32, "xxhash works"
+print("probe_2_1_clibs: PASS")

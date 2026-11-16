@@ -1,0 +1,62 @@
+# Quartz Tests — Desktop C-Backed Accelerators (yyjson, PCRE2+JIT, xxHash)
+import nox.yyjson
+import nox.pcre2
+import nox.xxhash
+from nox.yyjson import YyValue
+from nox.pcre2 import Pcre2
+from core.assert import assert_true, assert_false, assert_eq_int, assert_eq_str, assert_contains_str
+from contract.schema import SchemaDescriptor, PropertyRule, schema_object, schema_int64, schema_string_pattern
+from accel.json_fast import yyjson_is_supported, parse_fast_json, parse_relaxed_json, parse_json5, validate_yyjson_schema
+from accel.pcre2_assert import pcre2_is_supported, pcre2_jit_supported, compile_pcre2_pattern, assert_pcre2_matches, assert_pcre2_full_match, assert_pcre2_named_group
+from accel.xxhash_digest import xxhash_is_supported, fingerprint_xxh3_64, fingerprint_xxh3_128_hex, FastCorpusIndex
+
+def test_yyjson_contracts() -> None:
+    assert_true(yyjson_is_supported(), "yyjson supported on desktop")
+    doc_rel: YyValue = parse_relaxed_json("{\n  // header comment\n  \"id\": 9007199254740999,\n  \"env\": \"prod-01\",\n}")
+    s: SchemaDescriptor = schema_object([
+        PropertyRule("id", schema_int64()),
+        PropertyRule("env", schema_string_pattern("^prod-[0-9]+$"))
+    ], ["id", "env"], True)
+
+    errs: list[str] = validate_yyjson_schema(s, doc_rel, "$")
+    assert_eq_int(len(errs), 0, "yyjson relaxed comment + int64 + pattern valid")
+
+    doc5: YyValue = parse_json5("{ id: 42, env: 'dev-02', }")
+    errs5: list[str] = validate_yyjson_schema(s, doc5, "$")
+    assert_true(len(errs5) > 0, "json5 mismatched pattern rejected by schema")
+
+def test_pcre2_assertions() -> None:
+    assert_true(pcre2_is_supported(), "pcre2 supported on desktop")
+    _jit: bool = pcre2_jit_supported()
+    pat: Pcre2 = compile_pcre2_pattern("^(?P<service>[a-z]+)-(?P<id>\\d+)$")
+    assert_pcre2_named_group(pat, "auth-404", "service", "auth", "named capture service")
+    assert_pcre2_named_group(pat, "auth-404", "id", "404", "named capture id")
+
+    _m: nox.pcre2.Match = assert_pcre2_matches("ERR_[0-9]+", "status=ERR_502", "pcre2 substring search")
+
+    failed: bool = False
+    try:
+        assert_pcre2_full_match(pat, "BAD_FORMAT", "must fail")
+    except AssertionError as e:
+        failed = True
+    assert_true(failed, "assert_pcre2_full_match raises AssertionError on mismatch")
+
+def test_xxhash_corpus_index() -> None:
+    assert_true(xxhash_is_supported(), "xxhash supported on desktop")
+    h1: int = fingerprint_xxh3_64("quartz-payload", 42)
+    h2: int = fingerprint_xxh3_64("quartz-payload", 42)
+    assert_eq_int(h1, h2, "xxh3_64 deterministic")
+
+    hx: str = fingerprint_xxh3_128_hex("quartz-payload", 0)
+    assert_eq_int(len(hx), 32, "xxh3_128_hex 32 hex chars")
+
+    idx: FastCorpusIndex = FastCorpusIndex(0)
+    assert_true(idx.insert_if_new("case_1"), "case_1 inserted")
+    assert_false(idx.insert_if_new("case_1"), "case_1 duplicate rejected")
+    assert_true(idx.insert_if_new("case_2"), "case_2 inserted")
+    assert_eq_int(idx.count(), 2, "2 unique payloads indexed")
+
+test_yyjson_contracts()
+test_pcre2_assertions()
+test_xxhash_corpus_index()
+print("quartz accel test: ALL PASS")

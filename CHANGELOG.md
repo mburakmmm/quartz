@@ -3,6 +3,26 @@
 All notable changes to the Quartz test framework will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.19] - 2026-11-16 - NOX 2.1.x Integration: Sub-ms Precision, Native gRPC Contracts, Path Confinement, TaskGroup & Desktop Accelerators
+
+### Added
+- **Native gRPC & Protobuf Contract Testing (`contract/grpc.nox`, `tests/grpc_contract_test.nox`)**:
+  - Added deterministic zero-socket in-process gRPC contract verification (`execute_grpc_inprocess` over `nox.grpc_server.Method` and `CtxMethod` with full `nox.protobuf` wire roundtrips) and policy-gated loopback/authorized HTTP/2 + TLS network gRPC testing (`execute_grpc_network` over `nox.grpc`), validating gRPC status codes, metadata, headers, and trailers.
+- **Opt-In C-Backed Desktop Accelerators (`accel/json_fast.nox`, `accel/pcre2_assert.nox`, `accel/xxhash_digest.nox`, `tests/accel_test.nox`)**:
+  - Added desktop accelerators backed by `nox.yyjson` (relaxed JSON/JSON5 parsing and fast schema validation), `nox.pcre2` (PCRE2 + JIT named-group regex matching), and `nox.xxhash` (XXH3-64 / XXH3-128 `FastCorpusIndex`), isolated from `quartz.nox` so core targets without `noxclibs.a` remain 100% portable.
+- **Sub-Millisecond Latency & Memory Allocation Telemetry (`load/metrics.nox`, `load/executor.nox`, `tests/nox_2_1_features_test.nox`)**:
+  - Integrated `nox.time.monotonic_ns()` into `LoadMetrics.record_result_ns()` and workload executors (`min_latency_us`, `max_latency_us`, `mean_latency_us` in summaries and JSON output alongside millisecond buckets).
+  - Added `MemDelta`, `capture_mem_baseline()`, `compute_mem_delta()`, and `MemoryGuardFixture` (`core/fixture.nox`) powered by `nox.mem.stats()`.
+- **Cooperative `TaskGroup` Load Runner & `AtomicRef` Config Snapshots (`load/executor.nox`)**:
+  - Added `TaskGroupRunner` and `finish_taskgroup_runner()` built on `nox.tasks.TaskGroup[int]` (`wait_below`, `wait_all`, `cancel_all`) and cooperative cancellation (`nox.tasks.is_cancelled()`).
+  - Added `AtomicConfigSnapshot` built on `nox.atomic.AtomicRef`.
+- **`nox.property` Interop, Exact 64-Bit Integer & Regex Schemas, Safe Fixtures & CLI Globs**:
+  - Added `property/nox_interop.nox` bridging `nox.property` (`Rng`, `PropertyFailed`, `replay`, `check`) into Quartz `TestSuite` and `PropertyResult`.
+  - Added `assert_matches_regex`, `assert_full_matches_regex`, `assert_not_matches_regex` (`nox.regex`), order-independent `assert_eq_dict_str` / `assert_eq_dict_int`, and `TempDirFixture` (`nox.tempfile` + `nox.path.safe_join`).
+  - Added `schema_int64()` (exact integers $> 2^{53}$ via `nox.json.as_int`) and `schema_string_pattern()` in `contract/schema.nox` while keeping `schema_integer()`'s strict $2^{53}$ guard intact.
+  - Upgraded `contract/http_network.nox` (`HttpCapabilityError`, HTTP/2 & HTTP/3 flags, `nox.http.client_pool` options), `core/snapshot.nox` and `fuzz/corpus.nox` (`nox.fs.create_dir_all`, `nox.path.safe_join`, $O(1)$ `set[str]` deduplication, `nox.crypto.blake3` digests), and `cli/main.nox` (`nox.glob` / `nox.fnmatch` `--pattern <glob>` discovery, microsecond load display).
+  - Updated CI & Publish workflows (`.github/workflows/ci.yml`, `.github/workflows/publish.yml`) to the `nox-lang v2.1.186` baseline and added `noxc sbom` verification.
+
 ## [0.9.18] - 2026-11-09 - Worker Lifetime Safety, Length-Prefixed HTTP Serialization & Nearest-Rank Percentiles
 
 ### Fixed & Hardened

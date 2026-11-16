@@ -3,6 +3,9 @@
 
 import nox.os
 import nox.fs
+import nox.glob
+import nox.fnmatch
+import nox.path
 import nox.json
 import nox.strings
 import nox.process
@@ -35,7 +38,7 @@ def print_usage() -> None:
     print("Commands:")
     print("  version              Print version and framework details")
     print("  test [path]          Run test suites with optional path filter")
-    print("                       Options: --tag <tag>, --exclude-tag <tag>, --allow-static")
+    print("                       Options: --tag <tag>, --exclude-tag <tag>, --pattern <glob>, --allow-static")
     print("  property [target]    Run property-based invariant checks")
     print("                       Options: --seed <int>, --cases <int>")
     print("  fuzz [target]        Run mutation fuzzer on sample target")
@@ -205,6 +208,7 @@ def cmd_load() -> None:
 
     print("Completed Requests: " + str(summary.metrics.completed))
     print("Throughput: " + str(summary.metrics.throughput_rps(summary.total_duration_ms)) + " req/s")
+    print("Mean Latency: " + str(summary.metrics.mean_latency_us()) + " us")
     print("p50 Latency: " + str(summary.metrics.p50()) + " ms")
     print("p95 Latency: " + str(summary.metrics.p95()) + " ms")
     print("Thresholds Passed: " + str(summary.all_passed))
@@ -490,27 +494,25 @@ def candidate_noxc_bins() -> list[str]:
     candidate_bins.append("noxc")
     return candidate_bins
 
-def collect_tag_targets(target_path: str) -> list[str]:
+def collect_tag_targets(target_path: str, file_pattern: str = "") -> list[str]:
     targets: list[str] = []
     if nox.fs.is_file(target_path):
-        targets.append(target_path)
+        if nox.strings.ends_with(target_path, ".nox"):
+            if len(file_pattern) == 0 or nox.fnmatch.fnmatch(nox.path.basename(target_path), file_pattern) or nox.fnmatch.fnmatch(target_path, file_pattern):
+                targets.append(target_path)
         return targets
     if nox.fs.is_dir(target_path):
-        entries: list[str] = nox.fs.read_dir(target_path)
-        # Prefer *_test.nox files; if none exist in the directory, include any .nox file
+        matched: list[str] = nox.glob.glob("**/*_test.nox", target_path, True)
+        if len(matched) == 0:
+            matched = nox.glob.glob("**/*.nox", target_path, True)
         i: int = 0
-        while i < len(entries):
-            e: str = entries[i]
-            if nox.strings.ends_with(e, "_test.nox"):
-                targets.append(target_path + "/" + e)
+        while i < len(matched):
+            rel: str = matched[i]
+            if nox.strings.ends_with(rel, ".nox"):
+                full_p: str = nox.path.join(target_path, rel)
+                if len(file_pattern) == 0 or nox.fnmatch.fnmatch(nox.path.basename(rel), file_pattern) or nox.fnmatch.fnmatch(rel, file_pattern) or nox.fnmatch.fnmatch(full_p, file_pattern):
+                    targets.append(full_p)
             i = i + 1
-        if len(targets) == 0:
-            j: int = 0
-            while j < len(entries):
-                e2: str = entries[j]
-                if nox.strings.ends_with(e2, ".nox"):
-                    targets.append(target_path + "/" + e2)
-                j = j + 1
     return targets
 
 def cmd_test() -> None:
@@ -520,20 +522,23 @@ def cmd_test() -> None:
 
     tag_filter: str = parse_flag_str("--tag", "")
     exclude_tag: str = parse_flag_str("--exclude-tag", "")
+    file_pattern: str = parse_flag_str("--pattern", "")
 
     print("Executing Quartz test runner on: " + target_path)
     if len(tag_filter) > 0:
         print("Tag filter active: include [" + tag_filter + "]")
     if len(exclude_tag) > 0:
         print("Tag filter active: exclude [" + exclude_tag + "]")
+    if len(file_pattern) > 0:
+        print("Glob filter active: [" + file_pattern + "]")
     try:
         candidate_bins: list[str] = candidate_noxc_bins()
-        use_tag_mode: bool = len(tag_filter) > 0 or len(exclude_tag) > 0
+        use_tag_mode: bool = len(tag_filter) > 0 or len(exclude_tag) > 0 or len(file_pattern) > 0
         tag_files: list[str] = []
         if use_tag_mode:
-            tag_files = collect_tag_targets(target_path)
+            tag_files = collect_tag_targets(target_path, file_pattern)
             if len(tag_files) == 0:
-                print("Error: No .nox test files found for tag filtering at: " + target_path)
+                print("Error: No .nox test files found matching filters at: " + target_path)
                 nox.os.exit(2)
                 return
 

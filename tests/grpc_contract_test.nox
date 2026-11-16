@@ -1,0 +1,118 @@
+# Quartz Tests — Native gRPC & Protobuf Contract Verification
+import nox.protobuf
+import nox.grpc
+import nox.grpc_server
+from nox.grpc import GrpcStatusError
+from nox.grpc_server import Method, CtxMethod, Call
+from core.assert import assert_true, assert_false, assert_eq_int, assert_eq_str, assert_contains_str
+from contract.grpc import GrpcContractCase, GrpcCheckResult, execute_grpc_inprocess, execute_grpc_network, GRPC_OK, GRPC_INVALID_ARGUMENT, GRPC_UNIMPLEMENTED, GRPC_UNAUTHENTICATED
+from contract.http_network import NetworkPolicy, default_network_policy, loopback_network_policy, NetworkNotAllowedError, UnauthorizedTargetError
+
+def _make_user_req_proto(user_id: int, role: str) -> str:
+    w: nox.protobuf.Writer = nox.protobuf.writer()
+    w.varint(1, user_id)
+    w.string(2, role)
+    return w.to_str()
+
+def _handle_get_user(reqs: list[str]) -> list[str]:
+    if len(reqs) == 0:
+        raise GrpcStatusError(GRPC_INVALID_ARGUMENT, "missing request message")
+    r: nox.protobuf.Reader = nox.protobuf.reader_from_str(reqs[0])
+    uid: int = 0
+    role: str = ""
+    while r.next_field():
+        if r.field == 1:
+            uid = r.read_varint()
+        elif r.field == 2:
+            role = r.read_string()
+        else:
+            r.skip()
+    if uid <= 0:
+        raise GrpcStatusError(GRPC_INVALID_ARGUMENT, "user_id must be positive")
+    out: nox.protobuf.Writer = nox.protobuf.writer()
+    out.varint(1, uid)
+    out.string(2, "ok:" + role)
+    return [out.to_str()]
+
+def _handle_auth_ctx(call: Call, reqs: list[str]) -> list[str]:
+    tok: str = call.header("x-request-token")
+    if tok != "quartz-valid-token":
+        raise GrpcStatusError(GRPC_UNAUTHENTICATED, "missing or invalid token")
+    call.set_header("x-server-version", "2.1.186")
+    call.set_trailer("x-trace-id", "trace-999")
+    out: nox.protobuf.Writer = nox.protobuf.writer()
+    out.string(1, "authenticated")
+    return [out.to_str()]
+
+def test_inprocess_unary_grpc_contract() -> None:
+    methods: list[Method] = [Method("/users.UserService/GetUser", _handle_get_user)]
+    ctxs: list[CtxMethod] = [CtxMethod("/auth.AuthService/Verify", _handle_auth_ctx)]
+
+    # 1. Positive unary protobuf contract
+    payload: str = _make_user_req_proto(42, "admin")
+    case_ok: GrpcContractCase = GrpcContractCase("get_user_ok", "/users.UserService/GetUser", [payload], [GRPC_OK])
+    res_ok: GrpcCheckResult = execute_grpc_inprocess(methods, ctxs, case_ok)
+    assert_true(res_ok.is_valid, "unary positive gRPC contract passes")
+    assert_eq_int(res_ok.grpc_status, GRPC_OK, "gRPC OK status")
+    assert_eq_int(len(res_ok.response_messages), 1, "one protobuf response captured")
+
+    rd: nox.protobuf.Reader = nox.protobuf.reader_from_str(res_ok.response_messages[0])
+    got_uid: int = 0
+    got_msg: str = ""
+    while rd.next_field():
+        if rd.field == 1:
+            got_uid = rd.read_varint()
+        elif rd.field == 2:
+            got_msg = rd.read_string()
+        else:
+            rd.skip()
+    assert_eq_int(got_uid, 42, "decoded protobuf user id")
+    assert_eq_str(got_msg, "ok:admin", "decoded protobuf message")
+
+    # 2. Negative invalid argument status contract
+    bad_payload: str = _make_user_req_proto(-5, "guest")
+    case_bad_expected: GrpcContractCase = GrpcContractCase("get_user_invalid", "/users.UserService/GetUser", [bad_payload], [GRPC_INVALID_ARGUMENT])
+    res_bad_ok: GrpcCheckResult = execute_grpc_inprocess(methods, ctxs, case_bad_expected)
+    assert_true(res_bad_ok.is_valid, "expected INVALID_ARGUMENT matches negative contract")
+    assert_eq_int(res_bad_ok.grpc_status, GRPC_INVALID_ARGUMENT, "status INVALID_ARGUMENT")
+
+    # 3. Context metadata, response headers & trailers (case-insensitive)
+    meta: dict[str, str] = {"X-Request-Token": "quartz-valid-token"}
+    case_ctx: GrpcContractCase = GrpcContractCase("auth_verify", "/auth.AuthService/Verify", ["ping"], [GRPC_OK], meta, ["X-Server-Version", "X-Trace-Id", "Grpc-Status"])
+    res_ctx: GrpcCheckResult = execute_grpc_inprocess(methods, ctxs, case_ctx)
+    assert_true(res_ctx.is_valid, "ctx gRPC contract with metadata/trailers passes")
+    assert_eq_str(res_ctx.response_headers["x-trace-id"], "trace-999", "trailer captured")
+
+    # 4. Negative: missing metadata returns UNAUTHENTICATED and fails OK expectation
+    case_unauth: GrpcContractCase = GrpcContractCase("auth_missing", "/auth.AuthService/Verify", ["ping"], [GRPC_OK])
+    res_unauth: GrpcCheckResult = execute_grpc_inprocess(methods, ctxs, case_unauth)
+    assert_false(res_unauth.is_valid, "missing auth token violates GRPC_OK contract")
+    assert_eq_int(res_unauth.grpc_status, GRPC_UNAUTHENTICATED, "unauthenticated status code")
+
+    # 5. Negative: unknown method returns UNIMPLEMENTED
+    case_unimpl: GrpcContractCase = GrpcContractCase("unknown_rpc", "/missing.Service/Call", ["ping"], [GRPC_UNIMPLEMENTED])
+    res_unimpl: GrpcCheckResult = execute_grpc_inprocess(methods, ctxs, case_unimpl)
+    assert_true(res_unimpl.is_valid, "unknown method reports GRPC_UNIMPLEMENTED")
+
+def test_grpc_network_safety_gate() -> None:
+    case_net: GrpcContractCase = GrpcContractCase("net_block", "/users.UserService/GetUser", ["x"], [GRPC_OK])
+
+    # Default policy strictly disables network
+    blocked_default: bool = False
+    try:
+        execute_grpc_network("127.0.0.1", 50051, default_network_policy(), case_net)
+    except NetworkNotAllowedError as e:
+        blocked_default = True
+    assert_true(blocked_default, "default policy blocks network gRPC call")
+
+    # Loopback policy strictly blocks arbitrary remote host
+    blocked_remote: bool = False
+    try:
+        execute_grpc_network("192.0.2.10", 50051, loopback_network_policy(500), case_net)
+    except UnauthorizedTargetError as e:
+        blocked_remote = True
+    assert_true(blocked_remote, "loopback policy blocks unauthorized remote gRPC target")
+
+test_inprocess_unary_grpc_contract()
+test_grpc_network_safety_gate()
+print("quartz grpc contract test: ALL PASS")

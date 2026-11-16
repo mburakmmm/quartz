@@ -1,5 +1,7 @@
 # Quartz Core — Assertions Library
 import nox.strings
+import nox.regex
+from nox.regex import RegexError
 
 # Note: AssertionError is a built-in exception provided unconditionally by nox/core.nox.
 
@@ -64,3 +66,32 @@ def assert_contains_str(haystack: str, needle: str, msg: str) -> None:
 def assert_not_contains_str(haystack: str, needle: str, msg: str) -> None:
     if nox.strings.contains(haystack, needle):
         raise AssertionError(msg + ": expected \"" + haystack + "\" not to contain \"" + needle + "\"")
+
+def assert_matches_regex(pattern: str, text: str, msg: str) -> None:
+    try:
+        if len(nox.regex.find_matches(pattern, text)) == 0:
+            raise AssertionError(msg + ": expected \"" + text + "\" to match regex \"" + pattern + "\"")
+    except RegexError as e:
+        raise AssertionError(msg + ": invalid regex pattern \"" + pattern + "\": " + str(e))
+
+def assert_full_matches_regex(pattern: str, text: str, msg: str) -> None:
+    try:
+        if not nox.regex.is_full_match(pattern, text):
+            raise AssertionError(msg + ": expected \"" + text + "\" to fully match regex \"" + pattern + "\"")
+    except RegexError as e:
+        raise AssertionError(msg + ": invalid regex pattern \"" + pattern + "\": " + str(e))
+
+def assert_not_matches_regex(pattern: str, text: str, msg: str) -> None:
+    try:
+        if len(nox.regex.find_matches(pattern, text)) > 0:
+            raise AssertionError(msg + ": expected \"" + text + "\" not to match regex \"" + pattern + "\"")
+    except RegexError as e:
+        raise AssertionError(msg + ": invalid regex pattern \"" + pattern + "\": " + str(e))
+
+def assert_eq_dict_str(actual: dict[str, str], expected: dict[str, str], msg: str) -> None:
+    if actual != expected:
+        raise AssertionError(msg + ": dictionary mismatch (actual=" + str(actual) + ", expected=" + str(expected) + ")")
+
+def assert_eq_dict_int(actual: dict[str, int], expected: dict[str, int], msg: str) -> None:
+    if actual != expected:
+        raise AssertionError(msg + ": dictionary mismatch (actual=" + str(actual) + ", expected=" + str(expected) + ")")

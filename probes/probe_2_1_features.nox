@@ -1,0 +1,98 @@
+import nox.time
+import nox.mem
+import nox.tasks
+import nox.atomic
+import nox.path
+import nox.fs
+import nox.tempfile
+import nox.glob
+import nox.fnmatch
+import nox.json
+import nox.crypto
+import nox.grpc
+import nox.grpc_server
+import nox.protobuf
+import nox.http
+import nox.property
+from nox.tasks import TaskGroup
+from nox.atomic import AtomicRef
+from nox.tempfile import TemporaryDirectory
+from nox.http import HttpRequest, HttpResponse, HttpCapabilityError
+from nox.json import JsonValue
+
+async def _work(x: int) -> int:
+    nox.tasks.checkpoint()
+    return x * 3
+
+async def test_async() -> None:
+    g: TaskGroup[int] = TaskGroup[int]()
+    g.add(spawn _work(2))
+    g.add(spawn _work(5))
+    ok: bool = g.wait_all(1000)
+    assert ok, "wait_all ok"
+    total: int = 0
+    for h in g.handles():
+        total = total + await h.task
+    assert total == 21, "taskgroup sum"
+
+    r: AtomicRef = nox.atomic.new_ref("init")
+    assert r.get() == "init", "atomic ref get"
+    v: int = r.set("v2")
+    assert v >= 1 and r.get() == "v2", "atomic ref set"
+    r.free()
+
+# 1. monotonic_ns & mem.stats
+_start_m: nox.mem.MemStats = nox.mem.stats()
+ns0: int = nox.time.monotonic_ns()
+tmp_list: list[int] = [1, 2, 3, 4]
+ms: nox.mem.MemStats = nox.mem.stats()
+ns1: int = nox.time.monotonic_ns()
+assert ns1 >= ns0, "monotonic_ns non-decreasing"
+assert ms.allocations >= 0 and len(tmp_list) == 4, "mem stats works"
+
+# 2. json exact int64 (> 2^53)
+jv: JsonValue = nox.json.parse("{\"id\": 9007199254740993}")
+id_node: JsonValue = nox.json.get(jv, "id")
+assert nox.json.as_int(id_node) == 9007199254740993, "exact int64"
+assert nox.json.number_text(id_node) == "9007199254740993", "number_text exact"
+
+# 3. dict equality & multi-arg min/max
+d1: dict[str, int] = {"a": 1, "b": 2}
+d2: dict[str, int] = {"b": 2, "a": 1}
+assert d1 == d2, "dict order-independent eq"
+assert min(10, 3, 7) == 3 and max(10, 3, 7) == 10, "multi-arg min/max"
+
+# 4. tempfile, safe_join, glob, fnmatch, blake3
+with TemporaryDirectory("qprobe_") as tmp:
+    p_ok: str = nox.path.safe_join(tmp.path, "sub_file.txt")
+    nox.fs.write_string_atomic(p_ok, "hello")
+    assert nox.fs.exists(p_ok), "safe_join + atomic write"
+    matches: list[str] = nox.glob.glob("*.txt", root_dir=tmp.path)
+    assert len(matches) == 1 and nox.fnmatch.fnmatch(matches[0], "*.txt"), "glob + fnmatch"
+
+digest: str = nox.crypto.blake3("quartz")
+assert len(digest) == 64, "blake3 digest"
+
+# 5. protobuf + grpc_server dispatch in-process
+w: nox.protobuf.Writer = nox.protobuf.writer()
+w.string(1, "hello-grpc")
+wire: str = w.to_str()
+rd: nox.protobuf.Reader = nox.protobuf.reader_from_str(wire)
+has_f: bool = rd.next_field()
+assert has_f and rd.field == 1 and rd.read_string() == "hello-grpc", "protobuf roundtrip"
+
+def echo_grpc(msgs: list[str]) -> list[str]:
+    out: list[str] = []
+    for m in msgs:
+        out.append(m + "!")
+    return out
+
+methods: list[nox.grpc_server.Method] = [nox.grpc_server.Method("/test.Echo/Say", echo_grpc)]
+framed: str = nox.grpc_server.frame(wire)
+greq: HttpRequest = HttpRequest("POST", "/test.Echo/Say", framed, {"content-type": "application/grpc"})
+gresp: HttpResponse = nox.grpc_server.dispatch(methods, greq)
+assert gresp.status == 200, "grpc dispatch 200"
+
+t_async: Task[None] = spawn test_async()
+await t_async
+print("probe_2_1_features: PASS")

@@ -1,0 +1,208 @@
+# Quartz Integration Tests — NOX 2.1.x Feature Suite
+import nox.fs
+import nox.time
+import nox.json
+import nox.mem
+import nox.property
+from nox.mem import MemStats
+from nox.property import Rng
+from nox.json import JsonValue
+from core.assert import assert_true, assert_false, assert_eq_int, assert_eq_str, assert_contains_str, assert_matches_regex, assert_full_matches_regex, assert_not_matches_regex, assert_eq_dict_str, assert_eq_dict_int
+from core.fixture import TempDirFixture, MemoryGuardFixture
+from core.snapshot import compare_snapshot, SnapshotComparison
+from core.suite import TestSuite
+from core.types import STATUS_PASS, STATUS_FAIL
+from fuzz.corpus import CorpusManager, default_corpus_config, FuzzOutcome
+from fuzz.harness import OUTCOME_CRASH
+from property.nox_interop import run_nox_property, replay_nox_property, run_nox_property_in_suite
+from property.property import PropertyResult
+from load.metrics import LoadMetrics, MemDelta, capture_mem_baseline, compute_mem_delta
+from load.workload import WorkloadConfig, closed_workload
+from load.safety import SafetyLimits, default_safety_limits
+from load.thresholds import Threshold
+from load.executor import AtomicConfigSnapshot, TaskGroupRunner, finish_taskgroup_runner, LoadTestSummary
+from contract.schema import SchemaDescriptor, PropertyRule, schema_object, schema_int64, schema_string_pattern, validate_schema
+from contract.http_network import NetworkPolicy, loopback_network_policy, default_network_policy
+
+def test_regex_and_dict_assertions() -> None:
+    assert_matches_regex("v[0-9]+\\.[0-9]+", "release v2.1.186 ready", "regex substring match")
+    assert_full_matches_regex("quartz-[a-z]+-[0-9]{2}", "quartz-core-01", "regex full match")
+    assert_not_matches_regex("FAIL|PANIC", "ALL_GREEN_OK", "regex negative match")
+
+    bad_match_raised: bool = False
+    try:
+        assert_full_matches_regex("^[0-9]+$", "abc123", "must fail")
+    except AssertionError as e:
+        bad_match_raised = True
+    assert_true(bad_match_raised, "assert_full_matches_regex rejects mismatch")
+
+    d1: dict[str, str] = {"a": "1", "b": "2", "c": "3"}
+    d2: dict[str, str] = {"c": "3", "a": "1", "b": "2"}
+    assert_eq_dict_str(d1, d2, "order-independent dict[str, str] equality")
+
+    di1: dict[str, int] = {"x": 10, "y": 20}
+    di2: dict[str, int] = {"y": 20, "x": 10}
+    assert_eq_dict_int(di1, di2, "order-independent dict[str, int] equality")
+
+def test_tempdir_and_memory_fixtures() -> None:
+    captured_dir: str = ""
+    with TempDirFixture("q21_") as td:
+        captured_dir = td.path
+        assert_true(nox.fs.exists(captured_dir), "temp dir created on __enter__")
+        safe_f: str = td.resolve("nested_ok.txt")
+        nox.fs.write_string_atomic(safe_f, "ok")
+        assert_true(nox.fs.exists(safe_f), "file written inside confined tempdir")
+
+        traversal_blocked: bool = False
+        try:
+            _bad: str = td.resolve("../../outside.txt")
+        except Exception as pe:
+            traversal_blocked = True
+        assert_true(traversal_blocked, "path traversal blocked in TempDirFixture.resolve")
+
+    assert_false(nox.fs.exists(captured_dir), "temp dir recursively deleted on __exit__")
+
+    with MemoryGuardFixture("alloc_check") as mg:
+        xs: list[str] = ["one", "two", "three", "four"]
+        assert_eq_int(len(xs), 4, "allocated list")
+    assert_true(mg.delta_allocs >= 0, "memory guard tracked allocations")
+
+def test_snapshot_nested_confinement() -> None:
+    with TempDirFixture("qsnap_") as td:
+        nested_dir: str = td.path + "/level1/level2"
+        comp: SnapshotComparison = compare_snapshot("nested_case", "status: OK\ntoken: Bearer abcdef\n", nested_dir, False, True)
+        assert_true(comp.is_match, "nested snapshot created via create_dir_all + safe_join")
+        assert_true(nox.fs.exists(comp.snapshot_path), "snapshot artifact exists")
+        raw: str = nox.fs.read_to_string(comp.snapshot_path)
+        assert_contains_str(raw, "Bearer [REDACTED]", "secret still redacted")
+
+def test_corpus_hardening_and_blake3() -> None:
+    traversal_rejected: bool = False
+    try:
+        _cm_bad: CorpusManager = CorpusManager("../evil_target", "fixtures/corpus", default_corpus_config())
+    except AssertionError as e:
+        traversal_rejected = True
+    assert_true(traversal_rejected, "CorpusManager rejects path traversal target name")
+
+    with TempDirFixture("qcorp_") as td:
+        cm: CorpusManager = CorpusManager("parser_target", td.path, default_corpus_config())
+        assert_true(cm.is_new_signature("SIG_A"), "set sig A new")
+        assert_false(cm.is_new_signature("SIG_A"), "set sig A deduplicated O(1)")
+        assert_true(cm.is_new_signature("SIG_B"), "set sig B new")
+
+        out: FuzzOutcome = FuzzOutcome(OUTCOME_CRASH, "boom", "CRASH:boom", 1)
+        crash_json: str = cm.save_crash_artifact("CRASH_INPUT_XYZ", out, 7, 3)
+        assert_true(nox.fs.exists(crash_json), "crash json written safely")
+        txt: str = nox.fs.read_to_string(crash_json)
+        assert_contains_str(txt, "\"content_blake3\": \"", "blake3 digest embedded in crash artifact")
+
+def _prop_always_even(r: Rng) -> bool:
+    x: int = r.int_range(0, 50)
+    return (x * 2) % 2 == 0
+
+def _prop_fails_above_5(r: Rng) -> bool:
+    xs: list[int] = r.int_list(r.size, 0, 10)
+    return len(xs) <= 5
+
+def test_nox_property_interop() -> None:
+    res_ok: PropertyResult = run_nox_property("even_double", _prop_always_even, 50, 99, 20)
+    assert_true(res_ok.is_passed(), "passing nox.property recorded PASS")
+
+    res_fail: PropertyResult = run_nox_property("max_len_5", _prop_fails_above_5, 100, 12345, 50)
+    assert_false(res_fail.is_passed(), "failing nox.property captured failure")
+    assert_true(res_fail.seed > 0, "failing seed captured")
+
+    suite: TestSuite = TestSuite("nox_prop_suite")
+    _r1: PropertyResult = run_nox_property_in_suite(suite, "suite_even", _prop_always_even, 30, 77, 15)
+    _r2: PropertyResult = run_nox_property_in_suite(suite, "suite_fail", _prop_fails_above_5, 100, 12345, 50)
+    assert_eq_int(suite.summary.passed, 1, "1 passing property in suite")
+    assert_eq_int(suite.summary.failed, 1, "1 failing property in suite")
+
+def test_subms_metrics_and_mem_delta() -> None:
+    m: LoadMetrics = LoadMetrics()
+    m.record_result_ns(200, 250000, False, True)   # 250 us
+    m.record_result_ns(200, 750000, False, True)   # 750 us
+    assert_eq_int(m.min_latency_us(), 250, "sub-ms min_latency_us")
+    assert_eq_int(m.max_latency_us(), 750, "sub-ms max_latency_us")
+    assert_true(m.mean_latency_us() >= 499.0 and m.mean_latency_us() <= 501.0, "sub-ms mean_latency_us ~500")
+    j: str = m.to_json(10)
+    assert_contains_str(j, "\"min_latency_us\": 250", "json includes min_latency_us")
+    assert_contains_str(j, "\"max_latency_us\": 750", "json includes max_latency_us")
+
+    b0: MemStats = capture_mem_baseline()
+    _tmp: str = "alloc_" + "test"
+    b1: MemStats = capture_mem_baseline()
+    md: MemDelta = compute_mem_delta(b0, b1)
+    assert_true(md.allocations >= 0, "MemDelta allocations non-negative")
+
+    snap: AtomicConfigSnapshot = AtomicConfigSnapshot("{\"rps\": 100}")
+    assert_eq_str(snap.read(), "{\"rps\": 100}", "AtomicRef initial read")
+    ver: int = snap.publish("{\"rps\": 250}")
+    assert_true(ver >= 1, "AtomicRef version incremented")
+    assert_eq_str(snap.read(), "{\"rps\": 250}", "AtomicRef updated read")
+    snap.close()
+
+async def _tg_ok_task(idx: int) -> int:
+    ns0: int = nox.time.monotonic_ns()
+    acc: int = 0
+    i: int = 0
+    while i < 200:
+        acc = acc + i
+        i = i + 1
+    _d: int = nox.time.monotonic_ns() - ns0
+    return 1 if acc >= 0 else 0
+
+async def _tg_fail_task(idx: int) -> int:
+    return 0
+
+async def test_taskgroup_runner() -> None:
+    wl: WorkloadConfig = closed_workload("tg_load", 4, 2, 12)
+    limits: SafetyLimits = default_safety_limits()
+    runner: TaskGroupRunner = TaskGroupRunner(wl, [Threshold("error_rate", "<=", 0.0)], limits)
+    i: int = 0
+    while runner.can_schedule():
+        runner.submit(spawn _tg_ok_task(i))
+        i = i + 1
+    t_fin1: Task[LoadTestSummary] = spawn finish_taskgroup_runner(runner)
+    summary: LoadTestSummary = await t_fin1
+    assert_eq_int(summary.metrics.completed, 12, "TaskGroupRunner completed 12 tasks")
+    assert_eq_int(summary.metrics.successful, 12, "all 12 tasks succeeded")
+    assert_true(summary.all_passed, "TaskGroupRunner thresholds passed")
+    assert_true(summary.metrics.max_latency_us() >= 0, "TaskGroupRunner tracked sub-ms latency")
+
+    # Circuit breaker failure test
+    wl_fail: WorkloadConfig = closed_workload("tg_fail", 2, 2, 6)
+    limits_fail: SafetyLimits = SafetyLimits(2, 5, 10, 5, 500, 2)
+    runner_fail: TaskGroupRunner = TaskGroupRunner(wl_fail, [], limits_fail)
+    fi: int = 0
+    while runner_fail.can_schedule():
+        runner_fail.submit(spawn _tg_fail_task(fi))
+        fi = fi + 1
+    t_fin2: Task[LoadTestSummary] = spawn finish_taskgroup_runner(runner_fail)
+    summary_fail: LoadTestSummary = await t_fin2
+    assert_true(summary_fail.aborted, "TaskGroupRunner tripped circuit breaker on failing tasks")
+
+def test_schema_int64_and_regex_pattern() -> None:
+    s: SchemaDescriptor = schema_object([
+        PropertyRule("id", schema_int64(9007199254740990, 9999999999999999, True, True)),
+        PropertyRule("code", schema_string_pattern("^[A-Z]{3}-[0-9]{4}$"))
+    ], ["id", "code"], True)
+
+    valid_doc: JsonValue = nox.json.parse("{\"id\": 9007199254740995, \"code\": \"QZT-2026\"}")
+    errs_ok: list[str] = validate_schema(s, valid_doc, "$")
+    assert_eq_int(len(errs_ok), 0, "exact int64 > 2^53 and regex pattern both pass")
+
+    bad_range_doc: JsonValue = nox.json.parse("{\"id\": 9007199254740980, \"code\": \"bad-code\"}")
+    errs_bad: list[str] = validate_schema(s, bad_range_doc, "$")
+    assert_eq_int(len(errs_bad), 2, "int64 min violation + regex mismatch both caught")
+
+test_regex_and_dict_assertions()
+test_tempdir_and_memory_fixtures()
+test_snapshot_nested_confinement()
+test_corpus_hardening_and_blake3()
+test_nox_property_interop()
+test_subms_metrics_and_mem_delta()
+t_tg: Task[None] = spawn test_taskgroup_runner()
+await t_tg
+test_schema_int64_and_regex_pattern()
+print("quartz nox 2.1 features test: ALL PASS")

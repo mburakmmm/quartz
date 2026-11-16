@@ -1,0 +1,32 @@
+# Quartz Property — NOX Stdlib Property Interoperability Bridge
+# Bridges NOX 2.1's `nox.property` (`Rng`, `PropertyFailed`, `check`, `replay`)
+# into Quartz `PropertyResult` and `TestSuite` reporting.
+
+import nox.property
+import nox.time
+from nox.property import Rng, PropertyFailed
+from nox.time import Instant
+from core.types import STATUS_PASS, STATUS_FAIL
+from core.suite import TestSuite
+from property.property import PropertyResult
+
+def run_nox_property(test_id: str, prop: (Rng) -> bool, runs: int = 100, seed: int = 12345, max_size: int = 100) -> PropertyResult:
+    try:
+        nox.property.check(test_id, prop, runs, seed, max_size)
+        return PropertyResult(test_id, STATUS_PASS, runs, 0, seed, -1, "", "", 0, "", "nox_property_park_miller", "nox.property.Rng")
+    except PropertyFailed as pf:
+        diag: str = "size=" + str(pf.size)
+        return PropertyResult(test_id, STATUS_FAIL, pf.run + 1, 0, pf.seed, pf.run, diag, diag, 1, str(pf), "nox_property_park_miller", "nox.property.Rng")
+
+def replay_nox_property(prop: (Rng) -> bool, seed: int, size: int) -> bool:
+    return nox.property.replay(prop, seed, size)
+
+def run_nox_property_in_suite(suite: TestSuite, test_id: str, prop: (Rng) -> bool, runs: int = 100, seed: int = 12345, max_size: int = 100, tags: list[str] | None = None) -> PropertyResult:
+    t0: Instant = nox.time.instant_now()
+    res: PropertyResult = run_nox_property(test_id, prop, runs, seed, max_size)
+    dur_ms: int = t0.elapsed_ms()
+    if res.is_passed():
+        suite._record(test_id, True, "PASS", "PASS", "", dur_ms, tags)
+    else:
+        suite._record(test_id, False, "PASS", "FAIL(seed=" + str(res.seed) + ",run=" + str(res.failing_case_index) + ")", res.failure_message, dur_ms, tags)
+    return res

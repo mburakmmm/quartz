@@ -3,7 +3,9 @@
 # with 246 fixed buckets, guaranteeing bounded O(1) memory and accurate percentiles.
 
 import nox.time
+import nox.mem
 from nox.time import Instant
+from nox.mem import MemStats
 from core.report import escape_json
 
 HISTOGRAM_NUM_BUCKETS: int = 246
@@ -51,6 +53,9 @@ class LoadMetrics:
     min_latency_ms: int
     max_latency_ms: int
     sum_latency_ms: int
+    min_latency_ns: int
+    max_latency_ns: int
+    sum_latency_ns: int
     peak_concurrency: int
     buckets: list[int]
 
@@ -65,6 +70,9 @@ class LoadMetrics:
         self.min_latency_ms = -1
         self.max_latency_ms = 0
         self.sum_latency_ms = 0
+        self.min_latency_ns = -1
+        self.max_latency_ns = 0
+        self.sum_latency_ns = 0
         self.peak_concurrency = 0
 
         # Initialize 246 buckets to 0
@@ -85,7 +93,7 @@ class LoadMetrics:
         if active_count > self.peak_concurrency:
             self.peak_concurrency = active_count
 
-    def record_result(self: LoadMetrics, status: int, duration_ms: int, is_timeout: bool, is_success: bool) -> None:
+    def _record_internal(self: LoadMetrics, status: int, duration_ms: int, duration_ns: int, is_timeout: bool, is_success: bool) -> None:
         self.completed = self.completed + 1
         if is_timeout:
             self.timed_out = self.timed_out + 1
@@ -98,17 +106,34 @@ class LoadMetrics:
 
         self.successful = self.successful + 1
         self.sum_latency_ms = self.sum_latency_ms + duration_ms
+        self.sum_latency_ns = self.sum_latency_ns + duration_ns
 
         if self.min_latency_ms < 0 or duration_ms < self.min_latency_ms:
             self.min_latency_ms = duration_ms
         if duration_ms > self.max_latency_ms:
             self.max_latency_ms = duration_ms
 
+        if self.min_latency_ns < 0 or duration_ns < self.min_latency_ns:
+            self.min_latency_ns = duration_ns
+        if duration_ns > self.max_latency_ns:
+            self.max_latency_ns = duration_ns
+
         # Record into bounded histogram bucket
         b_idx: int = get_bucket_index(duration_ms)
         self.buckets[b_idx] = self.buckets[b_idx] + 1
         if b_idx == HISTOGRAM_OVERFLOW_INDEX:
             self.overflow_count = self.overflow_count + 1
+
+    def record_result(self: LoadMetrics, status: int, duration_ms: int, is_timeout: bool, is_success: bool) -> None:
+        ns_est: int = duration_ms * 1000000
+        if ns_est < 0:
+            ns_est = 0
+        self._record_internal(status, duration_ms, ns_est, is_timeout, is_success)
+
+    def record_result_ns(self: LoadMetrics, status: int, duration_ns: int, is_timeout: bool, is_success: bool) -> None:
+        clean_ns: int = duration_ns if duration_ns >= 0 else 0
+        dur_ms: int = clean_ns // 1000000
+        self._record_internal(status, dur_ms, clean_ns, is_timeout, is_success)
 
     def percentile(self: LoadMetrics, p: float) -> int:
         if self.successful <= 0:
@@ -153,6 +178,21 @@ class LoadMetrics:
             return 0.0
         return float(self.sum_latency_ms) / float(self.successful)
 
+    def min_latency_us(self: LoadMetrics) -> int:
+        if self.min_latency_ns < 0:
+            return 0
+        return self.min_latency_ns // 1000
+
+    def max_latency_us(self: LoadMetrics) -> int:
+        if self.max_latency_ns <= 0:
+            return 0
+        return self.max_latency_ns // 1000
+
+    def mean_latency_us(self: LoadMetrics) -> float:
+        if self.successful <= 0:
+            return 0.0
+        return (float(self.sum_latency_ns) / 1000.0) / float(self.successful)
+
     def throughput_rps(self: LoadMetrics, total_duration_ms: int) -> float:
         if self.completed <= 0:
             return 0.0
@@ -185,6 +225,9 @@ class LoadMetrics:
         s = s + "\"min_latency_ms\": " + str(self.min_latency_ms if self.min_latency_ms >= 0 else 0) + ", "
         s = s + "\"max_latency_ms\": " + str(self.max_latency_ms) + ", "
         s = s + "\"mean_latency_ms\": " + str(self.mean_latency_ms()) + ", "
+        s = s + "\"min_latency_us\": " + str(self.min_latency_us()) + ", "
+        s = s + "\"max_latency_us\": " + str(self.max_latency_us()) + ", "
+        s = s + "\"mean_latency_us\": " + str(self.mean_latency_us()) + ", "
         s = s + "\"p50_latency_ms\": " + str(self.p50()) + ", "
         s = s + "\"p90_latency_ms\": " + str(self.p90()) + ", "
         s = s + "\"p95_latency_ms\": " + str(self.p95()) + ", "
@@ -195,3 +238,27 @@ class LoadMetrics:
         s = s + "\"peak_concurrency\": " + str(self.peak_concurrency)
         s = s + "}"
         return s
+
+class MemDelta:
+    allocations: int
+    frees: int
+    live: int
+    bytes_allocated: int
+
+    def __init__(self: MemDelta, allocations: int, frees: int, bytes_allocated: int) -> None:
+        self.allocations = allocations
+        self.frees = frees
+        self.live = allocations - frees
+        self.bytes_allocated = bytes_allocated
+
+    def to_json(self: MemDelta) -> str:
+        return "{\"allocations\": " + str(self.allocations) + ", \"frees\": " + str(self.frees) + ", \"live\": " + str(self.live) + ", \"bytes_allocated\": " + str(self.bytes_allocated) + "}"
+
+def capture_mem_baseline() -> MemStats:
+    return nox.mem.stats()
+
+def compute_mem_delta(baseline: MemStats, current: MemStats) -> MemDelta:
+    d_alloc: int = current.allocations - baseline.allocations
+    d_free: int = current.frees - baseline.frees
+    d_bytes: int = current.bytes_allocated - baseline.bytes_allocated
+    return MemDelta(d_alloc, d_free, d_bytes)

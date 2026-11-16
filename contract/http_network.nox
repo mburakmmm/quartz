@@ -2,7 +2,7 @@
 import nox.http
 import nox.strings
 import nox.time
-from nox.http import HttpRequest, HttpResponse, HttpError, HttpTimeoutError, stream
+from nox.http import HttpRequest, HttpResponse, HttpError, HttpTimeoutError, HttpCapabilityError, stream
 from nox.time import Instant
 from contract.types import ContractCheckResult
 from contract.schema import SchemaDescriptor
@@ -22,12 +22,28 @@ class NetworkPolicy:
     authorized_target: str
     timeout_ms: int
     max_body_bytes: int
+    enable_http2: bool
+    enable_http3: bool
+    pool_max_idle: int
+    pool_idle_timeout_ms: int
 
-    def __init__(self: NetworkPolicy, allow_network: bool = False, authorized_target: str = "", timeout_ms: int = 2000, max_body_bytes: int = 1048576) -> None:
+    def __init__(self: NetworkPolicy, allow_network: bool = False, authorized_target: str = "", timeout_ms: int = 2000, max_body_bytes: int = 1048576, enable_http2: bool = False, enable_http3: bool = False, pool_max_idle: int = 0, pool_idle_timeout_ms: int = 90000) -> None:
         self.allow_network = allow_network
         self.authorized_target = authorized_target
         self.timeout_ms = timeout_ms
         self.max_body_bytes = max_body_bytes
+        self.enable_http2 = enable_http2
+        self.enable_http3 = enable_http3
+        self.pool_max_idle = pool_max_idle
+        self.pool_idle_timeout_ms = pool_idle_timeout_ms
+
+def apply_network_transport_options(policy: NetworkPolicy) -> None:
+    if policy.enable_http2:
+        nox.http.set_http2(True)
+    if policy.enable_http3:
+        nox.http.set_http3(True)
+    if policy.pool_max_idle > 0:
+        nox.http.client_pool(policy.pool_max_idle, policy.pool_idle_timeout_ms)
 
 def default_network_policy() -> NetworkPolicy:
     # Safe default: network strictly disabled
@@ -136,14 +152,16 @@ def validate_network_target(url: str, policy: NetworkPolicy) -> ParsedUrl:
 class NetworkExecutionResult:
     responses: list[HttpResponse]
     duration_ms: int
+    duration_ns: int
     status_code: int
     error_message: str
     is_timeout: bool
     is_success: bool
 
-    def __init__(self: NetworkExecutionResult, responses: list[HttpResponse], duration_ms: int, status_code: int, error_message: str, is_timeout: bool, is_success: bool) -> None:
+    def __init__(self: NetworkExecutionResult, responses: list[HttpResponse], duration_ms: int, status_code: int, error_message: str, is_timeout: bool, is_success: bool, duration_ns: int = 0) -> None:
         self.responses = responses
         self.duration_ms = duration_ms
+        self.duration_ns = duration_ns
         self.status_code = status_code
         self.error_message = error_message
         self.is_timeout = is_timeout
@@ -156,9 +174,10 @@ def execute_network_request(req: HttpRequest, base_url: str, policy: NetworkPoli
 
     full_url: str = base_url + target_path
     parsed: ParsedUrl = validate_network_target(full_url, policy)
+    apply_network_transport_options(policy)
 
     empty_res_list: list[HttpResponse] = []
-    t0: Instant = nox.time.instant_now()
+    ns0: int = nox.time.monotonic_ns()
     try:
         accum_body: str = ""
         res_status: int = 0
@@ -176,19 +195,33 @@ def execute_network_request(req: HttpRequest, base_url: str, policy: NetworkPoli
                     break
                 accum_body = accum_body + chunk
 
-        elapsed_ms: int = t0.elapsed_ms()
+        dur_ns: int = nox.time.monotonic_ns() - ns0
+        if dur_ns < 0:
+            dur_ns = 0
+        elapsed_ms: int = dur_ns // 1000000
         res: HttpResponse = HttpResponse(res_status, accum_body, res_headers)
         res_list: list[HttpResponse] = [res]
-        return NetworkExecutionResult(res_list, elapsed_ms, res.status, "", False, True)
+        return NetworkExecutionResult(res_list, elapsed_ms, res.status, "", False, True, dur_ns)
     except HttpTimeoutError as e:
-        elapsed_ms: int = t0.elapsed_ms()
-        return NetworkExecutionResult(empty_res_list, elapsed_ms, 0, "request timed out after " + str(policy.timeout_ms) + "ms", True, False)
+        dur_ns: int = nox.time.monotonic_ns() - ns0
+        if dur_ns < 0:
+            dur_ns = 0
+        return NetworkExecutionResult(empty_res_list, dur_ns // 1000000, 0, "request timed out after " + str(policy.timeout_ms) + "ms", True, False, dur_ns)
+    except HttpCapabilityError as e:
+        dur_ns: int = nox.time.monotonic_ns() - ns0
+        if dur_ns < 0:
+            dur_ns = 0
+        return NetworkExecutionResult(empty_res_list, dur_ns // 1000000, 0, "network capability denied: " + str(e), False, False, dur_ns)
     except HttpError as e:
-        elapsed_ms: int = t0.elapsed_ms()
-        return NetworkExecutionResult(empty_res_list, elapsed_ms, 0, "http transport error: " + str(e), False, False)
+        dur_ns: int = nox.time.monotonic_ns() - ns0
+        if dur_ns < 0:
+            dur_ns = 0
+        return NetworkExecutionResult(empty_res_list, dur_ns // 1000000, 0, "http transport error: " + str(e), False, False, dur_ns)
     except Exception as e:
-        elapsed_ms: int = t0.elapsed_ms()
-        return NetworkExecutionResult(empty_res_list, elapsed_ms, 0, "unexpected network failure: " + str(e), False, False)
+        dur_ns: int = nox.time.monotonic_ns() - ns0
+        if dur_ns < 0:
+            dur_ns = 0
+        return NetworkExecutionResult(empty_res_list, dur_ns // 1000000, 0, "unexpected network failure: " + str(e), False, False, dur_ns)
 
 def run_network_contract_check(req: HttpRequest, base_url: str, policy: NetworkPolicy, expected_statuses: list[int], required_headers: list[str], expected_content_type: str, body_schema: SchemaDescriptor | None) -> ContractCheckResult:
     exec_res: NetworkExecutionResult = execute_network_request(req, base_url, policy)

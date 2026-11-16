@@ -2,7 +2,7 @@
 
 > **Framework:** Quartz for NOX  
 > **Status:** Production Reference  
-> **Pinned Toolchain:** `nox-lang v2.0.108+`  
+> **Pinned Toolchain:** `nox-lang v2.1.186+`  
 > **Target Package:** `quartz`
 
 Quartz is tested and verified across modern operating systems, hardware architectures, and NOX compiler backends.
@@ -26,30 +26,26 @@ The NOX compiler supports both QBE and LLVM backends. Quartz is carefully archit
 
 | Feature / Subsystem | QBE Backend | LLVM Backend | Quartz Strategy |
 |---|---|---|---|
-| **Concurrency Scheduling** | Cooperative single-threaded fibers | M:N work-stealing multithreading | Quartz load generators avoid blocking `sleep_ms` in critical worker paths and use non-blocking pacing to prevent deadlocks. |
-| **Channel Payloads** | Primitives (`int`, `str`) | Primitives & Structs | Channels use primitive payloads (or serialized message strings) to guarantee clean process exits and prevent destructor memory issues. |
-| **Numeric Arithmetic** | IEEE-754 64-bit float | IEEE-754 64-bit float | Safe integer boundary guard ($2^{53}$) enforced consistently across both backends. |
-| **Monotonic Clocks** | `instant_now()` nanoseconds | `instant_now()` nanoseconds | High-resolution duration measurement verified on both backends. |
+| **Concurrency Scheduling** | Cooperative single-threaded fibers + isolated OS threads (`nox.thread`) | Shared work-stealing M:N scheduler across `spawn`, `TaskGroup`, `nox.thread` (`--release`) | Quartz load generators support both coroutine waves, OS worker waves, and cooperative `TaskGroupRunner` with `nox.tasks.is_cancelled()`. |
+| **Channel Payloads** | Primitives (`int`, `str`) | Primitives & Structs | Channels and shared config cells use primitives or `nox.atomic.AtomicRef` byte snapshots to guarantee portability across both backends. |
+| **Numeric Arithmetic** | IEEE-754 64-bit float + exact `i64` JSON | IEEE-754 64-bit float + exact `i64` JSON | Safe $2^{53}$ guard preserved in `schema_integer()`, while `schema_int64()` leverages `nox.json.as_int()` for exact 64-bit integers. |
+| **Monotonic Clocks** | `instant_now()` & `monotonic_ns()` | `instant_now()` & `monotonic_ns()` | Sub-millisecond (`us` / `ns`) and millisecond latency measurement verified identically on both backends. |
 
 ---
 
 ## 3. Standard Library Module Requirements
 
-Quartz relies strictly on standard library modules bundled with `noxc`:
+Quartz relies strictly on standard library modules bundled with `noxc 2.1.186+`:
 
-- `nox.test`: Underlying test assertions and test runner integration.
-- `nox.time`: High-precision monotonic timestamps (`instant_now()`).
-- `nox.fs`: Atomic file writes, directory creation, artifact persistence.
-- `nox.json`: JSON serialization and deserialization for reports and contracts.
-- `nox.http`: In-process request/response structures and opt-in streaming network requests.
-- `nox.process`: Subprocess execution and watchdog timeout orchestration.
+- **Core Portability (`quartz.nox`):** `nox.test`, `nox.time` (`instant_now`, `monotonic_ns`), `nox.fs` (`write_string_atomic`, `create_dir_all`, `remove_dir_all`), `nox.path` (`safe_join`), `nox.tempfile`, `nox.glob`, `nox.fnmatch`, `nox.mem` (`stats`), `nox.json` (`as_int`, tape parser), `nox.regex`, `nox.crypto` (`blake3`, `sha256`), `nox.http` (`set_http2`, `set_http3`, `client_pool`, `HttpCapabilityError`), `nox.grpc`, `nox.grpc_server`, `nox.protobuf`, `nox.tasks` (`TaskGroup`, `checkpoint`), `nox.atomic` (`AtomicInt`, `AtomicRef`), `nox.property`, `nox.process`.
+- **Opt-In Desktop Accelerators (`accel/`):** `nox.yyjson`, `nox.pcre2`, and `nox.xxhash` (backed by `lib/noxclibs.a`). Kept deliberately separate from `quartz.nox` so core builds remain free of `noxclibs` links on WebAssembly, mobile, or `--deny-capability dynamic_code` targets.
 
 ---
 
 ## 4. Known Compiler Constraints & Design Patterns
 
-1. **Class Generics & Inheritance:** In NOX 2.0.108, generic classes cannot inherit from base classes (`class Box(Base)[T]` is rejected). Quartz uses concrete typed generators (`IntGen`, `StringGen`, etc.) rather than a generic `Gen[T]` base class.
+1. **Class Generics & Inheritance:** Generic classes cannot inherit from base classes (`class Box(Base)[T]` is rejected). Quartz uses concrete typed generators (`IntGen`, `StringGen`, etc.) rather than a generic `Gen[T]` base class.
 2. **Generic Methods:** Class methods cannot introduce their own generic type parameters (`def method[T]`). Quartz uses module-level generic functions or type-erased helper functions.
-3. **Module-Level Imports:** `from ... import` statements must strictly reside at the module top level; nested imports within function bodies raise compilation errors.
-4. **JSON Large Integers:** In `nox.json`, numbers are stored as 64-bit floating point numbers. Numbers exceeding $2^{53}$ ($9,007,199,254,740,992$) lose lower-bit precision. Contract schemas validate integer bounds using explicit guards.
-5. **Path Separators:** Quartz uses forward slashes (`/`) for all internal path handling to ensure cross-platform compatibility between Windows and POSIX systems.
+3. **Module-Level Imports:** Single-line `from ... import ...` statements must strictly reside at the module top level; nested imports and parenthesized multi-line `from` imports raise syntax/compilation errors.
+4. **JSON Large Integers:** In `nox.json`, `as_int()` and `number_text()` preserve full exact 64-bit integers (`> 2^53`). Quartz's `schema_integer()` retains the strict $2^{53}$ guard for JS-compatible JSON contracts, while `schema_int64()` validates exact 64-bit integers.
+5. **Path Separators & Confinement:** Quartz uses forward slashes (`/`) for internal path handling and `nox.path.safe_join()` for snapshots and fuzz corpus directories to prevent path traversal across Windows and POSIX systems.

@@ -1,5 +1,8 @@
 import nox.fs
+import nox.path
+import nox.crypto
 import nox.strings
+from nox.path import PathError
 from core.prng import hash_str_fnv
 from core.report import escape_json
 from fuzz.harness import FuzzOutcome
@@ -18,21 +21,20 @@ def int_to_hex_8(n: int) -> str:
 
 def ensure_dir(path: str) -> None:
     if not nox.fs.exists(path):
-        nox.fs.create_dir(path)
+        nox.fs.create_dir_all(path)
 
 def ensure_path_recursive(full_path: str) -> None:
-    parts: list[str] = nox.strings.split(full_path, "/")
-    current: str = ""
-    i: int = 0
-    while i < len(parts):
-        part: str = parts[i]
-        if len(part) > 0:
-            if len(current) == 0:
-                current = part
-            else:
-                current = current + "/" + part
-            ensure_dir(current)
-        i = i + 1
+    if not nox.fs.exists(full_path):
+        nox.fs.create_dir_all(full_path)
+
+def sanitize_corpus_target(target_name: str) -> str:
+    if len(target_name) == 0 or nox.strings.contains(target_name, "..") or nox.strings.contains(target_name, "/") or nox.strings.contains(target_name, "\\"):
+        raise AssertionError("SecurityError: corpus target name contains invalid path traversal characters: " + target_name)
+    return target_name
+
+def content_digest_id(content: str) -> str:
+    full_hex: str = nox.crypto.blake3(content)
+    return full_hex[0:16]
 
 def sort_strings(xs: list[str]) -> list[str]:
     i: int = 1
@@ -61,38 +63,49 @@ def default_corpus_config() -> CorpusConfig:
 
 class CorpusManager:
     target_name: str
+    root_dir: str
     base_dir: str
     seeds_dir: str
     crashes_dir: str
     timeouts_dir: str
     regressions_dir: str
     config: CorpusConfig
-    seen_signatures: list[str]
+    seen_signatures: set[str]
 
     def __init__(self: CorpusManager, target_name: str, root_dir: str, config: CorpusConfig) -> None:
-        self.target_name = target_name
-        self.base_dir = root_dir + "/" + target_name
+        clean_target: str = sanitize_corpus_target(target_name)
+        self.target_name = clean_target
+        self.root_dir = root_dir
+        self.base_dir = root_dir + "/" + clean_target
         self.seeds_dir = self.base_dir + "/seeds"
         self.crashes_dir = self.base_dir + "/crashes"
         self.timeouts_dir = self.base_dir + "/timeouts"
         self.regressions_dir = self.base_dir + "/regressions"
         self.config = config
-        self.seen_signatures = []
+        self.seen_signatures = set()
 
     def ensure_directories(self: CorpusManager) -> None:
-        ensure_path_recursive(self.seeds_dir)
-        ensure_path_recursive(self.crashes_dir)
-        ensure_path_recursive(self.timeouts_dir)
-        ensure_path_recursive(self.regressions_dir)
+        ensure_dir(self.root_dir)
+        try:
+            confined_base: str = nox.path.safe_join(self.root_dir, self.target_name)
+            ensure_dir(confined_base)
+            self.base_dir = confined_base
+            self.seeds_dir = nox.path.join(confined_base, "seeds")
+            self.crashes_dir = nox.path.join(confined_base, "crashes")
+            self.timeouts_dir = nox.path.join(confined_base, "timeouts")
+            self.regressions_dir = nox.path.join(confined_base, "regressions")
+        except PathError as pe:
+            raise AssertionError("SecurityError: corpus path confinement failed: " + str(pe))
+        ensure_dir(self.seeds_dir)
+        ensure_dir(self.crashes_dir)
+        ensure_dir(self.timeouts_dir)
+        ensure_dir(self.regressions_dir)
 
     def is_new_signature(self: CorpusManager, signature: str) -> bool:
-        i: int = 0
-        while i < len(self.seen_signatures):
-            if self.seen_signatures[i] == signature:
-                return False
-            i = i + 1
-        sigs: list[str] = self.seen_signatures
-        sigs.append(signature)
+        if signature in self.seen_signatures:
+            return False
+        sigs: set[str] = self.seen_signatures
+        sigs.add(signature)
         self.seen_signatures = sigs
         return True
 
@@ -148,8 +161,8 @@ class CorpusManager:
         if self.get_total_seed_bytes() + len(content) > self.config.max_total_bytes:
             return False
         
-        file_id: str = int_to_hex_8(hash_str_fnv(content))
-        path: str = self.seeds_dir + "/seed_" + file_id + ".bin"
+        file_id: str = content_digest_id(content)
+        path: str = nox.path.safe_join(self.seeds_dir, "seed_" + file_id + ".bin")
         if nox.fs.exists(path):
             return False
         
@@ -180,9 +193,10 @@ class CorpusManager:
         if self.get_crash_count() >= self.config.max_files:
             return ""
 
-        file_id: str = int_to_hex_8(hash_str_fnv(input_data))
-        raw_path: str = self.crashes_dir + "/crash_" + file_id + ".bin"
-        json_path: str = self.crashes_dir + "/crash_" + file_id + ".json"
+        full_blake3: str = nox.crypto.blake3(input_data)
+        file_id: str = full_blake3[0:16]
+        raw_path: str = nox.path.safe_join(self.crashes_dir, "crash_" + file_id + ".bin")
+        json_path: str = nox.path.safe_join(self.crashes_dir, "crash_" + file_id + ".json")
 
         # Write raw binary/text payload
         nox.fs.write_string_atomic(raw_path, input_data)
@@ -195,6 +209,7 @@ class CorpusManager:
         json_content = json_content + "  \"target\": \"" + escape_json(self.target_name) + "\",\n"
         json_content = json_content + "  \"status\": \"" + escape_json(outcome.status) + "\",\n"
         json_content = json_content + "  \"signature\": \"" + escape_json(outcome.signature) + "\",\n"
+        json_content = json_content + "  \"content_blake3\": \"" + full_blake3 + "\",\n"
         json_content = json_content + "  \"seed\": " + str(seed) + ",\n"
         json_content = json_content + "  \"case_index\": " + str(case_index) + ",\n"
         json_content = json_content + "  \"duration_ms\": " + str(outcome.duration_ms) + ",\n"

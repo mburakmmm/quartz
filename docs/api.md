@@ -664,6 +664,60 @@ Published as the `quartz` binary via `nox.json` and runnable via `noxc run cli/m
   - `.find_cluster(signature: str) -> CrashCluster | None`
   - `.to_summary_json() -> str`: Emits machine-readable defect clustering report.
 
+---
+
+## 38. NOX 2.1 Core Assertions & Safe Fixtures (`core/assert.nox`, `core/fixture.nox`, `core/snapshot.nox`)
+
+- `assert_matches_regex(pattern: str, text: str, msg: str) -> None`: Regex substring match assertion powered by `nox.regex`.
+- `assert_full_matches_regex(pattern: str, text: str, msg: str) -> None`: Regex full-string match assertion.
+- `assert_not_matches_regex(pattern: str, text: str, msg: str) -> None`: Asserts `text` does not match `pattern`.
+- `assert_eq_dict_str(actual: dict[str, str], expected: dict[str, str], msg: str) -> None`: Order-independent `dict[str, str]` equality.
+- `assert_eq_dict_int(actual: dict[str, int], expected: dict[str, int], msg: str) -> None`: Order-independent `dict[str, int]` equality.
+- `TempDirFixture(prefix: str = "quartz_tmp_")`: Isolated temporary directory (`nox.tempfile.mkdtemp`) with `.resolve(rel_path)` path-traversal confinement (`nox.path.safe_join`) and automatic recursive cleanup (`nox.fs.remove_dir_all`) in `.teardown()` / `__exit__()`.
+- `MemoryGuardFixture(name: str = "mem_guard")`: Captures allocation/free/live deltas via `nox.mem.stats()`.
+- `compare_snapshot(...)`: Upgraded with nested directory creation (`nox.fs.create_dir_all`) and canonical confinement (`nox.path.safe_join`).
+
+---
+
+## 39. Property Interop (`property/nox_interop.nox`) & Hardened Corpus (`fuzz/corpus.nox`)
+
+- `run_nox_property(test_id: str, prop: (Rng) -> bool, runs: int = 100, seed: int = 12345, max_size: int = 100) -> PropertyResult`: Executes `nox.property.check` and wraps pass or `PropertyFailed` seed/size/run into a Quartz `PropertyResult`.
+- `replay_nox_property(prop: (Rng) -> bool, seed: int, size: int) -> bool`: Deterministic replay via `nox.property.replay`.
+- `run_nox_property_in_suite(suite: TestSuite, test_id: str, prop: (Rng) -> bool, ...) -> PropertyResult`: Records `nox.property` results into `TestSuite`.
+- `CorpusManager`: Target names sanitized against traversal, paths confined via `nox.path.safe_join`, O(1) signature deduplication via `set[str]`, and `nox.crypto.blake3` digests stored in seed IDs and crash JSON artifacts (`"content_blake3"`).
+
+---
+
+## 40. Sub-Millisecond Metrics, Memory Deltas & TaskGroup Runner (`load/metrics.nox`, `load/executor.nox`)
+
+- `LoadMetrics.record_result_ns(status: int, duration_ns: int, is_timeout: bool, is_success: bool) -> None`: Records nanosecond latencies via `nox.time.monotonic_ns()`.
+- `LoadMetrics.min_latency_us() -> int`, `max_latency_us() -> int`, `mean_latency_us() -> float`: Sub-millisecond telemetry (emitted in `to_json()`).
+- `MemDelta`, `capture_mem_baseline() -> MemStats`, `compute_mem_delta(baseline: MemStats, current: MemStats) -> MemDelta`.
+- `AtomicConfigSnapshot(initial_config: str)`: Lock-free shared worker configuration cell via `nox.atomic.AtomicRef` (`.publish()`, `.read()`, `.version()`, `.close()`).
+- `TaskGroupRunner(workload: WorkloadConfig, thresholds: list[Threshold], limits: SafetyLimits)` & `async def finish_taskgroup_runner(runner: TaskGroupRunner) -> LoadTestSummary`: Bounded concurrent async execution backed by `nox.tasks.TaskGroup[int]` (`wait_below`, `wait_all`, `cancel_all`) and cooperative cancellation (`nox.tasks.is_cancelled()`).
+
+---
+
+## 41. Modern HTTP Contracts, Exact Int64 Schemas & gRPC Contracts (`contract/schema.nox`, `contract/http_network.nox`, `contract/grpc.nox`)
+
+- `schema_int64(min_val: int = 0, max_val: int = 0, has_min: bool = False, has_max: bool = False) -> SchemaDescriptor`: Validates exact 64-bit integers (`> 2^53`) using `nox.json.as_int()` while `schema_integer()` retains strict JS-safe $2^{53}$ validation by default.
+- `schema_string_pattern(pattern: str, min_len: int = -1, max_len: int = -1) -> SchemaDescriptor`: Validates strings against `nox.regex` patterns.
+- `NetworkPolicy`: Added `enable_http2`, `enable_http3`, `pool_max_idle`, `pool_idle_timeout_ms`; catches `HttpCapabilityError` explicitly.
+- **`contract/grpc.nox`**:
+  - Status constants: `GRPC_OK`, `GRPC_INVALID_ARGUMENT`, `GRPC_DEADLINE_EXCEEDED`, `GRPC_NOT_FOUND`, `GRPC_PERMISSION_DENIED`, `GRPC_UNIMPLEMENTED`, `GRPC_INTERNAL`, `GRPC_UNAVAILABLE`, `GRPC_UNAUTHENTICATED`.
+  - `GrpcContractCase(...)`, `GrpcCheckResult`.
+  - `execute_grpc_inprocess(methods: list[Method], ctxs: list[CtxMethod], case: GrpcContractCase) -> GrpcCheckResult`: Deterministic zero-socket gRPC contract runner capturing protobuf messages (`nox.protobuf`), metadata headers/trailers, and status codes.
+  - `execute_grpc_network(host: str, port: int, policy: NetworkPolicy, case: GrpcContractCase, use_tls: bool = False, ca_file: str = "", cert_file: str = "", key_file: str = "") -> GrpcCheckResult`: Policy-gated HTTP/2 or mTLS gRPC execution via `nox.grpc`.
+
+---
+
+## 42. Opt-In Desktop Accelerators (`accel/json_fast.nox`, `accel/pcre2_assert.nox`, `accel/xxhash_digest.nox`)
+
+- `accel/json_fast.nox`: `yyjson_is_supported()`, `parse_fast_json()`, `parse_relaxed_json()` (comments/trailing commas), `parse_json5()`, `validate_yyjson_schema()`.
+- `accel/pcre2_assert.nox`: `pcre2_is_supported()`, `pcre2_jit_supported()`, `compile_pcre2_pattern()`, `assert_pcre2_matches()`, `assert_pcre2_full_match()`, `assert_pcre2_named_group()`.
+- `accel/xxhash_digest.nox`: `xxhash_is_supported()`, `fingerprint_xxh3_64()`, `fingerprint_xxh3_128_hex()`, `FastCorpusIndex`.
+
+
 
 
 

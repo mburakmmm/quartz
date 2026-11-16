@@ -1,0 +1,42 @@
+# Quartz Desktop Accelerator — PCRE2 + JIT Regex Assertions & Contract Matching
+# Opt-in desktop module (uses `noxclibs.a` and `dynamic_code` JIT capability).
+
+import nox.pcre2
+from nox.pcre2 import Pcre2, Match, Pcre2Error
+
+def pcre2_is_supported() -> bool:
+    return nox.pcre2.is_supported()
+
+def pcre2_jit_supported() -> bool:
+    return nox.pcre2.jit_supported()
+
+def compile_pcre2_pattern(pattern: str, flags: int = 0, jit: bool = True) -> Pcre2:
+    return nox.pcre2.compile(pattern, flags, jit)
+
+def assert_pcre2_matches(pattern: str, text: str, msg: str, flags: int = 0) -> Match:
+    try:
+        m: Match | None = nox.pcre2.search(pattern, text, flags)
+        if m is None:
+            raise AssertionError(msg + ": expected \"" + text + "\" to match PCRE2 pattern \"" + pattern + "\"")
+        return m
+    except Pcre2Error as pe:
+        raise AssertionError(msg + ": invalid PCRE2 pattern \"" + pattern + "\": " + str(pe))
+
+def assert_pcre2_full_match(compiled: Pcre2, text: str, msg: str) -> Match:
+    try:
+        m: Match | None = compiled.full_match(text)
+        if m is None:
+            raise AssertionError(msg + ": expected \"" + text + "\" to fully match PCRE2 pattern \"" + compiled.pattern + "\"")
+        return m
+    except Pcre2Error as pe:
+        raise AssertionError(msg + ": PCRE2 match error: " + str(pe))
+
+def assert_pcre2_named_group(compiled: Pcre2, text: str, group_name: str, expected: str, msg: str) -> None:
+    m: Match = assert_pcre2_full_match(compiled, text, msg)
+    actual: str = ""
+    try:
+        actual = m.named(group_name)
+    except Exception as e:
+        raise AssertionError(msg + ": missing named capture group '" + group_name + "': " + str(e))
+    if actual != expected:
+        raise AssertionError(msg + ": named group '" + group_name + "' expected \"" + expected + "\", got \"" + actual + "\"")

@@ -1,6 +1,8 @@
 # Quartz Contract — Schema Descriptor & Validator
 import nox.json
-from nox.json import JsonValue
+import nox.regex
+from nox.json import JsonValue, JsonError
+from nox.regex import RegexError
 
 SCHEMA_NULL: str = "null"
 SCHEMA_BOOLEAN: str = "boolean"
@@ -31,6 +33,10 @@ class SchemaDescriptor:
     max_val: float
     has_min_val: bool
     has_max_val: bool
+    min_i64: int
+    max_i64: int
+    allow_i64: bool
+    pattern: str
     min_len: int
     max_len: int
     is_strict: bool
@@ -45,6 +51,10 @@ class SchemaDescriptor:
         self.max_val = 0.0
         self.has_min_val = False
         self.has_max_val = False
+        self.min_i64 = 0
+        self.max_i64 = 0
+        self.allow_i64 = False
+        self.pattern = ""
         self.min_len = -1
         self.max_len = -1
         self.is_strict = True
@@ -53,6 +63,13 @@ def schema_string(min_len: int = -1, max_len: int = -1) -> SchemaDescriptor:
     s: SchemaDescriptor = SchemaDescriptor(SCHEMA_STRING)
     s.min_len = min_len
     s.max_len = max_len
+    return s
+
+def schema_string_pattern(pattern: str, min_len: int = -1, max_len: int = -1) -> SchemaDescriptor:
+    s: SchemaDescriptor = SchemaDescriptor(SCHEMA_STRING)
+    s.min_len = min_len
+    s.max_len = max_len
+    s.pattern = pattern
     return s
 
 def schema_enum(enum_vals: list[str]) -> SchemaDescriptor:
@@ -66,6 +83,15 @@ def schema_integer(min_val: int = 0, max_val: int = 0, has_min: bool = False, ha
     s.has_max_val = has_max
     s.min_val = min_val * 1.0
     s.max_val = max_val * 1.0
+    return s
+
+def schema_int64(min_val: int = 0, max_val: int = 0, has_min: bool = False, has_max: bool = False) -> SchemaDescriptor:
+    s: SchemaDescriptor = SchemaDescriptor(SCHEMA_INTEGER)
+    s.allow_i64 = True
+    s.has_min_val = has_min
+    s.has_max_val = has_max
+    s.min_i64 = min_val
+    s.max_i64 = max_val
     return s
 
 def schema_number(min_val: float = 0.0, max_val: float = 0.0, has_min: bool = False, has_max: bool = False) -> SchemaDescriptor:
@@ -159,6 +185,12 @@ def validate_schema(schema: SchemaDescriptor, val: JsonValue, path: str) -> list
                 ei = ei + 1
             if not found_enum:
                 errors.append(path + ": value '" + s_val + "' is not in allowed enum set")
+        if len(schema.pattern) > 0:
+            try:
+                if len(nox.regex.find_matches(schema.pattern, s_val)) == 0:
+                    errors.append(path + ": string '" + s_val + "' does not match pattern '" + schema.pattern + "'")
+            except RegexError as re_err:
+                errors.append(path + ": invalid regex pattern '" + schema.pattern + "': " + str(re_err))
         return errors
 
     # 4. Number check
@@ -177,6 +209,16 @@ def validate_schema(schema: SchemaDescriptor, val: JsonValue, path: str) -> list
     if schema.type_name == SCHEMA_INTEGER:
         if not nox.json.is_number(val):
             errors.append(path + ": expected integer")
+            return errors
+        if schema.allow_i64:
+            try:
+                exact_i64: int = nox.json.as_int(val)
+                if schema.has_min_val and exact_i64 < schema.min_i64:
+                    errors.append(path + ": int64 " + str(exact_i64) + " is less than minimum " + str(schema.min_i64))
+                if schema.has_max_val and exact_i64 > schema.max_i64:
+                    errors.append(path + ": int64 " + str(exact_i64) + " exceeds maximum " + str(schema.max_i64))
+            except JsonError as je:
+                errors.append(path + ": invalid exact 64-bit integer (" + str(je) + ")")
             return errors
         n_val: float = nox.json.as_number(val)
         int_cast: int = int(n_val)

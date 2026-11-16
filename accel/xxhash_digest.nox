@@ -1,0 +1,33 @@
+# Quartz Desktop Accelerator — Fast XXH3/XXH64 Corpus Fingerprinting
+# Opt-in desktop module (uses `noxclibs.a`; non-cryptographic deduplication).
+
+import nox.xxhash
+
+def xxhash_is_supported() -> bool:
+    return nox.xxhash.is_supported()
+
+def fingerprint_xxh3_64(data: str, seed: int = 0) -> int:
+    return nox.xxhash.xxh3_64(data, seed)
+
+def fingerprint_xxh3_128_hex(data: str, seed: int = 0) -> str:
+    return nox.xxhash.xxh3_128_hex(data, seed)
+
+class FastCorpusIndex:
+    seen_hashes: set[str]
+    seed: int
+
+    def __init__(self: FastCorpusIndex, seed: int = 0) -> None:
+        self.seen_hashes = set()
+        self.seed = seed
+
+    def insert_if_new(self: FastCorpusIndex, payload: str) -> bool:
+        digest: str = nox.xxhash.xxh3_128_hex(payload, self.seed)
+        if digest in self.seen_hashes:
+            return False
+        s: set[str] = self.seen_hashes
+        s.add(digest)
+        self.seen_hashes = s
+        return True
+
+    def count(self: FastCorpusIndex) -> int:
+        return len(self.seen_hashes)

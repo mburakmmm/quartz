@@ -1,0 +1,255 @@
+# Quartz Contract — gRPC & Protobuf Contract Testing Engine
+# Supports in-process deterministic handler contract verification (`nox.grpc_server`)
+# and policy-gated loopback/authorized network gRPC execution (`nox.grpc`), with
+# protobuf wire-format helpers (`nox.protobuf`).
+
+import nox.grpc
+import nox.grpc_server
+import nox.protobuf
+import nox.http
+import nox.time
+import nox.strings
+from nox.grpc import GrpcError, GrpcStatusError, Client, Response
+from nox.grpc_server import Method, CtxMethod, Call, frame, parse_messages
+from nox.http import HttpRequest, HttpResponse
+from contract.http_network import NetworkPolicy, validate_network_target, ParsedUrl
+
+# Standard gRPC status codes (https://grpc.github.io/grpc/core/md_doc_statuscodes.html)
+GRPC_OK: int = 0
+GRPC_CANCELLED: int = 1
+GRPC_UNKNOWN: int = 2
+GRPC_INVALID_ARGUMENT: int = 3
+GRPC_DEADLINE_EXCEEDED: int = 4
+GRPC_NOT_FOUND: int = 5
+GRPC_ALREADY_EXISTS: int = 6
+GRPC_PERMISSION_DENIED: int = 7
+GRPC_RESOURCE_EXHAUSTED: int = 8
+GRPC_FAILED_PRECONDITION: int = 9
+GRPC_ABORTED: int = 10
+GRPC_OUT_OF_RANGE: int = 11
+GRPC_UNIMPLEMENTED: int = 12
+GRPC_INTERNAL: int = 13
+GRPC_UNAVAILABLE: int = 14
+GRPC_DATA_LOSS: int = 15
+GRPC_UNAUTHENTICATED: int = 16
+
+class GrpcContractCase:
+    name: str
+    method_path: str
+    request_messages: list[str]
+    request_metadata: dict[str, str]
+    expected_statuses: list[int]
+    required_headers: list[str]
+    timeout_ms: int
+
+    def __init__(self: GrpcContractCase, name: str, method_path: str, request_messages: list[str], expected_statuses: list[int], request_metadata: dict[str, str] | None = None, required_headers: list[str] | None = None, timeout_ms: int = 2000) -> None:
+        self.name = name
+        self.method_path = method_path
+        self.request_messages = request_messages
+        if request_metadata is None:
+            self.request_metadata = {}
+        else:
+            self.request_metadata = request_metadata
+        self.expected_statuses = expected_statuses
+        if required_headers is None:
+            self.required_headers = []
+        else:
+            self.required_headers = required_headers
+        self.timeout_ms = timeout_ms
+
+class GrpcCheckResult:
+    is_valid: bool
+    grpc_status: int
+    grpc_message: str
+    response_messages: list[str]
+    response_headers: dict[str, str]
+    errors: list[str]
+    duration_us: int
+
+    def __init__(self: GrpcCheckResult, is_valid: bool, grpc_status: int, grpc_message: str, response_messages: list[str], response_headers: dict[str, str], errors: list[str], duration_us: int) -> None:
+        self.is_valid = is_valid
+        self.grpc_status = grpc_status
+        self.grpc_message = grpc_message
+        self.response_messages = response_messages
+        self.response_headers = response_headers
+        self.errors = errors
+        self.duration_us = duration_us
+
+    def error_summary(self: GrpcCheckResult) -> str:
+        return nox.strings.join(self.errors, "; ")
+
+def _status_in_list(code: int, allowed: list[int]) -> bool:
+    i: int = 0
+    while i < len(allowed):
+        if allowed[i] == code:
+            return True
+        i = i + 1
+    return False
+
+def _lower_header_lookup(headers: dict[str, str], key: str) -> str:
+    lk: str = nox.strings.lower(key)
+    for hk in headers:
+        if nox.strings.lower(hk) == lk:
+            return headers[hk]
+    return ""
+
+def _has_header_ci(headers: dict[str, str], key: str) -> bool:
+    lk: str = nox.strings.lower(key)
+    for hk in headers:
+        if nox.strings.lower(hk) == lk:
+            return True
+    return False
+
+def validate_grpc_outcome(case: GrpcContractCase, grpc_status: int, grpc_message: str, response_messages: list[str], response_headers: dict[str, str], duration_us: int, extra_errors: list[str]) -> GrpcCheckResult:
+    errors: list[str] = []
+    ei: int = 0
+    while ei < len(extra_errors):
+        errors.append(extra_errors[ei])
+        ei = ei + 1
+
+    if len(case.expected_statuses) > 0 and (not _status_in_list(grpc_status, case.expected_statuses)):
+        errors.append("gRPC status " + str(grpc_status) + " (" + grpc_message + ") not in expected statuses")
+
+    hi: int = 0
+    while hi < len(case.required_headers):
+        req_h: str = case.required_headers[hi]
+        if not _has_header_ci(response_headers, req_h):
+            errors.append("missing required gRPC header/trailer '" + nox.strings.lower(req_h) + "'")
+        hi = hi + 1
+
+    is_valid: bool = (len(errors) == 0)
+    return GrpcCheckResult(is_valid, grpc_status, grpc_message, response_messages, response_headers, errors, duration_us)
+
+def _build_inprocess_grpc_request(case: GrpcContractCase) -> HttpRequest:
+    hdrs: dict[str, str] = {}
+    for k in case.request_metadata:
+        hdrs[nox.strings.lower(k)] = case.request_metadata[k]
+    hdrs["content-type"] = "application/grpc"
+    if case.timeout_ms > 0 and (not ("grpc-timeout" in hdrs)):
+        hdrs["grpc-timeout"] = str(case.timeout_ms) + "m"
+
+    framed_body: str = ""
+    i: int = 0
+    while i < len(case.request_messages):
+        framed_body = framed_body + frame(case.request_messages[i])
+        i = i + 1
+    return HttpRequest("POST", case.method_path, framed_body, hdrs)
+
+def execute_grpc_inprocess(methods: list[Method], ctxs: list[CtxMethod], case: GrpcContractCase) -> GrpcCheckResult:
+    req: HttpRequest = _build_inprocess_grpc_request(case)
+    ns0: int = nox.time.monotonic_ns()
+    grpc_status: int = GRPC_OK
+    grpc_msg: str = ""
+    resp_msgs: list[str] = []
+    resp_hdrs: dict[str, str] = {}
+    extra_errs: list[str] = []
+
+    matched: bool = False
+    path: str = case.method_path
+    q: int = nox.strings.index_of(path, "?")
+    if q >= 0:
+        path = path[0:q]
+
+    ci: int = 0
+    while ci < len(ctxs):
+        if ctxs[ci].path == path:
+            matched = True
+            call: Call = Call(req)
+            try:
+                parsed_reqs: list[str] = parse_messages(req.body)
+                resp_msgs = ctxs[ci].handler(call, parsed_reqs)
+                if call.expired():
+                    grpc_status = GRPC_DEADLINE_EXCEEDED
+                    grpc_msg = "deadline exceeded"
+            except GrpcStatusError as ge:
+                grpc_status = ge.code
+                grpc_msg = ge.detail
+            except Exception as ex:
+                grpc_status = GRPC_INTERNAL
+                grpc_msg = str(ex)
+            for hk in call.out_headers:
+                resp_hdrs[nox.strings.lower(hk)] = call.out_headers[hk]
+            for tk in call.out_trailers:
+                resp_hdrs[nox.strings.lower(tk)] = call.out_trailers[tk]
+            break
+        ci = ci + 1
+
+    if not matched:
+        mi: int = 0
+        while mi < len(methods):
+            if methods[mi].path == path:
+                matched = True
+                try:
+                    parsed_reqs2: list[str] = parse_messages(req.body)
+                    resp_msgs = methods[mi].handler(parsed_reqs2)
+                except GrpcStatusError as ge2:
+                    grpc_status = ge2.code
+                    grpc_msg = ge2.detail
+                except Exception as ex2:
+                    grpc_status = GRPC_INTERNAL
+                    grpc_msg = str(ex2)
+                break
+            mi = mi + 1
+
+    if not matched:
+        grpc_status = GRPC_UNIMPLEMENTED
+        grpc_msg = "unknown method " + path
+
+    dur_ns: int = nox.time.monotonic_ns() - ns0
+    if dur_ns < 0:
+        dur_ns = 0
+    resp_hdrs["content-type"] = "application/grpc"
+    resp_hdrs["grpc-status"] = str(grpc_status)
+    if len(grpc_msg) > 0:
+        resp_hdrs["grpc-message"] = grpc_msg
+
+    return validate_grpc_outcome(case, grpc_status, grpc_msg, resp_msgs, resp_hdrs, dur_ns // 1000, extra_errs)
+
+def execute_grpc_network(host: str, port: int, policy: NetworkPolicy, case: GrpcContractCase, use_tls: bool = False, ca_file: str = "", cert_file: str = "", key_file: str = "") -> GrpcCheckResult:
+    scheme: str = "https://" if use_tls else "http://"
+    target_url: str = scheme + host + ":" + str(port) + case.method_path
+    _parsed: ParsedUrl = validate_network_target(target_url, policy)
+
+    ns0: int = nox.time.monotonic_ns()
+    grpc_status: int = GRPC_UNAVAILABLE
+    grpc_msg: str = ""
+    resp_msgs: list[str] = []
+    resp_hdrs: dict[str, str] = {}
+    extra_errs: list[str] = []
+
+    client: Client | None = None
+    try:
+        c_conn: Client = nox.grpc.connect_tls(host, port, ca_file, cert_file, key_file) if use_tls else nox.grpc.connect(host, port)
+        client = c_conn
+
+        eff_timeout: int = case.timeout_ms
+        if policy.timeout_ms > 0 and (eff_timeout <= 0 or policy.timeout_ms < eff_timeout):
+            eff_timeout = policy.timeout_ms
+
+        res: Response = c_conn.call_with(case.method_path, case.request_messages, case.request_metadata, eff_timeout)
+        grpc_status = res.status
+        grpc_msg = res.message
+        resp_msgs = res.messages
+
+        hi: int = 0
+        while hi < len(case.required_headers):
+            rk: str = nox.strings.lower(case.required_headers[hi])
+            rv: str = res.header(rk)
+            if len(rv) > 0:
+                resp_hdrs[rk] = rv
+            hi = hi + 1
+        resp_hdrs["grpc-status"] = str(grpc_status)
+        if len(grpc_msg) > 0:
+            resp_hdrs["grpc-message"] = grpc_msg
+    except GrpcError as ge:
+        extra_errs.append("gRPC transport failure: " + str(ge))
+    except Exception as ex:
+        extra_errs.append("unexpected gRPC failure: " + str(ex))
+    finally:
+        if client is not None:
+            client.close()
+
+    dur_ns: int = nox.time.monotonic_ns() - ns0
+    if dur_ns < 0:
+        dur_ns = 0
+    return validate_grpc_outcome(case, grpc_status, grpc_msg, resp_msgs, resp_hdrs, dur_ns // 1000, extra_errs)
