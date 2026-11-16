@@ -93,7 +93,9 @@ def test_closed_workload_execution() -> None:
     assert_eq_int(summary.metrics.completed, 30, "30 cases completed")
     assert_eq_int(summary.metrics.successful, 30, "30 cases successful")
     assert_eq_int(summary.metrics.failed, 0, "0 cases failed")
-    assert_true(summary.metrics.peak_concurrency >= 2, "closed workload with 3 VUs measures peak_concurrency >= 2")
+    assert_eq_int(summary.metrics.peak_active_vus, 3, "closed workload with 3 VUs tracks peak_active_vus == 3")
+    assert_eq_int(summary.metrics.peak_concurrency, 1, "sequential coroutine stepping honestly reports peak_concurrency == 1")
+    assert_eq_int(summary.metrics.peak_overlapping_executions, 1, "sequential coroutine callbacks have overlap == 1")
 
 def test_parallel_os_thread_workload() -> None:
     limits: SafetyLimits = default_safety_limits()
@@ -111,11 +113,14 @@ def test_parallel_os_thread_workload() -> None:
     invoked_count: int = callback_invocations.load()
     callback_invocations.free()
 
-    assert_true(summary.all_passed, "parallel OS-thread workload passed thresholds")
+    assert_true(summary.all_passed, "workload passed thresholds")
     assert_eq_int(invoked_count, 12, "real user task_func callback invoked 12 times")
-    assert_eq_int(summary.metrics.completed, 12, "12 parallel tasks completed")
-    assert_eq_int(summary.metrics.successful, 12, "12 parallel tasks succeeded")
-    assert_true(summary.metrics.peak_concurrency >= 2, "parallel OS threads measured active peak_concurrency >= 2")
+    assert_eq_int(summary.metrics.completed, 12, "12 tasks completed")
+    assert_eq_int(summary.metrics.successful, 12, "12 tasks succeeded")
+    assert_eq_int(summary.metrics.peak_active_vus, 4, "4 active VU coroutines scheduled in wave")
+    assert_eq_int(summary.metrics.peak_concurrency, 1, "single-thread coroutine callback stepping does not inflate peak_concurrency")
+    assert_contains_str(summary.to_json(), "\"peak_active_vus\":", "JSON summary includes peak_active_vus")
+    assert_contains_str(summary.to_json(), "\"peak_overlapping_executions\":", "JSON summary includes peak_overlapping_executions")
     assert_contains_str(summary.to_json(), "\"peak_concurrency\":", "JSON summary includes peak_concurrency")
 
     # Verify failing callback in run_parallel_thread_workload propagates real failures
@@ -219,11 +224,13 @@ def test_network_load_concurrent_http_server() -> None:
     try:
         assert_eq_int(net_summary.metrics.completed, 8, "8 real HTTP network requests completed across 4 VUs")
         assert_eq_int(net_summary.metrics.successful, 8, "8 real HTTP network requests returned 200 OK")
-        assert_true(net_summary.metrics.peak_concurrency >= 2, "client metrics recorded >= 2 concurrent in-flight HTTP requests")
+        assert_eq_int(net_summary.metrics.peak_active_vus, 4, "4 active network VUs scheduled per wave")
+        assert_true(net_summary.metrics.peak_concurrency >= 2, "OS-thread workers recorded >= 2 concurrent in-flight HTTP requests")
+        assert_true(net_summary.metrics.peak_overlapping_executions >= 2, "real [start_ns, end_ns] execution intervals overlapped >= 2 concurrently")
         assert_true(observed_srv_peak >= 1, "HTTP test server directly observed requests in-flight")
         assert_true(net_summary.metrics.p50() >= 15, "individual request latencies accurately recorded in histogram (p50 >= 15ms)")
     except AssertionError as e:
-        print("[FAIL DETAIL] net_summary: completed=" + str(net_summary.metrics.completed) + " succ=" + str(net_summary.metrics.successful) + " client_peak=" + str(net_summary.metrics.peak_concurrency) + " srv_peak=" + str(observed_srv_peak) + " p50=" + str(net_summary.metrics.p50()))
+        print("[FAIL DETAIL] net_summary: completed=" + str(net_summary.metrics.completed) + " succ=" + str(net_summary.metrics.successful) + " client_peak=" + str(net_summary.metrics.peak_concurrency) + " overlap=" + str(net_summary.metrics.peak_overlapping_executions) + " srv_peak=" + str(observed_srv_peak) + " p50=" + str(net_summary.metrics.p50()))
         raise e
 
 async def _concurrent_cb_channel_worker(vu_id: int, act_h: int, pk_h: int, sync_ch: Channel[int], release_ch: Channel[int], done_ch: Channel[int]) -> None:
@@ -443,7 +450,8 @@ async def test_concurrent_scheduler() -> None:
     assert_eq_int(conc_summary.metrics.completed, 16, "16 concurrent tasks completed")
     assert_eq_int(conc_summary.metrics.failed, 2, "cases 6 and 13 failed as determined by real callback")
     assert_eq_int(observed_peak, 4, "user callback directly observed 4 active VU fibers in-flight during execution")
-    assert_eq_int(conc_summary.metrics.peak_concurrency, 4, "all 4 VU fibers active concurrently in-flight")
+    assert_eq_int(conc_summary.metrics.peak_active_vus, 4, "all 4 VU fibers active concurrently in-flight")
+    assert_eq_int(conc_summary.metrics.peak_concurrency, 1, "synchronous coroutine callbacks honestly report overlap == 1")
 
     # Test run_handler_load_test executing real HTTP handler with 4 active VU fibers in-flight
     wl_http: WorkloadConfig = closed_workload("concurrent_fiber_http", 4, 2, 12)
@@ -451,7 +459,8 @@ async def test_concurrent_scheduler() -> None:
     http_summary: LoadTestSummary = run_handler_load_test(wl_http, mock_http_api, req_ok, [], limits)
     assert_eq_int(http_summary.metrics.completed, 12, "12 concurrent HTTP handler requests completed")
     assert_eq_int(http_summary.metrics.successful, 12, "12 concurrent HTTP 200 responses")
-    assert_eq_int(http_summary.metrics.peak_concurrency, 4, "4 concurrent HTTP handler VUs active in-flight")
+    assert_eq_int(http_summary.metrics.peak_active_vus, 4, "4 active HTTP handler VUs scheduled per wave")
+    assert_eq_int(http_summary.metrics.peak_concurrency, 1, "synchronous handler callbacks honestly report overlap == 1")
 
     req_404: HttpRequest = build_request("GET", "/missing", "", empty_headers())
     http_404_summary: LoadTestSummary = run_handler_load_test(wl_http, mock_http_api, req_404, [], limits)

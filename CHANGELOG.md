@@ -3,6 +3,30 @@
 All notable changes to the Quartz test framework will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.20] - 2026-11-16 - Pre-1.0 Audit Remediation: SSRF URL Safety, Honest Load Overlap, Sub-ms Percentiles, Live CLI Targets & Loopback gRPC E2E
+
+### Security & Networking
+- **SSRF-Safe URL Authorization (`contract/http_network.nox`, `tests/contract_http_test.nox`)**:
+  - Replaced manual authority string-slicing in `parse_url()` with `nox.url.parse()`.
+  - Strictly rejects `userinfo` / `@` authorities (preventing bypasses such as `http://localhost:123@remote.example/`), invalid/non-numeric ports, out-of-range ports (`<= 0` or `> 65535`), backslashes, control characters, and malformed hosts.
+  - Added `NetworkPolicy.allow_redirects` (disabled by default) and `validate_redirect_target()` enforcing same-policy origin validation on redirect locations.
+
+### Fixed & Improved
+- **Honest Concurrency Metrics & Overlap Verification (`load/executor.nox`, `load/metrics.nox`, `load/thresholds.nox`, `tests/load_scheduler_test.nox`)**:
+  - Separated scheduled Virtual User wave count (`peak_active_vus`) from genuinely overlapping execution concurrency (`peak_concurrency` and `peak_overlapping_executions`, computed via exact half-open `[start_ns, end_ns)` interval overlap sweeps).
+  - Synchronous coroutine `.send()` loops no longer inflate `peak_concurrency` to wave size, while parallel OS-thread workers in `run_network_load_test` and async workers in `TaskGroupRunner` record per-execution `[start_ns, end_ns]` intervals and verify `peak_overlapping_executions >= 2`.
+- **Sub-Millisecond Microsecond Histogram & Exact Per-Task Completion Timing (`load/metrics.nox`, `load/executor.nox`, `tests/load_metrics_test.nox`, `tests/nox_2_1_features_test.nox`)**:
+  - Added bounded 336-bucket microsecond HDR-style histogram (`20us` resolution for `0..999us`) and `percentile_us()` / `p50_us()` / `p90_us()` / `p95_us()` / `p99_us()` (emitted in `LoadMetrics.to_json()` and supported in `Threshold`), separating sub-ms values such as `200us` vs `900us`.
+  - Upgraded `TaskGroupRunner` with `alloc_timing_slot()`, `start_handle()`, `end_handle()`, `mark_exec_start()`, and `mark_exec_end()`, plus single-snapshot drain capture in `finish_taskgroup_runner()`, eliminating sequential await-loop queue bias from task durations.
+- **User-Target CLI Execution (`cli/main.nox`)**:
+  - Wired `quartz property`, `quartz fuzz`, `quartz contract`, and `quartz load` to support user targets and configurations via `--target <file.nox>`, `--config <cfg.json>`, `--spec <openapi.json> --base-url <url>`, and `--url <url> --allow-network` (failing closed when network access is not explicitly authorized).
+- **Live Loopback HTTP/2 gRPC End-to-End Test (`tests/grpc_contract_test.nox`)**:
+  - Added end-to-end loopback `h2c` HTTP/2 gRPC server tests verifying `execute_grpc_network()` across protobuf payloads, request metadata, response headers, response trailers (`x-trace-id`), negative status codes (`UNAUTHENTICATED`, `UNIMPLEMENTED`), and missing TLS CA rejection.
+- **Release Pipeline, Documentation & Adapter Parity (`nox.json`, `.github/workflows/`, `README.md`, `docs/architecture.md`, `tests/doc_examples_test.nox`, `tests/framework_native_test.nox`)**:
+  - Declared `"source": "nox"` in `nox.json` and `--source nox` with full metadata in `.github/workflows/publish.yml`; removed silent `|| echo` failure masking.
+  - Added clean consumer `noxc fetch` + `noxc check` + `noxc run` verification step in `.github/workflows/ci.yml`.
+  - Fixed stale histogram counts, `PropertyConfig` keyword parameters, and `noxc 2.0.108` notes in `README.md` / `docs/architecture.md`; added compile-verified README showcase checks in `tests/doc_examples_test.nox` and expanded adapter negative/edge assertions in `tests/framework_native_test.nox`.
+
 ## [0.9.19] - 2026-11-16 - NOX 2.1.x Integration: Sub-ms Precision, Native gRPC Contracts, Path Confinement, TaskGroup & Desktop Accelerators
 
 ### Added

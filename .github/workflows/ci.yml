@@ -129,6 +129,7 @@ jobs:
           noxc run cli/main.nox -- property --cases 10
           noxc run cli/main.nox -- load --requests 10
           noxc run cli/main.nox -- contract
+          noxc run cli/main.nox -- property --target tests/property_test.nox
           noxc run cli/main.nox -- test tests/baseline_test.nox
           noxc run cli/main.nox -- test tests --pattern "*baseline*"
           noxc run cli/main.nox -- test fixtures/tag_demo.nox --tag smoke
@@ -136,3 +137,52 @@ jobs:
           noxc run cli/main.nox -- test fixtures --tag smoke
           noxc run cli/main.nox -- replay fixtures/custom_replay_artifact.json
           noxc sbom
+
+      - name: Verify Clean Consumer Package Consumption (POSIX)
+        if: runner.os != 'Windows'
+        run: |
+          TMP_CONS=$(mktemp -d)
+          cat > "$TMP_CONS/nox.json" <<EOF
+          {"name": "consumer_smoke", "entry": "main.nox", "requires": [{"alias": "quartz", "repo": "${{ github.workspace }}", "ref": "${{ github.sha }}"}]}
+          EOF
+          cat > "$TMP_CONS/main.nox" <<'EOF'
+          from quartz.core.assert import assert_eq_int, assert_matches_regex
+          from quartz.core.prng import Prng
+          from quartz.core.types import STATUS_PASS
+          from quartz.core.fixture import TempDirFixture
+          from quartz.contract.types import ContractCheckResult
+
+          assert_eq_int(2 + 2, 4, "consumer assert")
+          assert_matches_regex("^PASS$", STATUS_PASS, "consumer regex")
+          rng: Prng = Prng(42)
+          v: int = rng.next_range(1, 100)
+          assert_eq_int(v >= 1 and v <= 100, True, "consumer prng")
+          print("clean consumer smoke: PASS")
+          EOF
+          (cd "$TMP_CONS" && noxc fetch && noxc check main.nox && noxc run main.nox)
+          rm -rf "$TMP_CONS"
+
+      - name: Verify Clean Consumer Package Consumption (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tmp = Join-Path $env:RUNNER_TEMP ("quartz_consumer_" + [System.Guid]::NewGuid().ToString("N").Substring(0,8))
+          New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+          $repoPath = "${{ github.workspace }}" -replace '\\','/'
+          $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+          $noxJson = "{`"name`": `"consumer_smoke`", `"entry`": `"main.nox`", `"requires`": [{ `"alias`": `"quartz`", `"repo`": `"$repoPath`", `"ref`": `"${{ github.sha }}`" }]}"
+          [System.IO.File]::WriteAllText((Join-Path $tmp "nox.json"), $noxJson, $utf8NoBom)
+          $mainNox = "from quartz.core.assert import assert_eq_int, assert_matches_regex`nfrom quartz.core.prng import Prng`nfrom quartz.core.types import STATUS_PASS`nassert_eq_int(2 + 2, 4, `"consumer assert`")`nassert_matches_regex(`"^PASS$`", STATUS_PASS, `"consumer regex`")`nrng: Prng = Prng(42)`nv: int = rng.next_range(1, 100)`nassert_eq_int(v >= 1 and v <= 100, True, `"consumer prng`")`nprint(`"clean consumer smoke: PASS`")`n"
+          [System.IO.File]::WriteAllText((Join-Path $tmp "main.nox"), $mainNox, $utf8NoBom)
+          Push-Location $tmp
+          try {
+            noxc fetch
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            noxc check main.nox
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            noxc run main.nox
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } finally {
+            Pop-Location
+            Remove-Item -Recurse -Force $tmp
+          }

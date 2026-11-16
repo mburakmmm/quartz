@@ -2,8 +2,13 @@
 import nox.protobuf
 import nox.grpc
 import nox.grpc_server
+import nox.http
+import nox.thread
+import nox.time
 from nox.grpc import GrpcStatusError
-from nox.grpc_server import Method, CtxMethod, Call
+from nox.grpc_server import Method, StreamMethod, CtxMethod, Call
+from nox.http import HttpRequest, HttpResponse
+from nox.thread import ThreadHandle
 from core.assert import assert_true, assert_false, assert_eq_int, assert_eq_str, assert_contains_str
 from contract.grpc import GrpcContractCase, GrpcCheckResult, execute_grpc_inprocess, execute_grpc_network, GRPC_OK, GRPC_INVALID_ARGUMENT, GRPC_UNIMPLEMENTED, GRPC_UNAUTHENTICATED
 from contract.http_network import NetworkPolicy, default_network_policy, loopback_network_policy, NetworkNotAllowedError, UnauthorizedTargetError
@@ -113,6 +118,79 @@ def test_grpc_network_safety_gate() -> None:
         blocked_remote = True
     assert_true(blocked_remote, "loopback policy blocks unauthorized remote gRPC target")
 
+    # Missing TLS CA bundle must fail cleanly via GrpcCheckResult error list
+    bad_tls_res: GrpcCheckResult = execute_grpc_network("127.0.0.1", 50051, loopback_network_policy(500), case_net, True, "/nonexistent/quartz_missing_ca.pem")
+    assert_false(bad_tls_res.is_valid, "TLS with missing CA fails contract check")
+    assert_true(len(bad_tls_res.errors) > 0, "TLS failure captures gRPC transport error")
+
+def _loopback_grpc_srv_handler(req: HttpRequest) -> HttpResponse:
+    if req.target == "/exit":
+        return HttpResponse(200, "", {})
+    methods: list[Method] = [Method("/users.UserService/GetUser", _handle_get_user)]
+    ctxs: list[CtxMethod] = [CtxMethod("/auth.AuthService/Verify", _handle_auth_ctx)]
+    streams: list[StreamMethod] = []
+    return nox.grpc_server.dispatch_full(methods, streams, ctxs, req, False)
+
+async def _loopback_grpc_srv_worker(fd_s: str) -> int:
+    fd: int = int(fd_s)
+    nox.http.serve_fd(fd, _loopback_grpc_srv_handler)
+    return 0
+
+def test_loopback_http2_grpc_end_to_end() -> None:
+    nox.http.set_http2(True)
+    port: int = 19189
+    fd: int = nox.http.listen(port)
+    _srv_th: ThreadHandle[int] = nox.thread.start(_loopback_grpc_srv_worker, str(fd))
+    nox.time.sleep_ms(60)
+
+    policy: NetworkPolicy = loopback_network_policy(2000)
+
+    try:
+        # 1. Live loopback h2c unary protobuf contract
+        payload: str = _make_user_req_proto(77, "staff")
+        case_ok: GrpcContractCase = GrpcContractCase("live_get_user_ok", "/users.UserService/GetUser", [payload], [GRPC_OK])
+        res_ok: GrpcCheckResult = execute_grpc_network("127.0.0.1", port, policy, case_ok)
+        assert_true(res_ok.is_valid, "live HTTP/2 gRPC GetUser passes: " + res_ok.error_summary())
+        assert_eq_int(res_ok.grpc_status, GRPC_OK, "live gRPC OK status")
+        assert_eq_int(len(res_ok.response_messages), 1, "live gRPC returned 1 protobuf payload")
+
+        rd: nox.protobuf.Reader = nox.protobuf.reader_from_str(res_ok.response_messages[0])
+        got_uid: int = 0
+        got_role: str = ""
+        while rd.next_field():
+            if rd.field == 1:
+                got_uid = rd.read_varint()
+            elif rd.field == 2:
+                got_role = rd.read_string()
+            else:
+                rd.skip()
+        assert_eq_int(got_uid, 77, "live decoded protobuf uid == 77")
+        assert_eq_str(got_role, "ok:staff", "live decoded protobuf role == ok:staff")
+
+        # 2. Live loopback headers, trailers & metadata verification over HTTP/2
+        meta: dict[str, str] = {"X-Request-Token": "quartz-valid-token"}
+        case_ctx: GrpcContractCase = GrpcContractCase("live_auth_verify", "/auth.AuthService/Verify", ["ping"], [GRPC_OK], meta, ["X-Server-Version", "X-Trace-Id"])
+        res_ctx: GrpcCheckResult = execute_grpc_network("127.0.0.1", port, policy, case_ctx)
+        assert_true(res_ctx.is_valid, "live gRPC metadata/headers/trailers pass: " + res_ctx.error_summary())
+        assert_eq_str(res_ctx.response_headers["x-server-version"], "2.1.186", "live HTTP/2 response header preserved")
+        assert_eq_str(res_ctx.response_headers["x-trace-id"], "trace-999", "live HTTP/2 response trailer preserved")
+
+        # 3. Live negative UNAUTHENTICATED + UNIMPLEMENTED over HTTP/2
+        case_unauth: GrpcContractCase = GrpcContractCase("live_unauth", "/auth.AuthService/Verify", ["ping"], [GRPC_UNAUTHENTICATED])
+        res_unauth: GrpcCheckResult = execute_grpc_network("127.0.0.1", port, policy, case_unauth)
+        assert_true(res_unauth.is_valid, "live UNAUTHENTICATED status verified")
+
+        case_unimpl: GrpcContractCase = GrpcContractCase("live_unimpl", "/missing.Svc/Nope", ["x"], [GRPC_UNIMPLEMENTED])
+        res_unimpl: GrpcCheckResult = execute_grpc_network("127.0.0.1", port, policy, case_unimpl)
+        assert_true(res_unimpl.is_valid, "live UNIMPLEMENTED status verified")
+    finally:
+        nox.http.shutdown()
+        try:
+            nox.http.request("GET", "http://127.0.0.1:" + str(port) + "/exit", "", {}, 100)
+        except Exception as wake_e:
+            pass
+
 test_inprocess_unary_grpc_contract()
 test_grpc_network_safety_gate()
+test_loopback_http2_grpc_end_to_end()
 print("quartz grpc contract test: ALL PASS")

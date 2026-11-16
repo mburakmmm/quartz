@@ -11,6 +11,74 @@ from core.report import escape_json
 HISTOGRAM_NUM_BUCKETS: int = 246
 HISTOGRAM_OVERFLOW_INDEX: int = 245
 
+US_HISTOGRAM_NUM_BUCKETS: int = 336
+US_HISTOGRAM_OVERFLOW_INDEX: int = 335
+
+def get_us_bucket_index(latency_us: int) -> int:
+    if latency_us <= 0:
+        return 0
+    if latency_us < 1000:
+        # 0 - 999 us: 20 us resolution (50 buckets: 0..49)
+        return latency_us // 20
+    if latency_us < 10000:
+        # 1,000 - 9,999 us: 200 us resolution (45 buckets: 50..94)
+        return 50 + (latency_us - 1000) // 200
+    if latency_us < 100000:
+        # 10,000 - 99,999 us (10 - 99.9 ms): 2,000 us resolution (45 buckets: 95..139)
+        return 95 + (latency_us - 10000) // 2000
+    if latency_us < 1000000:
+        # 100,000 - 999,999 us (100 - 999.9 ms): 20,000 us resolution (45 buckets: 140..184)
+        return 140 + (latency_us - 100000) // 20000
+    if latency_us < 5000000:
+        # 1,000,000 - 4,999,999 us (1 - 4.999 s): 100,000 us resolution (40 buckets: 185..224)
+        return 185 + (latency_us - 1000000) // 100000
+    if latency_us < 60000000:
+        # 5,000,000 - 59,999,999 us (5 - 59.999 s): 500,000 us resolution (110 buckets: 225..334)
+        return 225 + (latency_us - 5000000) // 500000
+    return US_HISTOGRAM_OVERFLOW_INDEX
+
+def get_us_bucket_midpoint(idx: int) -> int:
+    if idx <= 0:
+        return 10
+    if idx < 50:
+        return idx * 20 + 10
+    if idx < 95:
+        return 1000 + (idx - 50) * 200 + 100
+    if idx < 140:
+        return 10000 + (idx - 95) * 2000 + 1000
+    if idx < 185:
+        return 100000 + (idx - 140) * 20000 + 10000
+    if idx < 225:
+        return 1000000 + (idx - 185) * 100000 + 50000
+    if idx < 335:
+        return 5000000 + (idx - 225) * 500000 + 250000
+    return 60000000
+
+def compute_interval_overlap_peak(starts_ns: list[int], ends_ns: list[int]) -> int:
+    n: int = len(starts_ns)
+    if len(ends_ns) < n:
+        n = len(ends_ns)
+    if n <= 0:
+        return 0
+    best: int = 1
+    i: int = 0
+    while i < n:
+        t: int = starts_ns[i]
+        active_at_t: int = 0
+        j: int = 0
+        while j < n:
+            sj: int = starts_ns[j]
+            ej: int = ends_ns[j]
+            if ej <= sj:
+                ej = sj + 1
+            if sj <= t and t < ej:
+                active_at_t = active_at_t + 1
+            j = j + 1
+        if active_at_t > best:
+            best = active_at_t
+        i = i + 1
+    return best
+
 def get_bucket_index(latency_ms: int) -> int:
     if latency_ms <= 0:
         return 0
@@ -57,7 +125,10 @@ class LoadMetrics:
     max_latency_ns: int
     sum_latency_ns: int
     peak_concurrency: int
+    peak_active_vus: int
+    peak_overlapping_executions: int
     buckets: list[int]
+    us_buckets: list[int]
 
     def __init__(self: LoadMetrics) -> None:
         self.scheduled = 0
@@ -74,14 +145,24 @@ class LoadMetrics:
         self.max_latency_ns = 0
         self.sum_latency_ns = 0
         self.peak_concurrency = 0
+        self.peak_active_vus = 0
+        self.peak_overlapping_executions = 0
 
-        # Initialize 246 buckets to 0
+        # Initialize 246 ms buckets to 0
         b: list[int] = []
         i: int = 0
         while i < HISTOGRAM_NUM_BUCKETS:
             b.append(0)
             i = i + 1
         self.buckets = b
+
+        # Initialize 336 microsecond HDR-style buckets to 0
+        ub: list[int] = []
+        ui: int = 0
+        while ui < US_HISTOGRAM_NUM_BUCKETS:
+            ub.append(0)
+            ui = ui + 1
+        self.us_buckets = ub
 
     def record_scheduled(self: LoadMetrics) -> None:
         self.scheduled = self.scheduled + 1
@@ -92,6 +173,16 @@ class LoadMetrics:
     def record_concurrency(self: LoadMetrics, active_count: int) -> None:
         if active_count > self.peak_concurrency:
             self.peak_concurrency = active_count
+
+    def record_active_vus(self: LoadMetrics, active_vu_count: int) -> None:
+        if active_vu_count > self.peak_active_vus:
+            self.peak_active_vus = active_vu_count
+
+    def record_execution_spans(self: LoadMetrics, starts_ns: list[int], ends_ns: list[int]) -> int:
+        ov: int = compute_interval_overlap_peak(starts_ns, ends_ns)
+        if ov > self.peak_overlapping_executions:
+            self.peak_overlapping_executions = ov
+        return ov
 
     def _record_internal(self: LoadMetrics, status: int, duration_ms: int, duration_ns: int, is_timeout: bool, is_success: bool) -> None:
         self.completed = self.completed + 1
@@ -118,11 +209,16 @@ class LoadMetrics:
         if duration_ns > self.max_latency_ns:
             self.max_latency_ns = duration_ns
 
-        # Record into bounded histogram bucket
+        # Record into bounded ms and us histograms
         b_idx: int = get_bucket_index(duration_ms)
         self.buckets[b_idx] = self.buckets[b_idx] + 1
         if b_idx == HISTOGRAM_OVERFLOW_INDEX:
             self.overflow_count = self.overflow_count + 1
+        dur_us: int = duration_ns // 1000
+        if dur_us < 0:
+            dur_us = 0
+        us_idx: int = get_us_bucket_index(dur_us)
+        self.us_buckets[us_idx] = self.us_buckets[us_idx] + 1
 
     def record_result(self: LoadMetrics, status: int, duration_ms: int, is_timeout: bool, is_success: bool) -> None:
         ns_est: int = duration_ms * 1000000
@@ -172,6 +268,39 @@ class LoadMetrics:
 
     def p99(self: LoadMetrics) -> int:
         return self.percentile(99.0)
+
+    def percentile_us(self: LoadMetrics, p: float) -> int:
+        if self.successful <= 0:
+            return 0
+        p_x100: int = int(p * 100.0 + 0.5)
+        target_count: int = (self.successful * p_x100 + 9999) // 10000
+        if target_count < 1:
+            target_count = 1
+        if target_count > self.successful:
+            target_count = self.successful
+
+        accum: int = 0
+        idx: int = 0
+        while idx < US_HISTOGRAM_NUM_BUCKETS:
+            accum = accum + self.us_buckets[idx]
+            if accum >= target_count:
+                if idx == US_HISTOGRAM_OVERFLOW_INDEX and self.max_latency_us() > 60000000:
+                    return self.max_latency_us()
+                return get_us_bucket_midpoint(idx)
+            idx = idx + 1
+        return self.max_latency_us()
+
+    def p50_us(self: LoadMetrics) -> int:
+        return self.percentile_us(50.0)
+
+    def p90_us(self: LoadMetrics) -> int:
+        return self.percentile_us(90.0)
+
+    def p95_us(self: LoadMetrics) -> int:
+        return self.percentile_us(95.0)
+
+    def p99_us(self: LoadMetrics) -> int:
+        return self.percentile_us(99.0)
 
     def mean_latency_ms(self: LoadMetrics) -> float:
         if self.successful <= 0:
@@ -232,9 +361,15 @@ class LoadMetrics:
         s = s + "\"p90_latency_ms\": " + str(self.p90()) + ", "
         s = s + "\"p95_latency_ms\": " + str(self.p95()) + ", "
         s = s + "\"p99_latency_ms\": " + str(self.p99()) + ", "
+        s = s + "\"p50_latency_us\": " + str(self.p50_us()) + ", "
+        s = s + "\"p90_latency_us\": " + str(self.p90_us()) + ", "
+        s = s + "\"p95_latency_us\": " + str(self.p95_us()) + ", "
+        s = s + "\"p99_latency_us\": " + str(self.p99_us()) + ", "
         s = s + "\"throughput_rps\": " + str(self.throughput_rps(total_duration_ms)) + ", "
         s = s + "\"error_rate\": " + str(self.error_rate()) + ", "
         s = s + "\"unfulfilled_rate\": " + str(self.unfulfilled_rate()) + ", "
+        s = s + "\"peak_active_vus\": " + str(self.peak_active_vus) + ", "
+        s = s + "\"peak_overlapping_executions\": " + str(self.peak_overlapping_executions) + ", "
         s = s + "\"peak_concurrency\": " + str(self.peak_concurrency)
         s = s + "}"
         return s

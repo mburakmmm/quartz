@@ -1,8 +1,8 @@
 # Quartz Architecture & Technical Decision Records (ADRs)
 
-> **Toolchain:** `noxc 2.0.108`  
-> **Environment:** Windows x86_64 (Tested for ecosystem cross-platform compatibility)  
-> **Date:** 2026-11-02  
+> **Toolchain:** `noxc 2.1.186` (initially prototyped on `noxc 2.0.108`)  
+> **Environment:** Linux x64/arm64, macOS arm64, Windows x86_64 (Dual QBE & LLVM backends)  
+> **Updated:** 2026-11-16  
 
 ---
 
@@ -97,8 +97,8 @@ Quartz is designed as a standalone, zero-dependency testing framework for the NO
 - **Decision:** `minimize_crash` iteratively reduces payload chunks using delta-debugging while asserting that every candidate candidate continues to produce the exact failure signature / error message of the original crash.
 
 ### ADR-008: Bounded Latency Histograms and Zero-Allocation Quantiles
-- **Context:** Recording individual latency floats for millions of requests causes unbounded memory growth and GC pressure. Capping at 5,000ms distorts percentiles for slow endpoints.
-- **Decision:** Implement a fixed 246-bucket monotonic latency histogram covering up to 60,000ms with 500ms intervals above 5,000ms. Quantile computations (p50, p90, p95, p99) run in $O(1)$ memory with mathematical interpolation.
+- **Context:** Recording individual latency floats for millions of requests causes unbounded memory growth and GC pressure. Capping at 5,000ms distorts percentiles for slow endpoints, and millisecond buckets alone coarsen sub-millisecond measurements (e.g., 200 µs vs 900 µs).
+- **Decision:** Implement bounded monotonic latency histograms: a 246-bucket millisecond histogram covering up to 60,000ms (with nearest-rank ceiling quantiles) alongside a 336-bucket microsecond HDR-style histogram starting at 20µs resolution (`0..999 us`) up to 60s (`p50_us`, `p90_us`, `p95_us`, `p99_us`), running in $O(1)$ bounded memory.
 
 ### ADR-009: Decoupled Framework Adapters (Nyx & Aether)
 - **Context:** NOX ecosystem frameworks like Nyx and Aether offer routing and middleware paradigms. Direct dependencies on these frameworks in Quartz Core would create circular dependencies or bloat.

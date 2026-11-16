@@ -2,8 +2,10 @@
 import nox.http
 import nox.strings
 import nox.time
+import nox.url
 from nox.http import HttpRequest, HttpResponse, HttpError, HttpTimeoutError, HttpCapabilityError, stream
 from nox.time import Instant
+from nox.url import URL, UrlError
 from contract.types import ContractCheckResult
 from contract.schema import SchemaDescriptor
 from contract.compare import validate_response
@@ -26,8 +28,9 @@ class NetworkPolicy:
     enable_http3: bool
     pool_max_idle: int
     pool_idle_timeout_ms: int
+    allow_redirects: bool
 
-    def __init__(self: NetworkPolicy, allow_network: bool = False, authorized_target: str = "", timeout_ms: int = 2000, max_body_bytes: int = 1048576, enable_http2: bool = False, enable_http3: bool = False, pool_max_idle: int = 0, pool_idle_timeout_ms: int = 90000) -> None:
+    def __init__(self: NetworkPolicy, allow_network: bool = False, authorized_target: str = "", timeout_ms: int = 2000, max_body_bytes: int = 1048576, enable_http2: bool = False, enable_http3: bool = False, pool_max_idle: int = 0, pool_idle_timeout_ms: int = 90000, allow_redirects: bool = False) -> None:
         self.allow_network = allow_network
         self.authorized_target = authorized_target
         self.timeout_ms = timeout_ms
@@ -36,6 +39,7 @@ class NetworkPolicy:
         self.enable_http3 = enable_http3
         self.pool_max_idle = pool_max_idle
         self.pool_idle_timeout_ms = pool_idle_timeout_ms
+        self.allow_redirects = allow_redirects
 
 def apply_network_transport_options(policy: NetworkPolicy) -> None:
     if policy.enable_http2:
@@ -71,57 +75,64 @@ class ParsedUrl:
         self.path = path
         self.origin = origin
 
+def _extract_raw_authority(url: str) -> str:
+    sep: int = nox.strings.index_of(url, "://")
+    if sep < 0:
+        return ""
+    rest: str = url[sep + 3:len(url)]
+    cut: int = len(rest)
+    slash: int = nox.strings.index_of(rest, "/")
+    if slash >= 0 and slash < cut:
+        cut = slash
+    q: int = nox.strings.index_of(rest, "?")
+    if q >= 0 and q < cut:
+        cut = q
+    h: int = nox.strings.index_of(rest, "#")
+    if h >= 0 and h < cut:
+        cut = h
+    return rest[0:cut]
+
 def parse_url(url: str) -> ParsedUrl:
-    scheme: str = ""
-    rest: str = url
-    if nox.strings.starts_with(url, "http://"):
-        scheme = "http"
-        rest = url[7:len(url)]
-    elif nox.strings.starts_with(url, "https://"):
-        scheme = "https"
-        rest = url[8:len(url)]
-    else:
+    if len(url) == 0:
+        raise NetworkSafetyError("empty URL rejected")
+    if nox.strings.contains(url, "\r") or nox.strings.contains(url, "\n"):
+        raise NetworkSafetyError("control character rejected in URL")
+
+    raw_auth: str = _extract_raw_authority(url)
+    if nox.strings.contains(raw_auth, "@"):
+        raise NetworkSafetyError("userinfo / '@' authority rejected (SSRF protection): " + url)
+    if nox.strings.contains(raw_auth, "\\"):
+        raise NetworkSafetyError("backslash rejected in URL authority: " + url)
+
+    parsed: URL = URL("", "", "", 0, "/", {}, "")
+    try:
+        parsed = nox.url.parse(url)
+    except UrlError as ue:
+        raise NetworkSafetyError("invalid URL: " + str(ue))
+    except Exception as ex:
+        raise NetworkSafetyError("failed to parse URL: " + str(ex))
+
+    scheme: str = nox.strings.lower(parsed.scheme)
+    if scheme != "http" and scheme != "https":
         raise NetworkSafetyError("invalid URL scheme (must be http:// or https://): " + url)
 
-    # Split host and path
-    host_port: str = ""
-    path: str = "/"
-    slash_idx: int = nox.strings.index_of(rest, "/")
-    if slash_idx >= 0:
-        host_port = rest[0:slash_idx]
-        path = rest[slash_idx:len(rest)]
-    else:
-        host_port = rest
+    if len(parsed.userinfo) > 0:
+        raise NetworkSafetyError("userinfo rejected in URL (SSRF protection): " + url)
 
-    host: str = host_port
-    port: int = 80
-    if scheme == "https":
-        port = 443
+    host: str = nox.strings.lower(nox.strings.trim(parsed.host))
+    if len(host) == 0:
+        raise NetworkSafetyError("empty URL host rejected: " + url)
+    if host != parsed.host and nox.strings.lower(parsed.host) != host:
+        raise NetworkSafetyError("whitespace rejected in URL host: " + url)
+    if nox.strings.contains(host, " ") or nox.strings.contains(host, "\t") or nox.strings.contains(host, "\\") or nox.strings.contains(host, "@"):
+        raise NetworkSafetyError("unsafe characters in URL host: " + url)
 
-    # Check for port in host_port
-    # Handle IPv6 bracketed address e.g. [::1]:8080
-    if nox.strings.starts_with(host_port, "["):
-        close_bracket: int = nox.strings.index_of(host_port, "]")
-        if close_bracket >= 0:
-            host = host_port[0:close_bracket + 1]
-            if len(host_port) > close_bracket + 1 and host_port[close_bracket + 1:close_bracket + 2] == ":":
-                p_str: str = host_port[close_bracket + 2:len(host_port)]
-                try:
-                    port = int(p_str)
-                except Exception as e:
-                    pass
-    else:
-        colon_idx: int = nox.strings.index_of(host_port, ":")
-        if colon_idx >= 0:
-            host = host_port[0:colon_idx]
-            p_str: str = host_port[colon_idx + 1:len(host_port)]
-            try:
-                port = int(p_str)
-            except Exception as e:
-                pass
+    port: int = parsed.port
+    if port <= 0 or port > 65535:
+        raise NetworkSafetyError("port out of range 1..65535: " + str(port))
 
     origin: str = scheme + "://" + host + ":" + str(port)
-    return ParsedUrl(scheme, host, port, path, origin)
+    return ParsedUrl(scheme, host, port, parsed.path, origin)
 
 def is_loopback_host(host: str) -> bool:
     h: str = nox.strings.lower(host)
@@ -148,6 +159,20 @@ def validate_network_target(url: str, policy: NetworkPolicy) -> ParsedUrl:
         raise UnauthorizedTargetError("target origin '" + parsed.origin + "' does not match authorized origin '" + auth_parsed.origin + "'")
 
     return parsed
+
+def validate_redirect_target(current_url: str, location: str, policy: NetworkPolicy) -> ParsedUrl:
+    if not policy.allow_redirects:
+        raise UnauthorizedTargetError("HTTP redirect blocked by policy (redirects disabled by default): " + location)
+    loc: str = nox.strings.trim(location)
+    if len(loc) == 0:
+        raise NetworkSafetyError("empty redirect Location header")
+    if nox.strings.starts_with(loc, "//"):
+        cur: ParsedUrl = parse_url(current_url)
+        return validate_network_target(cur.scheme + ":" + loc, policy)
+    if nox.strings.starts_with(loc, "/"):
+        cur2: ParsedUrl = parse_url(current_url)
+        return validate_network_target(cur2.origin + loc, policy)
+    return validate_network_target(loc, policy)
 
 class NetworkExecutionResult:
     responses: list[HttpResponse]

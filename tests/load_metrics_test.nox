@@ -1,6 +1,6 @@
 # Quartz Load — Metrics & Histogram Test Suite
 from core.assert import assert_true, assert_false, assert_eq_int, assert_eq_float, assert_contains_str
-from load.metrics import LoadMetrics, get_bucket_index, get_bucket_midpoint
+from load.metrics import LoadMetrics, get_bucket_index, get_bucket_midpoint, get_us_bucket_index, get_us_bucket_midpoint, compute_interval_overlap_peak
 from load.thresholds import Threshold, ThresholdResult, evaluate_threshold, evaluate_all_thresholds, all_thresholds_passed
 
 def test_histogram_bucketing() -> None:
@@ -230,6 +230,42 @@ def test_small_sample_nearest_rank_percentiles() -> None:
     assert_eq_int(m1.p50(), m1.p95(), "single sample p50 equals p95")
     assert_eq_int(m1.p95(), m1.p99(), "single sample p95 equals p99")
 
+def test_subms_microsecond_histogram_and_interval_overlap() -> None:
+    # 1. Verify sub-millisecond bucket separation (200us vs 900us)
+    b200: int = get_us_bucket_index(200)
+    b900: int = get_us_bucket_index(900)
+    assert_true(b200 < b900, "200us and 900us fall into distinct sub-ms buckets")
+    assert_eq_int(b200, 10, "200us lands in 20us bucket 10")
+    assert_eq_int(b900, 45, "900us lands in 20us bucket 45")
+
+    m: LoadMetrics = LoadMetrics()
+    # 50 requests at 200us (200,000 ns) and 50 requests at 900us (900,000 ns)
+    i: int = 0
+    while i < 50:
+        m.record_scheduled()
+        m.record_result_ns(200, 200000, False, True)
+        i = i + 1
+    j: int = 0
+    while j < 50:
+        m.record_scheduled()
+        m.record_result_ns(200, 900000, False, True)
+        j = j + 1
+
+    assert_true(m.p50_us() >= 190 and m.p50_us() <= 230, "p50_us accurately resolves ~210us instead of coarsening to ms")
+    assert_true(m.p95_us() >= 890 and m.p95_us() <= 930, "p95_us accurately resolves ~910us")
+    assert_true(m.p50_us() < m.p95_us(), "sub-ms p50_us strictly smaller than p95_us")
+    assert_contains_str(m.to_json(100), "\"p50_latency_us\":", "JSON exports sub-ms p50_latency_us")
+
+    # 2. Verify interval overlap math
+    # Sequential half-open intervals [100,200), [200,300), [300,400) -> overlap = 1
+    assert_eq_int(compute_interval_overlap_peak([100, 200, 300], [200, 300, 400]), 1, "sequential intervals have overlap peak 1")
+    # Overlapping intervals [100,500), [150,400), [200,600) -> overlap = 3
+    assert_eq_int(compute_interval_overlap_peak([100, 150, 200], [500, 400, 600]), 3, "concurrent overlapping intervals compute exact peak 3")
+
+    t_us: Threshold = Threshold("p95_latency_us", "<=", 950.0)
+    res_us: ThresholdResult = evaluate_threshold(t_us, m, 100)
+    assert_true(res_us.passed, "p95_latency_us <= 950us passes")
+
 def run_all_load_metrics_tests() -> None:
     test_histogram_bucketing()
     test_percentile_calculations_and_monotonicity()
@@ -238,6 +274,7 @@ def run_all_load_metrics_tests() -> None:
     test_exact_error_rate_calculation()
     test_reference_distribution_percentiles()
     test_small_sample_nearest_rank_percentiles()
+    test_subms_microsecond_histogram_and_interval_overlap()
     print("quartz load metrics test: ALL PASS")
 
 run_all_load_metrics_tests()

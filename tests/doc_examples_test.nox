@@ -25,6 +25,7 @@ from contract.websocket import validate_ws_handshake_request, validate_ws_handsh
 from core.types import RunSummary, TestResult, STATUS_PASS
 from core.report_html import format_html_test_report, format_html_load_report
 from property.suite import PropertySuite
+from property.replay import PropertyRegistry, save_failure_artifact
 from property.combinators import OneOfIntGen, WeightedStringOption, WeightedChoiceStringGen, FilteredIntGen
 from core.prng import Prng
 from load.stages import LoadStage, StagedWorkloadConfig, StagedLoadSummary, run_staged_task_workload
@@ -338,6 +339,35 @@ def test_recipe_18_feather_adapter() -> None:
 
     assert_true(verify_transaction_rollback(repo, aborted_transfer, True), "recipe 18 transaction rollback")
 
+def test_readme_property_and_load_showcases() -> None:
+    # Mirrors README.md Property & Load showcase syntax directly to prevent doc/API drift
+    gen: IntGen = IntGen(0, 500, with_boundaries=True)
+    cfg: PropertyConfig = PropertyConfig(cases=100, max_discard_ratio=5, seed=9999, timeout_ms=5000)
+
+    def invariant_under_150(x: int) -> bool:
+        return x < 150
+
+    result: PropertyResult = run_int_property("bounded_check", cfg, gen, invariant_under_150)
+    assert_false(result.is_passed(), "README showcase detects violation >= 150")
+
+    reg: PropertyRegistry = PropertyRegistry()
+    reg.register_int("bounded_check", gen, invariant_under_150)
+    assert_true(reg.replay_result(result), "README PropertyRegistry replay_result reproduces exact counterexample")
+
+    wl: WorkloadConfig = closed_workload("api_benchmark", virtual_users=4, duration_seconds=5, max_iterations=100)
+    limits: SafetyLimits = default_safety_limits()
+    thresholds: list[Threshold] = [
+        Threshold("p95_latency_ms", "<=", 250.0),
+        Threshold("error_rate", "<=", 0.0)
+    ]
+    def ok_handler(r: HttpRequest) -> HttpResponse:
+        return HttpResponse(200, "ok", {})
+
+    summary: LoadTestSummary = run_handler_load_test(wl, ok_handler, build_request("GET", "/", "", empty_headers()), thresholds, limits)
+    assert_true(summary.all_passed, "README Load showcase passes")
+    assert_eq_int(summary.metrics.peak_active_vus, 4, "README Load tracks peak_active_vus")
+    assert_true(summary.metrics.p95_us() >= 0, "README Load exposes sub-ms p95_us")
+
 def run_all_doc_examples_tests() -> None:
     test_recipe_1_unit_and_fixtures()
     test_recipe_2_property_and_shrinking()
@@ -357,6 +387,7 @@ def run_all_doc_examples_tests() -> None:
     test_recipe_16_sequence_fuzzing()
     test_recipe_17_atlas_adapter()
     test_recipe_18_feather_adapter()
+    test_readme_property_and_load_showcases()
     print("quartz doc examples test: ALL PASS")
 
 run_all_doc_examples_tests()

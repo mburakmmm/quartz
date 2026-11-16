@@ -20,7 +20,7 @@ from load.metrics import LoadMetrics, MemDelta, capture_mem_baseline, compute_me
 from load.workload import WorkloadConfig, closed_workload
 from load.safety import SafetyLimits, default_safety_limits
 from load.thresholds import Threshold
-from load.executor import AtomicConfigSnapshot, TaskGroupRunner, finish_taskgroup_runner, LoadTestSummary
+from load.executor import AtomicConfigSnapshot, TaskGroupRunner, finish_taskgroup_runner, LoadTestSummary, mark_exec_start, mark_exec_end
 from contract.schema import SchemaDescriptor, PropertyRule, schema_object, schema_int64, schema_string_pattern, validate_schema
 from contract.http_network import NetworkPolicy, loopback_network_policy, default_network_policy
 
@@ -142,14 +142,19 @@ def test_subms_metrics_and_mem_delta() -> None:
     assert_eq_str(snap.read(), "{\"rps\": 250}", "AtomicRef updated read")
     snap.close()
 
-async def _tg_ok_task(idx: int) -> int:
-    ns0: int = nox.time.monotonic_ns()
+async def _tg_ok_task(idx: int, start_h: int, end_h: int) -> int:
+    mark_exec_start(start_h)
     acc: int = 0
     i: int = 0
     while i < 200:
         acc = acc + i
         i = i + 1
-    _d: int = nox.time.monotonic_ns() - ns0
+    if idx == 0:
+        # Hold slot 0 across a brief sleep so subsequent tasks finish before task 0
+        t_hold: nox.time.Instant = nox.time.instant_now()
+        while t_hold.elapsed_ms() < 25:
+            nox.time.sleep_ms(1)
+    mark_exec_end(end_h)
     return 1 if acc >= 0 else 0
 
 async def _tg_fail_task(idx: int) -> int:
@@ -161,14 +166,16 @@ async def test_taskgroup_runner() -> None:
     runner: TaskGroupRunner = TaskGroupRunner(wl, [Threshold("error_rate", "<=", 0.0)], limits)
     i: int = 0
     while runner.can_schedule():
-        runner.submit(spawn _tg_ok_task(i))
+        sl: int = runner.alloc_timing_slot()
+        runner.submit(spawn _tg_ok_task(i, runner.start_handle(sl), runner.end_handle(sl)))
         i = i + 1
     t_fin1: Task[LoadTestSummary] = spawn finish_taskgroup_runner(runner)
     summary: LoadTestSummary = await t_fin1
     assert_eq_int(summary.metrics.completed, 12, "TaskGroupRunner completed 12 tasks")
     assert_eq_int(summary.metrics.successful, 12, "all 12 tasks succeeded")
     assert_true(summary.all_passed, "TaskGroupRunner thresholds passed")
-    assert_true(summary.metrics.max_latency_us() >= 0, "TaskGroupRunner tracked sub-ms latency")
+    assert_true(summary.metrics.max_latency_ms >= 20, "TaskGroupRunner captured task 0 ~25ms max duration")
+    assert_true(summary.metrics.min_latency_ms <= 10, "Fast tasks retain real sub-10ms min duration unaffected by slow sibling")
 
     # Circuit breaker failure test
     wl_fail: WorkloadConfig = closed_workload("tg_fail", 2, 2, 6)

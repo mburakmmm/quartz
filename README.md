@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://github.com/mburakmmm/quartz/actions/workflows/ci.yml"><img src="https://github.com/mburakmmm/quartz/actions/workflows/ci.yml/badge.svg" alt="CI Status" /></a>
-  <a href="https://github.com/mburakmmm/quartz/releases/latest"><img src="https://img.shields.io/badge/release-v0.9.19-0969da.svg" alt="Latest Release" /></a>
+  <a href="https://github.com/mburakmmm/quartz/releases/latest"><img src="https://img.shields.io/badge/release-v0.9.20-0969da.svg" alt="Latest Release" /></a>
   <a href="https://github.com/mburakmmm/nox-lang"><img src="https://img.shields.io/badge/nox--lang-v2.1.186+-8250df.svg" alt="NOX Language" /></a>
   <a href="https://github.com/mburakmmm/quartz/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-success.svg" alt="License: MIT" /></a>
   <img src="https://img.shields.io/badge/platforms-Linux%20|%20macOS%20|%20Windows-2ea44f.svg" alt="Multi-Platform Support" />
@@ -24,7 +24,7 @@ Designed to scale from unit assertions to mission-critical infrastructure verifi
 - **Quartz Property** — Composable typed generators, explicit-state 64-bit Knuth LCG determinism, automated delta-debugging shrinking to minimal counterexamples, full-artifact deterministic replay, and `nox.property` interoperability (`property.nox_interop`).
 - **Quartz Fuzz** — Byte and structure-aware mutations, BLAKE3-indexed corpus management with `set[str]` $O(1)$ deduplication, crash signature clustering, stateful sequence fuzzing with transition rules, and System-Under-Test (SUT) state models.
 - **Quartz Contract** — Zero-overhead in-process HTTP & **native gRPC/Protobuf** (`contract.grpc`) handler contracts, HTTP/2 & connection pooling transport options, exact `schema_int64` ($> 2^{53}$) & regex pattern constraints, OpenAPI 3 subset validation, WHATWG SSE, RFC 6455 WebSockets, and offline HTTP Mock record & playback.
-- **Quartz Load** — Safe bounded concurrent load testing (`ConcurrentWaveScope` & `TaskGroupRunner`), reference-counted atomic lifetime safety (`AtomicInt` / `AtomicRef`), nanosecond sub-ms precision metrics (`monotonic_ns`), `nox.mem.stats` allocation telemetry, closed VU and open rate pacing, 246-bucket latency histograms (nearest-rank p50, p90, p95, p99), and safety circuit breakers.
+- **Quartz Load** — Safe bounded concurrent load testing (`ConcurrentWaveScope` & `TaskGroupRunner`), reference-counted atomic lifetime safety (`AtomicInt` / `AtomicRef`), nanosecond sub-ms precision metrics (`monotonic_ns`), `nox.mem.stats` allocation telemetry, honest `peak_active_vus` vs overlapping-span `peak_concurrency`, closed VU and open rate pacing, 336-bucket microsecond HDR-style + 246-bucket ms latency histograms (nearest-rank p50, p90, p95, p99), and safety circuit breakers.
 - **Opt-In Desktop Accelerators (`accel/`)** — Isolated C-backed high-throughput adapters for `nox.yyjson` (relaxed JSON/JSON5 schema validation), `nox.pcre2` (PCRE2 + JIT named-group regex matching), and `nox.xxhash` (XXH3-64 / XXH3-128 corpus indexing) without adding native link dependencies to portable `quartz.nox`.
 - **Ecosystem Adapters** — Zero-coupling reference models and verification bridges for **Atlas** (tabular DataFrames & CSV) and **Feather** (ORM & SQL transaction rollbacks with SQLite / PostgreSQL), plus **Nyx** and **Aether**.
 
@@ -73,7 +73,7 @@ Designed to scale from unit assertions to mission-critical infrastructure verifi
 | **`quartz.property`** | Composable Generators, PRNG Determinism, Counterexample Shrinking, Replay Registry | Boundary-biased integers, floats, Turkish & emoji Unicode, combinators (`OneOf`, `WeightedChoice`, `Filtered`, `Mapped`, `PairIntGen`), 64-bit Knuth LCG, delta-debugging shrinker, `PropertyRegistry` with Windows backslash-safe JSON artifacts. |
 | **`quartz.fuzz`** | Byte/Structure Mutation, Corpus Storage, Deduplication, Sequence Fuzzing, SUT Models | In-process and watchdog harnesses, FNV-1a content addressing, stack trace & address normalization, `CrashDeduplicator`, stateful sequence fuzzer with transition rules & initial actions, `StateModel` / `StateModelStr`. |
 | **`quartz.contract`** | In-Process & Network HTTP, OpenAPI 3, SSE, WebSocket, Mock Engine | Direct in-process handler invocation (sub-millisecond, zero open ports), loopback safety gates, WHATWG SSE parser, RFC 6455 WebSocket handshakes, offline HTTP record & playback with secret redaction. |
-| **`quartz.load`** | Closed VU & Open Arrival Models, Measured Concurrency, Monotonic Histograms | Real OS-thread concurrent Virtual User execution (`ConcurrentWaveScope`), reference-counted atomic safety under timeouts, 136-bucket monotonic histograms (p50, p90, p95, p99), multi-stage ramp schedulers, circuit breakers. |
+| **`quartz.load`** | Closed VU & Open Arrival Models, Measured Overlap Concurrency, Monotonic Histograms | Real OS-thread concurrent HTTP Virtual User execution (`run_network_load_test`) & `TaskGroupRunner`, reference-counted atomic safety under timeouts, 336-bucket microsecond + 246-bucket ms monotonic histograms (`p50_us`/`p95_us`/`p99_us`), multi-stage ramp schedulers, circuit breakers. |
 | **`quartz.adapters`** | Atlas DataFrames, Feather ORM, Nyx, Aether | `AtlasTable` CSV roundtrip & fuzzing, sort idempotence, ground-truth join & groupby contracts, SQL `NULL` vs `""` preservation, `FeatherRecord` CRUD invariants, transaction rollback verification, real SQLite (`libsqlite3`) & `nox.orm` tests. |
 
 ---
@@ -87,7 +87,7 @@ Designed to scale from unit assertions to mission-critical infrastructure verifi
   "name": "my_nox_service",
   "version": "1.0.0",
   "dependencies": {
-    "github.com/mburakmmm/quartz": "v0.9.19"
+    "github.com/mburakmmm/quartz": "v0.9.20"
   }
 }
 ```
@@ -141,7 +141,7 @@ from property.property import PropertyConfig, run_int_property, PropertyResult
 from property.replay import PropertyRegistry, save_failure_artifact
 
 gen: IntGen = IntGen(0, 500, with_boundaries=True)
-cfg: PropertyConfig = PropertyConfig(max_cases=100, max_discards=5, seed=9999, timeout_ms=5000)
+cfg: PropertyConfig = PropertyConfig(cases=100, max_discard_ratio=5, seed=9999, timeout_ms=5000)
 
 def invariant_under_150(x: int) -> bool:
     return x < 150
@@ -206,9 +206,9 @@ thresholds: list[Threshold] = [
 def benchmark_task(case_idx: int) -> bool:
     return process_order(case_idx)
 
-# Runs concurrent VU wave, records real peak_concurrency, and builds 136-bucket latency histogram
+# Measures active VU waves, execution span overlap, and 336-bucket microsecond + 246-bucket ms histograms
 summary: LoadTestSummary = run_task_workload(wl, benchmark_task, thresholds, limits)
-print("p95 latency:", summary.metrics.p95(), "ms; Throughput:", summary.metrics.throughput_rps(summary.total_duration_ms), "req/s")
+print("p95 latency:", summary.metrics.p95(), "ms (", summary.metrics.p95_us(), "us); Throughput:", summary.metrics.throughput_rps(summary.total_duration_ms), "req/s")
 ```
 
 ### 6. Ecosystem Adapters: Atlas DataFrames & Feather ORM (`adapters`)
@@ -235,24 +235,25 @@ assert res.outcome == TX_COMMITTED
 Quartz includes a self-contained CLI entry point (`cli/main.nox`):
 
 ```bash
-# Run tests with tag filtering
+# Run tests with tag & glob pattern filtering
 noxc run cli/main.nox -- test tests/core_test.nox --tag smoke
+noxc run cli/main.nox -- test tests --pattern "*contract*"
 noxc run cli/main.nox -- test fixtures/tag_demo.nox --exclude-tag slow
 
-# Run property-based testing with custom case counts and seeds
-noxc run cli/main.nox -- property --cases 500 --seed 12345
+# Run property-based testing against custom target or demo
+noxc run cli/main.nox -- property --target tests/property_test.nox --cases 500 --seed 12345
 
 # Replay a failure artifact against a target property test
 noxc run cli/main.nox -- replay artifacts/failures/case_37.json --target tests/property_test.nox
 
-# Run bounded fuzzer on a target
-noxc run cli/main.nox -- fuzz --iterations 1000
+# Run bounded fuzzer on a user or sample target
+noxc run cli/main.nox -- fuzz --target my_fuzz_target.nox --max-cases 1000
 
-# Run in-process HTTP contract validation
-noxc run cli/main.nox -- contract
+# Validate OpenAPI contracts or live loopback endpoints
+noxc run cli/main.nox -- contract --spec openapi.json --base-url http://127.0.0.1:8080 --allow-network
 
-# Run authorized bounded local load tests
-noxc run cli/main.nox -- load --vus 4 --duration 5 --requests 100
+# Run authorized bounded load tests against a target URL or user script
+noxc run cli/main.nox -- load --url http://127.0.0.1:8080/health --allow-network --vus 4 --duration 5 --requests 100
 
 # Stream test events as real-time JSON Lines or generate visual HTML reports
 noxc run cli/main.nox -- test tests --format jsonl
@@ -281,11 +282,11 @@ For full architectural records, formal specifications, and complete recipes, exp
 | Guide | Description |
 |---|---|
 | [**Architecture & ADRs**](docs/architecture.md) | Architectural Decision Records ADR-001 through ADR-018 detailing design choices and boundaries. |
-| [**Complete API Reference**](docs/api.md) | Detailed function signatures and type contracts across all 37 Quartz modules. |
+| [**Complete API Reference**](docs/api.md) | Detailed function signatures and type contracts across all 50 Quartz modules. |
 | [**Recipes & Cookbook**](docs/recipes.md) | 18 step-by-step production recipes covering property tests, fuzzers, contracts, load, and adapters. |
 | [**Security & Guardrails**](docs/security.md) | Loopback policies, secret redaction, safe integer bounds ($2^{53}$), and sandbox limits. |
 | [**Compatibility Matrix**](docs/compatibility.md) | Platform capabilities, timer precision, and compiler backend behavioral parity. |
-| [**Changelog**](CHANGELOG.md) | Full historical log of all releases from `v0.1.0` through `v0.9.15`. |
+| [**Changelog**](CHANGELOG.md) | Full historical log of all releases from `v0.1.0` through `v0.9.20`. |
 
 ---
 

@@ -1030,6 +1030,39 @@
 
 ---
 
+## Phase 18: v0.9.20 — Pre-1.0 Audit Remediation (Release Hygiene, SSRF URL Safety, True Parallel Load, Sub-ms Histograms, Real CLI & gRPC E2E)
+*Objective: Resolve every technical, security, concurrency, precision, CLI, documentation, and release-integrity finding from GPT-6 Sol's v0.9.19 review so Quartz reaches full production readiness prior to v1.0.*
+
+- [x] **18.0 [P0] Release & Registry Publish Reliability (`.github/workflows/publish.yml`, `nox.json`, `ci.yml`)**
+  - [x] Declare `"source": "nox"` in `nox.json` and pass `--source nox`, `--description`, and `--tags` cleanly in `publish.yml`.
+  - [x] Remove silent `|| echo` failure masking in `.github/workflows/publish.yml`; authenticate via `secrets.NOX_AUTH_TOKEN` -> `~/.nox/credentials` when present and fail-closed on registry publish errors.
+  - [x] Add a clean-consumer package smoke test in CI (create clean temp project `nox.json` depending on Quartz, run `noxc fetch` / `noxc check` / `noxc run`) and tag `v0.9.20` with green 4/4 CI on the tag itself.
+- [x] **18.1 [P0] SSRF-Safe URL Parsing & Redirect Policy (`contract/http_network.nox`, `tests/contract_http_test.nox`)**
+  - [x] Replace manual string-slicing `parse_url()` in `contract/http_network.nox` with `nox.url.parse()`.
+  - [x] Strictly reject URLs with `userinfo` (`http://localhost:123@remote.example/`), invalid/non-numeric/out-of-range ports (`0`, `<0`, `>65535`), malformed authorities/IPv6, and unauthorized cross-origin redirects.
+  - [x] Add positive, negative, and SSRF bypass regression tests in `tests/contract_http_test.nox`.
+- [x] **18.2 [P0] True Parallel Task Concurrency & Overlap Verification (`load/executor.nox`, `tests/load_scheduler_test.nox`)**
+  - [x] Separate scheduled wave VU count (`peak_active_vus`) from truly overlapping callback/worker execution concurrency (`peak_concurrency`) across `run_task_workload_internal`, `run_handler_load_test`, and OS-thread/spawned workers.
+  - [x] Record per-execution monotonic `[start_ns, end_ns]` intervals and verify genuine execution-interval overlap in `tests/load_scheduler_test.nox`.
+- [x] **18.3 [P1] Sub-Millisecond Histogram Precision & Per-Task Completion Timing (`load/metrics.nox`, `load/executor.nox`, `tests/load_metrics_test.nox`)**
+  - [x] Upgrade `LoadMetrics` bounded histogram with sub-millisecond microsecond-resolution buckets (`0..999 us` in `20 us` steps + existing ms tiers) so `200 us` vs `900 us` yield distinct percentiles (`percentile_us`, `p50_us`, `p95_us`, `p99_us`, plus accurate `p50`/`p95`/`p99`).
+  - [x] Record true per-task completion `monotonic_ns()` inside spawned tasks in `TaskGroupRunner` so sequential `await` loop queuing does not inflate task latencies.
+  - [x] Add microsecond-resolution percentile & reference-timing tolerance tests.
+- [x] **18.4 [P1] Real User-Target CLI Commands (`cli/main.nox`, `tests/`)**
+  - [x] Wire `quartz property`, `quartz fuzz`, `quartz contract`, and `quartz load` to support real user targets/configs (`--target`, `--config`, `--url` + `--allow-network`, `--spec` + `--base-url`), keeping demo scenarios opt-in / cleanly separated.
+  - [x] Add CLI integration tests verifying real target runs and negative failure handling.
+- [x] **18.5 [P1] Loopback gRPC End-to-End Test (HTTP/2, TLS & Trailers) (`contract/grpc.nox`, `tests/grpc_contract_test.nox`)**
+  - [x] Verify end-to-end `execute_grpc_network` against a live loopback gRPC/HTTP server (HTTP/2 `h2c`, metadata, headers, trailers, status codes, and TLS missing-CA rejection path).
+- [x] **18.6 [P2] Documentation & Compile-Verified Example Sync (`README.md`, `docs/architecture.md`, `tests/doc_examples_test.nox`)**
+  - [x] Fix stale histogram bucket count, `PropertyConfig(...)` constructor signature in `README.md`, and stale `noxc 2.0.108` toolchain note in `docs/architecture.md`.
+  - [x] Expand `tests/doc_examples_test.nox` to compile & execute all updated `README.md` showcase examples cleanly under `noxc test`.
+- [x] **18.7 [P2] Ecosystem Adapter Depth & Regression Suite (`tests/framework_native_test.nox`, `adapters/`)**
+  - [x] Deepen integration assertions across all 4 ecosystem adapters (`Nyx`, `Aether`, `Atlas`, `Feather`) covering routers, middleware chains, CSV/SQL NULL parity, and rollback contracts.
+
+*Phase 18 Exit Gate:* PASSED (`noxc check` across `quartz.nox`, `cli/main.nox`, `accel/*`; `noxc run --backend qbe tests/backend_matrix_test.nox` -> `ALL PASS`; `noxc test` -> `29 passed, 0 failed (29 total)`).
+
+---
+
 ---
 
 ---
@@ -1130,3 +1163,5 @@
 | 2026-11-09 | Phase 16 | Verification & Release | `noxc test`, `ci.yml`, `noxc publish` | 26/26 tests pass (100% green), tagged `v0.9.18`, published to NOX registry | [x] DONE |
 | 2026-11-16 | Phase 17 | NOX 2.1.x Stdlib & Language | `core/`, `property/`, `fuzz/`, `contract/`, `load/`, `accel/`, `cli/` | Regex/dict assertions, `TempDirFixture`/`MemoryGuardFixture`, `nox.path.safe_join` + `blake3` corpus, `property/nox_interop.nox`, `monotonic_ns` + `MemDelta` + `TaskGroupRunner`/`AtomicRef`, `schema_int64` + `schema_string_pattern` + HTTP/2/3/pool + `contract/grpc.nox`, opt-in `accel/` (`yyjson`/`pcre2`/`xxhash`), glob CLI discovery | [x] DONE |
 | 2026-11-16 | Phase 17 | Verification & Release | `noxc check`, `noxc test`, `ci.yml`, `noxc publish` | `noxc test` 29/29 pass, QBE backend matrix pass, `noxc sbom` valid, release `v0.9.19` | [x] DONE |
+| 2026-11-16 | Phase 18 | Pre-1.0 Audit Remediation | `contract/`, `load/`, `cli/`, `README.md`, `docs/`, `.github/` | SSRF-safe `nox.url.parse` + redirect policy, honest `peak_active_vus` vs overlap-span `peak_concurrency`, 336-bucket sub-ms histogram (`p50_us`/`p95_us`/`p99_us`), `TaskGroupRunner` exact per-task slots, live CLI targets, loopback HTTP/2 gRPC E2E, fail-closed `publish.yml` + consumer `ci.yml` check, synced docs/showcases | [x] DONE |
+| 2026-11-16 | Phase 18 | Verification & Release | `noxc check`, `noxc test`, `ci.yml`, `noxc publish` | `noxc test` 29/29 pass, QBE backend matrix pass, tagged `v0.9.20`, published & verified | [x] DONE |

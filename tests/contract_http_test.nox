@@ -3,7 +3,7 @@ import nox.http
 from nox.http import HttpRequest
 from core.assert import assert_true, assert_false, assert_eq_int, assert_eq_str, assert_contains_str
 from contract.http_network import NetworkPolicy, default_network_policy, loopback_network_policy, authorized_network_policy
-from contract.http_network import parse_url, ParsedUrl, is_loopback_host, validate_network_target
+from contract.http_network import parse_url, ParsedUrl, is_loopback_host, validate_network_target, validate_redirect_target
 from contract.http_network import NetworkSafetyError, NetworkNotAllowedError, UnauthorizedTargetError
 from contract.http_network import execute_network_request, NetworkExecutionResult, run_network_contract_check
 from contract.http import build_request, empty_headers
@@ -123,6 +123,52 @@ def test_unreachable_transport_error_handling() -> None:
     assert_false(check.is_valid, "contract check on failed connection must be invalid")
     assert_true(check.has_errors(), "contract check records error")
 
+def test_ssrf_url_and_redirect_security() -> None:
+    policy: NetworkPolicy = loopback_network_policy()
+
+    # 1. Userinfo SSRF bypass pattern must be strictly rejected
+    ssrf_urls: list[str] = [
+        "http://localhost:123@remote.example/admin",
+        "http://user:pass@127.0.0.1:8080/internal",
+        "http://@localhost:8080/empty-user",
+        "https://localhost\\@remote.example/",
+        "http://127.0.0.1:notaport/bad",
+        "http://127.0.0.1:0/zero-port",
+        "http://127.0.0.1:70000/overflow-port",
+        "http://[::1/unterminated",
+        "http:///missing-host"
+    ]
+    ui: int = 0
+    while ui < len(ssrf_urls):
+        threw: bool = False
+        try:
+            validate_network_target(ssrf_urls[ui], policy)
+        except NetworkSafetyError as e:
+            threw = True
+        assert_true(threw, "unsafe/SSRF URL must raise NetworkSafetyError: " + ssrf_urls[ui])
+        ui = ui + 1
+
+    # 2. Redirects disabled by default
+    threw_redir_default: bool = False
+    try:
+        validate_redirect_target("http://127.0.0.1:8080/start", "http://127.0.0.1:8080/next", policy)
+    except UnauthorizedTargetError as e:
+        threw_redir_default = True
+    assert_true(threw_redir_default, "redirects blocked by default")
+
+    # 3. Redirect opt-in permits same-origin relative/loopback but still blocks unauthorized external targets
+    redir_policy: NetworkPolicy = NetworkPolicy(True, "", 2000, 1048576, False, False, 0, 90000, True)
+    ok_rel: ParsedUrl = validate_redirect_target("http://127.0.0.1:8080/a", "/b", redir_policy)
+    assert_eq_str(ok_rel.host, "127.0.0.1", "same-origin relative redirect allowed when enabled")
+    assert_eq_str(ok_rel.path, "/b", "relative redirect preserves path")
+
+    threw_redir_ssrf: bool = False
+    try:
+        validate_redirect_target("http://127.0.0.1:8080/a", "http://169.254.169.254/latest/meta-data", redir_policy)
+    except UnauthorizedTargetError as e:
+        threw_redir_ssrf = True
+    assert_true(threw_redir_ssrf, "redirect to unauthorized metadata IP rejected even when redirects enabled")
+
 def run_all_contract_http_tests() -> None:
     test_url_parser()
     test_loopback_host_detector()
@@ -130,6 +176,7 @@ def run_all_contract_http_tests() -> None:
     test_remote_host_rejection_without_authorization()
     test_authorized_remote_target_matching()
     test_unreachable_transport_error_handling()
+    test_ssrf_url_and_redirect_security()
     print("quartz contract http test: ALL PASS")
 
 run_all_contract_http_tests()

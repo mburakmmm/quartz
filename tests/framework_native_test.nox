@@ -172,9 +172,41 @@ def test_aether_middleware_pipeline() -> None:
     assert_true(load_res.all_passed, "aether load test passed all thresholds")
     assert_eq_int(load_res.metrics.completed, 25, "25 requests completed")
 
+    # 5. Negative contract check through AetherAdapter when auth token is omitted
+    tc_denied: ContractTestCase = ContractTestCase(
+        "aether_denied_contract",
+        req_unauth,
+        [200],
+        ["Content-Type"],
+        "application/json",
+        secure_schema
+    )
+    denied_res: ContractCheckResult = adapter.test_contract(tc_denied)
+    assert_false(denied_res.is_valid, "aether unauthorized response violates 200 contract")
+
+def test_ecosystem_adapters_cross_verification() -> None:
+    # Verify Nyx dynamic route fallback (404) & contract negative check
+    router: Router = Router()
+    def echo_param(ctx: Context) -> HttpResponse:
+        h: dict[str, str] = {"Content-Type": "application/json"}
+        return build_response(200, "{\"route\":\"matched\"}", h)
+    router.get("/api/v2/ping", echo_param)
+    nyx_ad: NyxAdapter = create_nyx_adapter(router)
+
+    ok_r: HttpResponse = nyx_ad.dispatch(build_request("GET", "/api/v2/ping", "", empty_headers()))
+    assert_eq_int(ok_r.status, 200, "nyx v2 route matches")
+    miss_r: HttpResponse = nyx_ad.dispatch(build_request("GET", "/api/v2/unknown", "", empty_headers()))
+    assert_eq_int(miss_r.status, 404, "nyx unmatched route returns 404")
+
+    schema_v2: SchemaDescriptor = schema_object([PropertyRule("route", schema_string(1, 32))], ["route"], True)
+    tc_miss: ContractTestCase = ContractTestCase("nyx_404_check", build_request("GET", "/api/v2/unknown", "", empty_headers()), [200], [], "", schema_v2)
+    miss_contract: ContractCheckResult = nyx_ad.test_contract(tc_miss)
+    assert_false(miss_contract.is_valid, "nyx 404 caught by ContractTestCase")
+
 def run_all_framework_native_tests() -> None:
     test_nyx_deep_routing()
     test_aether_middleware_pipeline()
+    test_ecosystem_adapters_cross_verification()
     print("quartz framework native test: ALL PASS")
 
 run_all_framework_native_tests()

@@ -24,12 +24,14 @@ from fuzz.fuzzer import run_fuzz, FuzzSummary
 from load.safety import SafetyLimits, default_safety_limits
 from load.workload import WorkloadConfig, closed_workload
 from load.thresholds import Threshold
-from load.executor import LoadTestSummary, run_task_workload
-from contract.openapi import parse_openapi_json, ParsedOpenApiDoc, ParsedOperation
+from load.metrics import LoadMetrics
+from contract.openapi import parse_openapi_json, ParsedOpenApiDoc, ParsedOperation, ParsedResponseSpec
 from contract.schema import schema_object, schema_string, schema_boolean, PropertyRule, json_has_key, json_get_key, SchemaDescriptor
 from contract.http import build_request, empty_headers
+from contract.http_network import NetworkPolicy, ParsedUrl, parse_url, validate_network_target, run_network_contract_check, default_network_policy, loopback_network_policy, authorized_network_policy, NetworkSafetyError
 from contract.runner import ContractTestCase
 from contract.types import ContractCheckResult
+from load.executor import LoadTestSummary, run_task_workload, run_network_load_test
 from nox.http import HttpRequest, HttpResponse
 
 def print_usage() -> None:
@@ -40,13 +42,15 @@ def print_usage() -> None:
     print("  test [path]          Run test suites with optional path filter")
     print("                       Options: --tag <tag>, --exclude-tag <tag>, --pattern <glob>, --allow-static")
     print("  property [target]    Run property-based invariant checks")
-    print("                       Options: --seed <int>, --cases <int>")
-    print("  fuzz [target]        Run mutation fuzzer on sample target")
-    print("                       Options: --seed <int>, --max-cases <int>")
+    print("                       Options: --target <file.nox>, --config <cfg.json>, --seed <int>, --cases <int>")
+    print("  fuzz [target]        Run mutation fuzzer on user or sample target")
+    print("                       Options: --target <file.nox>, --config <cfg.json>, --seed <int>, --max-cases <int>")
     print("  replay <file>        Replay and reproduce a saved failure artifact JSON")
-    print("  contract [spec]      Validate API contracts and schemas or inspect OpenAPI specs")
-    print("  load [scenario]      Run bounded load test scenario with latency metrics")
-    print("                       Options: --vus <int>, --duration <int>, --requests <int>")
+    print("                       Options: --target <file.nox>")
+    print("  contract [spec]      Validate API contracts against handler target, OpenAPI spec, or live URL")
+    print("                       Options: --target <file.nox>, --spec <openapi.json>, --url <url>, --base-url <origin>, --allow-network")
+    print("  load [scenario]      Run bounded load test scenario against user target or authorized URL")
+    print("                       Options: --target <file.nox>, --url <url>, --allow-network, --vus <int>, --duration <int>, --requests <int>")
     print("  report [dir]         Inspect test result artifacts and export summaries")
     print("  help                 Show this help message")
 
@@ -110,14 +114,129 @@ def build_cli_registry() -> PropertyRegistry:
     reg.register_list_int("cli_property_check", ListIntGen(0, 15, IntGen(-100, 100, True)), sample_list_invariant)
     return reg
 
+def has_flag(flag_name: str) -> bool:
+    count: int = nox.os.arg_count()
+    i: int = 1
+    while i < count:
+        a: str = nox.os.arg(i)
+        if a == flag_name or a == flag_name + "=true" or a == flag_name + "=1":
+            return True
+        i = i + 1
+    return False
+
+def load_cli_config_doc() -> JsonValue | None:
+    cfg_path: str = parse_flag_str("--config", "")
+    if len(cfg_path) == 0:
+        return None
+    if not nox.fs.exists(cfg_path):
+        print("Error: config file not found: " + cfg_path)
+        nox.os.exit(2)
+        return None
+    try:
+        raw: str = nox.fs.read_to_string(cfg_path)
+        return nox.json.parse(raw)
+    except Exception as e:
+        print("Error parsing CLI config JSON (" + cfg_path + "): " + str(e))
+        nox.os.exit(2)
+        return None
+
+def cfg_str(doc: JsonValue | None, key: str, fallback: str) -> str:
+    if doc == None:
+        return fallback
+    try:
+        if json_has_key(doc, key):
+            return json_get_key(doc, key).s
+    except Exception as e:
+        pass
+    return fallback
+
+def cfg_int(doc: JsonValue | None, key: str, fallback: int) -> int:
+    if doc == None:
+        return fallback
+    try:
+        if json_has_key(doc, key):
+            return int(json_get_key(doc, key).n)
+    except Exception as e:
+        pass
+    return fallback
+
+def cfg_bool(doc: JsonValue | None, key: str, fallback: bool) -> bool:
+    if doc == None:
+        return fallback
+    try:
+        if json_has_key(doc, key):
+            return json_get_key(doc, key).b
+    except Exception as e:
+        pass
+    return fallback
+
+def execute_user_target_file(target_file: str, extra_args: list[str]) -> None:
+    if not nox.fs.exists(target_file):
+        print("Error: target file not found: " + target_file)
+        nox.os.exit(2)
+        return
+    env_bin: str = find_env_binary()
+    bins: list[str] = candidate_noxc_bins()
+    b_i: int = 0
+    while b_i < len(bins):
+        cmd_u: Command = build_noxc_command(env_bin, bins[b_i])
+        cmd_u.arg("run")
+        cmd_u.arg(target_file)
+        if len(extra_args) > 0:
+            cmd_u.arg("--")
+            ai: int = 0
+            while ai < len(extra_args):
+                cmd_u.arg(extra_args[ai])
+                ai = ai + 1
+        try:
+            out_u: Output = cmd_u.run()
+            if len(out_u.stdout) > 0:
+                print(out_u.stdout)
+            if out_u.success():
+                return
+            elif not is_binary_not_found(out_u.stderr, out_u.status):
+                if len(out_u.stderr) > 0:
+                    print(out_u.stderr)
+                nox.os.exit(out_u.status)
+                return
+        except Exception as e:
+            pass
+        b_i = b_i + 1
+    print("Error: Could not locate 'noxc' to run user target: " + target_file)
+    nox.os.exit(1)
+
+def resolve_target_flag_or_positional(cfg: JsonValue | None) -> str:
+    t: str = parse_flag_str("--target", "")
+    if len(t) == 0:
+        t = parse_flag_str("--file", "")
+    if len(t) == 0 and nox.os.arg_count() >= 3:
+        pos: str = nox.os.arg(2)
+        if (not nox.strings.starts_with(pos, "-")) and nox.strings.ends_with(pos, ".nox"):
+            t = pos
+    if len(t) == 0:
+        t = cfg_str(cfg, "target", "")
+    return t
+
 def cmd_property() -> None:
-    seed: int = parse_flag_int("--seed", 42)
-    cases: int = parse_flag_int("--cases", 100)
-    format_opt: str = parse_flag_str("--format", "summary")
-    out_opt: str = parse_flag_str("--out", "")
+    cfg_doc: JsonValue | None = load_cli_config_doc()
+    seed: int = parse_flag_int("--seed", cfg_int(cfg_doc, "seed", 42))
+    cases: int = parse_flag_int("--cases", cfg_int(cfg_doc, "cases", 100))
+    format_opt: str = parse_flag_str("--format", cfg_str(cfg_doc, "format", "summary"))
+    out_opt: str = parse_flag_str("--out", cfg_str(cfg_doc, "out", ""))
+    target_file: str = resolve_target_flag_or_positional(cfg_doc)
+
+    if len(target_file) > 0:
+        if format_opt != "json":
+            print("Running Quartz User Property Target: " + target_file)
+        fwd: list[str] = ["--seed", str(seed), "--cases", str(cases), "--format", format_opt]
+        if len(out_opt) > 0:
+            fwd.append("--out")
+            fwd.append(out_opt)
+        execute_user_target_file(target_file, fwd)
+        return
 
     if format_opt != "json":
-        print("Running Quartz Property Invariant Check...")
+        print("Running Quartz Property Invariant Check (built-in demo target; pass --target <file.nox> for custom targets)...")
         print("Config: seed=" + str(seed) + ", cases=" + str(cases))
 
     item_gen: IntGen = IntGen(-100, 100, True)
@@ -145,16 +264,26 @@ def cmd_property() -> None:
         nox.os.exit(1)
 
 def cmd_fuzz() -> None:
-    seed: int = parse_flag_int("--seed", 1337)
-    max_cases: int = parse_flag_int("--max-cases", 100)
-    print("Running Quartz Mutation Fuzzer...")
+    cfg_doc: JsonValue | None = load_cli_config_doc()
+    seed: int = parse_flag_int("--seed", cfg_int(cfg_doc, "seed", 1337))
+    max_cases: int = parse_flag_int("--max-cases", cfg_int(cfg_doc, "max_cases", 100))
+    corpus_dir: str = parse_flag_str("--corpus-dir", cfg_str(cfg_doc, "corpus_dir", "fixtures/corpus"))
+    target_file: str = resolve_target_flag_or_positional(cfg_doc)
+
+    if len(target_file) > 0:
+        print("Running Quartz User Fuzz Target: " + target_file)
+        fwd: list[str] = ["--seed", str(seed), "--max-cases", str(max_cases), "--corpus-dir", corpus_dir]
+        execute_user_target_file(target_file, fwd)
+        return
+
+    print("Running Quartz Mutation Fuzzer (built-in demo target; pass --target <file.nox> for custom targets)...")
     print("Config: seed=" + str(seed) + ", max_cases=" + str(max_cases))
 
     def sample_parser_target(data: str) -> None:
         if nox.strings.contains(data, "MAGIC_CRASH_999"):
             assert False, "crash triggered by target payload"
 
-    cm: CorpusManager = CorpusManager("cli_fuzz_target", "fixtures/corpus", default_corpus_config())
+    cm: CorpusManager = CorpusManager("cli_fuzz_target", corpus_dir, default_corpus_config())
     initial_seeds: list[str] = ["hello world", "test input 123", "data: {\"val\": 42}"]
     summary: FuzzSummary = run_fuzz("cli_fuzz_target", sample_parser_target, initial_seeds, max_cases, seed, cm, 256)
 
@@ -163,28 +292,61 @@ def cmd_fuzz() -> None:
     print("Crashes Found: " + str(summary.crashes_found))
 
 def cmd_load() -> None:
-    vus: int = parse_flag_int("--vus", 2)
-    dur: int = parse_flag_int("--duration", 2)
-    reqs: int = parse_flag_int("--requests", 20)
-    format_opt: str = parse_flag_str("--format", "summary")
-    out_opt: str = parse_flag_str("--out", "")
+    cfg_doc: JsonValue | None = load_cli_config_doc()
+    vus: int = parse_flag_int("--vus", cfg_int(cfg_doc, "vus", 2))
+    dur: int = parse_flag_int("--duration", cfg_int(cfg_doc, "duration", 2))
+    reqs: int = parse_flag_int("--requests", cfg_int(cfg_doc, "requests", 20))
+    format_opt: str = parse_flag_str("--format", cfg_str(cfg_doc, "format", "summary"))
+    out_opt: str = parse_flag_str("--out", cfg_str(cfg_doc, "out", ""))
+    target_file: str = resolve_target_flag_or_positional(cfg_doc)
 
-    if format_opt != "json":
-        print("Running Quartz Bounded Load Test...")
-        print("Config: vus=" + str(vus) + ", duration=" + str(dur) + "s, requests=" + str(reqs))
+    if len(target_file) > 0:
+        if format_opt != "json":
+            print("Running Quartz User Load Target: " + target_file)
+        fwd: list[str] = ["--vus", str(vus), "--duration", str(dur), "--requests", str(reqs), "--format", format_opt]
+        if len(out_opt) > 0:
+            fwd.append("--out")
+            fwd.append(out_opt)
+        execute_user_target_file(target_file, fwd)
+        return
+
+    target_url: str = parse_flag_str("--url", cfg_str(cfg_doc, "url", ""))
+    allow_net: bool = has_flag("--allow-network") or cfg_bool(cfg_doc, "allow_network", False)
+    auth_target: str = parse_flag_str("--authorized-target", cfg_str(cfg_doc, "authorized_target", ""))
+    method_opt: str = nox.strings.upper(parse_flag_str("--method", cfg_str(cfg_doc, "method", "GET")))
+    body_opt: str = parse_flag_str("--body", cfg_str(cfg_doc, "body", ""))
 
     workload: WorkloadConfig = closed_workload("cli_load_scenario", vus, dur, reqs)
     safety: SafetyLimits = default_safety_limits()
     thresholds: list[Threshold] = [
-        Threshold("p95_latency_ms", "<=", 100.0),
+        Threshold("p95_latency_ms", "<=", 250.0),
         Threshold("error_rate", "<=", 0.05)
     ]
 
-    def dummy_task(case_idx: int) -> bool:
-        return True
+    summary: LoadTestSummary = LoadTestSummary("empty", LoadMetrics(), [], 0, False, True, "uninitialized", [])
+    if len(target_url) > 0:
+        policy: NetworkPolicy = authorized_network_policy(auth_target) if len(auth_target) > 0 else (loopback_network_policy() if allow_net else default_network_policy())
+        try:
+            parsed_u: ParsedUrl = validate_network_target(target_url, policy)
+            if format_opt != "json":
+                print("Running Quartz Network Load Test against: " + target_url)
+                print("Config: vus=" + str(vus) + ", duration=" + str(dur) + "s, requests=" + str(reqs))
+            req_net: HttpRequest = build_request(method_opt, parsed_u.path, body_opt, empty_headers())
+            summary = run_network_load_test(workload, req_net, parsed_u.origin, policy, thresholds, safety)
+        except NetworkSafetyError as ne:
+            print("Error: Network load target blocked by safety policy: " + str(ne))
+            nox.os.exit(2)
+            return
+    else:
+        if format_opt != "json":
+            print("Running Quartz Bounded Load Test (built-in task; pass --url <url> --allow-network or --target <file.nox> for custom workloads)...")
+            print("Config: vus=" + str(vus) + ", duration=" + str(dur) + "s, requests=" + str(reqs))
 
-    summary: LoadTestSummary = run_task_workload(workload, dummy_task, thresholds, safety)
-    
+        def dummy_task(case_idx: int) -> bool:
+            return True
+
+        summary = run_task_workload(workload, dummy_task, thresholds, safety)
+
     if format_opt == "json":
         json_str: str = summary.to_json()
         if len(out_opt) > 0:
@@ -209,8 +371,9 @@ def cmd_load() -> None:
     print("Completed Requests: " + str(summary.metrics.completed))
     print("Throughput: " + str(summary.metrics.throughput_rps(summary.total_duration_ms)) + " req/s")
     print("Mean Latency: " + str(summary.metrics.mean_latency_us()) + " us")
-    print("p50 Latency: " + str(summary.metrics.p50()) + " ms")
-    print("p95 Latency: " + str(summary.metrics.p95()) + " ms")
+    print("p50 Latency: " + str(summary.metrics.p50()) + " ms (" + str(summary.metrics.p50_us()) + " us)")
+    print("p95 Latency: " + str(summary.metrics.p95()) + " ms (" + str(summary.metrics.p95_us()) + " us)")
+    print("Peak Active VUs: " + str(summary.metrics.peak_active_vus) + " | Peak Overlapping Executions: " + str(summary.metrics.peak_overlapping_executions))
     print("Thresholds Passed: " + str(summary.all_passed))
     if not summary.all_passed:
         nox.os.exit(1)
@@ -352,8 +515,48 @@ def cmd_replay() -> None:
         nox.os.exit(1)
 
 def cmd_contract() -> None:
-    if nox.os.arg_count() >= 3:
-        spec_path: str = nox.os.arg(2)
+    cfg_doc: JsonValue | None = load_cli_config_doc()
+    target_file: str = parse_flag_str("--target", cfg_str(cfg_doc, "target", ""))
+    spec_path: str = parse_flag_str("--spec", cfg_str(cfg_doc, "spec", ""))
+    if len(spec_path) == 0 and nox.os.arg_count() >= 3:
+        pos: str = nox.os.arg(2)
+        if not nox.strings.starts_with(pos, "-"):
+            if nox.strings.ends_with(pos, ".nox"):
+                target_file = pos
+            else:
+                spec_path = pos
+
+    if len(target_file) > 0:
+        print("Running Quartz User Contract Target: " + target_file)
+        execute_user_target_file(target_file, [])
+        return
+
+    base_url: str = parse_flag_str("--base-url", cfg_str(cfg_doc, "base_url", ""))
+    live_url: str = parse_flag_str("--url", cfg_str(cfg_doc, "url", ""))
+    allow_net: bool = has_flag("--allow-network") or cfg_bool(cfg_doc, "allow_network", False)
+    auth_target: str = parse_flag_str("--authorized-target", cfg_str(cfg_doc, "authorized_target", ""))
+    method_opt: str = nox.strings.upper(parse_flag_str("--method", cfg_str(cfg_doc, "method", "GET")))
+    expected_status: int = parse_flag_int("--status", cfg_int(cfg_doc, "status", 200))
+
+    if len(live_url) > 0:
+        policy: NetworkPolicy = authorized_network_policy(auth_target) if len(auth_target) > 0 else (loopback_network_policy() if allow_net else default_network_policy())
+        try:
+            parsed_u: ParsedUrl = validate_network_target(live_url, policy)
+            req_live: HttpRequest = build_request(method_opt, parsed_u.path, "", empty_headers())
+            res_live: ContractCheckResult = run_network_contract_check(req_live, parsed_u.origin, policy, [expected_status], [], "", None)
+            print("Contract URL: " + live_url)
+            print("Contract Valid: " + str(res_live.is_valid))
+            print("Status: " + str(res_live.status_code) + " in " + str(res_live.duration_ms) + " ms")
+            if not res_live.is_valid:
+                print("Contract check failed: " + res_live.error_summary())
+                nox.os.exit(1)
+            return
+        except NetworkSafetyError as ne:
+            print("Error: Contract URL blocked by safety policy: " + str(ne))
+            nox.os.exit(2)
+            return
+
+    if len(spec_path) > 0:
         print("Loading contract specification: " + spec_path)
         if not nox.fs.exists(spec_path):
             print("Error: specification file not found: " + spec_path)
@@ -369,30 +572,73 @@ def cmd_contract() -> None:
                 op: ParsedOperation = doc.operations[i]
                 print("  [" + op.method + "] " + op.path + " (Operation ID: " + op.operation_id + ")")
                 i = i + 1
+
+            if len(base_url) > 0:
+                policy2: NetworkPolicy = authorized_network_policy(auth_target) if len(auth_target) > 0 else (loopback_network_policy() if allow_net else default_network_policy())
+                try:
+                    _p_base: ParsedUrl = validate_network_target(base_url, policy2)
+                except NetworkSafetyError as ne2:
+                    print("Error: Contract base URL blocked by safety policy: " + str(ne2))
+                    nox.os.exit(2)
+                    return
+
+                verified: int = 0
+                failed_ops: int = 0
+                oi: int = 0
+                while oi < len(doc.operations):
+                    op2: ParsedOperation = doc.operations[oi]
+                    if not nox.strings.contains(op2.path, "{"):
+                        exp_codes: list[int] = []
+                        exp_ct: str = ""
+                        exp_schema: SchemaDescriptor | None = None
+                        ri: int = 0
+                        while ri < len(op2.responses):
+                            rsp: ParsedResponseSpec = op2.responses[ri]
+                            exp_codes.append(rsp.status_code)
+                            if len(exp_ct) == 0 and len(rsp.content_type) > 0:
+                                exp_ct = rsp.content_type
+                            if exp_schema == None and rsp.schema != None:
+                                exp_schema = rsp.schema
+                            ri = ri + 1
+                        if len(exp_codes) == 0:
+                            exp_codes.append(200)
+                        op_req: HttpRequest = build_request(op2.method, op2.path, "", empty_headers())
+                        op_res: ContractCheckResult = run_network_contract_check(op_req, base_url, policy2, exp_codes, [], exp_ct, exp_schema)
+                        verified = verified + 1
+                        if not op_res.is_valid:
+                            failed_ops = failed_ops + 1
+                            print("  FAIL [" + op2.method + "] " + op2.path + ": " + op_res.error_summary())
+                        else:
+                            print("  PASS [" + op2.method + "] " + op2.path + " (" + str(op_res.status_code) + ")")
+                    oi = oi + 1
+                print("Verified live OpenAPI operations: " + str(verified) + ", failed: " + str(failed_ops))
+                if failed_ops > 0:
+                    nox.os.exit(1)
         except Exception as e:
             print("Failed to parse OpenAPI contract: " + str(e))
             nox.os.exit(1)
+        return
+
+    print("Running in-process API contract check against built-in demo endpoint (pass --spec, --url, or --target for user targets)...")
+    sample_schema: SchemaDescriptor = schema_object([
+        PropertyRule("healthy", schema_boolean()),
+        PropertyRule("version", schema_string())
+    ], ["healthy", "version"])
+
+    def demo_handler(req: HttpRequest) -> HttpResponse:
+        h: dict[str, str] = {"Content-Type": "application/json"}
+        return HttpResponse(200, "{\"healthy\": true, \"version\": \"" + quartz.version() + "\"}", h)
+
+    req: HttpRequest = build_request("GET", "/health", "", empty_headers())
+    tc: ContractTestCase = ContractTestCase("demo_health_check", req, [200], ["Content-Type"], "application/json", sample_schema)
+    check: ContractCheckResult = tc.run_on_handler(demo_handler)
+    print("Contract Valid: " + str(check.is_valid))
+    print("Status: " + str(check.status_code) + " in " + str(check.duration_ms) + " ms")
+    if check.is_valid:
+        print("Contract verified successfully.")
     else:
-        print("Running in-process API contract check against mock endpoint...")
-        sample_schema: SchemaDescriptor = schema_object([
-            PropertyRule("healthy", schema_boolean()),
-            PropertyRule("version", schema_string())
-        ], ["healthy", "version"])
-
-        def demo_handler(req: HttpRequest) -> HttpResponse:
-            h: dict[str, str] = {"Content-Type": "application/json"}
-            return HttpResponse(200, "{\"healthy\": true, \"version\": \"0.8.1\"}", h)
-
-        req: HttpRequest = build_request("GET", "/health", "", empty_headers())
-        tc: ContractTestCase = ContractTestCase("demo_health_check", req, [200], ["Content-Type"], "application/json", sample_schema)
-        check: ContractCheckResult = tc.run_on_handler(demo_handler)
-        print("Contract Valid: " + str(check.is_valid))
-        print("Status: " + str(check.status_code) + " in " + str(check.duration_ms) + " ms")
-        if check.is_valid:
-            print("Contract verified successfully.")
-        else:
-            print("Contract check failed: " + check.error_summary())
-            nox.os.exit(1)
+        print("Contract check failed: " + check.error_summary())
+        nox.os.exit(1)
 
 def find_env_binary() -> str:
     env_candidates: list[str] = [

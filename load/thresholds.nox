@@ -44,8 +44,23 @@ def evaluate_threshold(t: Threshold, metrics: LoadMetrics, total_duration_ms: in
     elif t.metric_name == "p99_latency_ms" or t.metric_name == "p99":
         actual = float(metrics.p99())
         is_latency_metric = True
+    elif t.metric_name == "p50_latency_us" or t.metric_name == "p50_us":
+        actual = float(metrics.p50_us())
+        is_latency_metric = True
+    elif t.metric_name == "p90_latency_us" or t.metric_name == "p90_us":
+        actual = float(metrics.p90_us())
+        is_latency_metric = True
+    elif t.metric_name == "p95_latency_us" or t.metric_name == "p95_us":
+        actual = float(metrics.p95_us())
+        is_latency_metric = True
+    elif t.metric_name == "p99_latency_us" or t.metric_name == "p99_us":
+        actual = float(metrics.p99_us())
+        is_latency_metric = True
     elif t.metric_name == "mean_latency_ms" or t.metric_name == "mean":
         actual = metrics.mean_latency_ms()
+        is_latency_metric = True
+    elif t.metric_name == "mean_latency_us" or t.metric_name == "mean_us":
+        actual = metrics.mean_latency_us()
         is_latency_metric = True
     elif t.metric_name == "max_latency_ms" or t.metric_name == "max":
         actual = float(metrics.max_latency_ms)
@@ -62,6 +77,12 @@ def evaluate_threshold(t: Threshold, metrics: LoadMetrics, total_duration_ms: in
         actual = float(metrics.overflow_count)
     elif t.metric_name == "rejected":
         actual = float(metrics.rejected)
+    elif t.metric_name == "peak_concurrency":
+        actual = float(metrics.peak_concurrency)
+    elif t.metric_name == "peak_active_vus":
+        actual = float(metrics.peak_active_vus)
+    elif t.metric_name == "peak_overlapping_executions":
+        actual = float(metrics.peak_overlapping_executions)
     else:
         return ThresholdResult(t.metric_name, t.operator, t.target_value, 0.0, False, "unknown threshold metric: " + t.metric_name)
 
