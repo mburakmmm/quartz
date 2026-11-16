@@ -3,6 +3,15 @@
 All notable changes to the Quartz test framework will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.21] - 2026-11-16 - Cross-Platform Clock Overlap Precision & Consumer CI Parity
+
+### Fixed
+- **Sub-Tick Monotonic Clock Overlap Precision (`load/metrics.nox`, `tests/load_metrics_test.nox`)**:
+  - Removed artificial zero-duration (`ej = sj + 1`) coercion in `compute_interval_overlap_peak()` so rapid sequential callbacks completing within the same coarse clock tick on macOS ARM64 never falsely inflate `peak_overlapping_executions`.
+  - Added regression test for identical-tick zero-duration samples in `tests/load_metrics_test.nox`.
+- **Clean Consumer Package CI Verification (`.github/workflows/ci.yml`)**:
+  - Fixed `Prng.next_int_range()` API call and eliminated YAML heredoc leading indentation in POSIX and Windows consumer smoke checks (`noxc fetch`, `noxc check`, `noxc run`).
+
 ## [0.9.20] - 2026-11-16 - Pre-1.0 Audit Remediation: SSRF URL Safety, Honest Load Overlap, Sub-ms Percentiles, Live CLI Targets & Loopback gRPC E2E
 
 ### Security & Networking

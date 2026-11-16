@@ -69,9 +69,7 @@ def compute_interval_overlap_peak(starts_ns: list[int], ends_ns: list[int]) -> i
         while j < n:
             sj: int = starts_ns[j]
             ej: int = ends_ns[j]
-            if ej <= sj:
-                ej = sj + 1
-            if sj <= t and t < ej:
+            if ej > sj and sj <= t and t < ej:
                 active_at_t = active_at_t + 1
             j = j + 1
         if active_at_t > best:

@@ -259,6 +259,8 @@ def test_subms_microsecond_histogram_and_interval_overlap() -> None:
     # 2. Verify interval overlap math
     # Sequential half-open intervals [100,200), [200,300), [300,400) -> overlap = 1
     assert_eq_int(compute_interval_overlap_peak([100, 200, 300], [200, 300, 400]), 1, "sequential intervals have overlap peak 1")
+    # Sub-tick zero-duration samples sharing identical timestamp -> overlap = 1 (no false overlap on coarse monotonic ticks)
+    assert_eq_int(compute_interval_overlap_peak([1000, 1000, 1000], [1000, 1000, 1000]), 1, "identical-tick zero-duration samples do not inflate overlap")
     # Overlapping intervals [100,500), [150,400), [200,600) -> overlap = 3
     assert_eq_int(compute_interval_overlap_peak([100, 150, 200], [500, 400, 600]), 3, "concurrent overlapping intervals compute exact peak 3")
 
