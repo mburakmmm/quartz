@@ -43,4 +43,4 @@ jobs:
         env:
           NOX_AUTH_TOKEN: ${{ secrets.NOX_AUTH_TOKEN }}
         run: |
-          noxc publish github.com/mburakmmm/quartz --ref ${{ github.ref_name }} --description "Shared test framework for the NOX ecosystem" --tags testing,assertions,property,fuzz,contract,load || echo "::notice::NOX package registry updated by repository owner."
+          noxc publish github.com/mburakmmm/quartz --ref ${{ github.ref_name }} --source nox --description "Comprehensive test framework for Nox: unit/snapshot/regression suites, deterministic property testing & shrinking, mutation/sequence fuzzing, HTTP/SSE/WebSocket/gRPC contracts, and concurrent load testing" --tags testing,assertions,property,fuzzing,contract,load,grpc,http,websocket,sse,snapshots,cli || echo "::notice::NOX package registry updated by repository owner."

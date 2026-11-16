@@ -1,5 +1,6 @@
 {
   "name": "quartz",
+  "source": "nox",
   "entry": "quartz.nox",
   "bin": {
     "name": "quartz",
