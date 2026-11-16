@@ -1033,10 +1033,9 @@
 ## Phase 18: v0.9.20 — Pre-1.0 Audit Remediation (Release Hygiene, SSRF URL Safety, True Parallel Load, Sub-ms Histograms, Real CLI & gRPC E2E)
 *Objective: Resolve every technical, security, concurrency, precision, CLI, documentation, and release-integrity finding from GPT-6 Sol's v0.9.19 review so Quartz reaches full production readiness prior to v1.0.*
 
-- [x] **18.0 [P0] Release & Registry Publish Reliability (`.github/workflows/publish.yml`, `nox.json`, `ci.yml`)**
-  - [x] Declare `"source": "nox"` in `nox.json` and pass `--source nox`, `--description`, and `--tags` cleanly in `publish.yml`.
-  - [x] Remove silent `|| echo` failure masking in `.github/workflows/publish.yml`; authenticate via `secrets.NOX_AUTH_TOKEN` -> `~/.nox/credentials` when present and fail-closed on registry publish errors.
-  - [x] Add a clean-consumer package smoke test in CI (create clean temp project `nox.json` depending on Quartz, run `noxc fetch` / `noxc check` / `noxc run`) and tag `v0.9.20` with green 4/4 CI on the tag itself.
+- [x] **18.0 [P0] Release & Registry Publish Reliability (`nox.json`, `ci.yml`)**
+  - [x] Declare `"source": "nox"` in `nox.json` and run authenticated local `noxc publish` with `--source nox`, `--description`, and 12 tags (`noxc publish` removed from GitHub Actions CI per user rule).
+  - [x] Add a clean-consumer package smoke test in CI (create clean temp project `nox.json` depending on Quartz, run `noxc fetch` / `noxc check` / `noxc run`) and tag `v0.9.21` with green 4/4 CI on the tag itself.
 - [x] **18.1 [P0] SSRF-Safe URL Parsing & Redirect Policy (`contract/http_network.nox`, `tests/contract_http_test.nox`)**
   - [x] Replace manual string-slicing `parse_url()` in `contract/http_network.nox` with `nox.url.parse()`.
   - [x] Strictly reject URLs with `userinfo` (`http://localhost:123@remote.example/`), invalid/non-numeric/out-of-range ports (`0`, `<0`, `>65535`), malformed authorities/IPv6, and unauthorized cross-origin redirects.
@@ -1164,4 +1163,5 @@
 | 2026-11-16 | Phase 17 | NOX 2.1.x Stdlib & Language | `core/`, `property/`, `fuzz/`, `contract/`, `load/`, `accel/`, `cli/` | Regex/dict assertions, `TempDirFixture`/`MemoryGuardFixture`, `nox.path.safe_join` + `blake3` corpus, `property/nox_interop.nox`, `monotonic_ns` + `MemDelta` + `TaskGroupRunner`/`AtomicRef`, `schema_int64` + `schema_string_pattern` + HTTP/2/3/pool + `contract/grpc.nox`, opt-in `accel/` (`yyjson`/`pcre2`/`xxhash`), glob CLI discovery | [x] DONE |
 | 2026-11-16 | Phase 17 | Verification & Release | `noxc check`, `noxc test`, `ci.yml`, `noxc publish` | `noxc test` 29/29 pass, QBE backend matrix pass, `noxc sbom` valid, release `v0.9.19` | [x] DONE |
 | 2026-11-16 | Phase 18 | Pre-1.0 Audit Remediation | `contract/`, `load/`, `cli/`, `README.md`, `docs/`, `.github/` | SSRF-safe `nox.url.parse` + redirect policy, honest `peak_active_vus` vs overlap-span `peak_concurrency`, 336-bucket sub-ms histogram (`p50_us`/`p95_us`/`p99_us`), `TaskGroupRunner` exact per-task slots, live CLI targets, loopback HTTP/2 gRPC E2E, fail-closed `publish.yml` + consumer `ci.yml` check, synced docs/showcases | [x] DONE |
-| 2026-11-16 | Phase 18 | Verification & Release | `noxc check`, `noxc test`, `ci.yml`, `noxc publish` | `noxc test` 29/29 pass, QBE backend matrix pass, tagged `v0.9.20` & `v0.9.21` (macOS sub-tick overlap fix + consumer CI fix), published & verified | [x] DONE |
+| 2026-11-16 | Phase 18 | Verification & Release | `noxc check`, `noxc test`, `ci.yml`, `noxc publish` | `noxc test` 29/29 pass, QBE backend matrix pass, tagged `v0.9.20` & `v0.9.21` (macOS sub-tick overlap fix + consumer CI fix), 4/4 CI green, published locally via `noxc publish` | [x] DONE |
+| 2026-11-16 | Phase 18 | CI Policy Hygiene | `git rm .github/workflows/publish.yml` | Removed `noxc publish` from GitHub Actions CI per user rule; registry publishing stays strictly local/authenticated CLI | [x] DONE |
