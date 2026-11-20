@@ -12,7 +12,7 @@ jobs:
     name: Test (${{ matrix.os }} - ${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     env:
-      NOX_VERSION: v2.1.186
+      NOX_VERSION: v2.2.38
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     strategy:
       fail-fast: false
@@ -49,9 +49,9 @@ jobs:
             ASSET="linux-x64"
             [ "$RUNNER_ARCH" = "ARM64" ] && [ "$RUNNER_OS" = "Linux" ] && ASSET="linux-arm64"
             [ "$RUNNER_OS" = "macOS" ] && ASSET="macos-arm64"
-            STAGE="nox-lang-${NOX_VERSION:-v2.1.186}-${ASSET}"
+            STAGE="nox-lang-${NOX_VERSION:-v2.2.38}-${ASSET}"
             TMP_DIR=$(mktemp -d)
-            ASSET_ID=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/mburakmmm/nox-lang/releases/tags/${NOX_VERSION:-v2.1.186}" | jq -r ".assets[] | select(.name == \"${STAGE}.tar.gz\") | .id")
+            ASSET_ID=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/mburakmmm/nox-lang/releases/tags/${NOX_VERSION:-v2.2.38}" | jq -r ".assets[] | select(.name == \"${STAGE}.tar.gz\") | .id")
             curl -fsSL -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
                  -H "Accept: application/octet-stream" \
                  -o "$TMP_DIR/${STAGE}.tar.gz" \
@@ -81,7 +81,7 @@ jobs:
               "Authorization" = "Bearer $env:GITHUB_TOKEN"
               "User-Agent" = "Quartz-CI"
             }
-            $v = if ($env:NOX_VERSION) { $env:NOX_VERSION } else { "v2.1.186" }
+            $v = if ($env:NOX_VERSION) { $env:NOX_VERSION } else { "v2.2.38" }
             $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/mburakmmm/nox-lang/releases/tags/$v" -Headers $relHeaders
             $asset = $rel.assets | Where-Object { $_.name -eq "nox-lang-$v-windows-x64.zip" }
             $tmpDir = Join-Path $env:TEMP ([System.Guid]::NewGuid().ToString())
@@ -113,14 +113,16 @@ jobs:
         run: |
           noxc test
 
-      - name: Run backend matrix test with QBE
+      - name: Run backend matrix & parity tests with QBE
         run: |
           noxc run --backend qbe tests/backend_matrix_test.nox
+          noxc run --backend qbe tests/compiler_parity_test.nox
 
-      - name: Run backend matrix test with LLVM
+      - name: Run backend matrix & parity tests with LLVM
         if: runner.os != 'Windows'
         run: |
           noxc run --backend llvm tests/backend_matrix_test.nox
+          noxc run --backend llvm tests/compiler_parity_test.nox
 
       - name: Verify Quartz CLI commands & SBOM
         run: |

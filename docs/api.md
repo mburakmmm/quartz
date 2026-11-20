@@ -717,6 +717,26 @@ Published as the `quartz` binary via `nox.json` and runnable via `noxc run cli/m
 - `accel/pcre2_assert.nox`: `pcre2_is_supported()`, `pcre2_jit_supported()`, `compile_pcre2_pattern()`, `assert_pcre2_matches()`, `assert_pcre2_full_match()`, `assert_pcre2_named_group()`.
 - `accel/xxhash_digest.nox`: `xxhash_is_supported()`, `fingerprint_xxh3_64()`, `fingerprint_xxh3_128_hex()`, `FastCorpusIndex`.
 
+---
+
+## 43. NOX 2.2 Integration: Zero-AST JSON Tape, SSRF DNS-Pinning, Isolated Pools, Causation & AEAD Artifacts
+
+- **Zero-AST JSON Tape Validator (`contract/fast_tape.nox`)**:
+  - `validate_json_tape(schema: SchemaDescriptor, raw_json: str, path: str = "$") -> list[str]`
+  - `validate_parsed_tape(schema: SchemaDescriptor, doc: JsonValue, path: str = "$") -> list[str]`
+  - `validate_response_tape(res: HttpResponse, expected_statuses: list[int], required_headers: list[str], expected_content_type: str, body_schema: SchemaDescriptor | None, duration_ms: int) -> ContractCheckResult`
+- **Network SSRF / DNS-Pinning / Custom CA (`contract/http_network.nox`)**:
+  - `NetworkPolicy` fields: `pin_dns: bool = True`, `ca_file: str = ""`, `use_safehttp: bool = False`, `allow_downgrade: bool = False`, `use_isolated_pool: bool = False`.
+  - `classify_ip_safety(host: str) -> str`, `validate_resolved_ips(host: str, ips: list[str], allow_loopback: bool = False) -> str`, `resolve_and_pin_ip(host: str, policy: NetworkPolicy) -> str`.
+- **Isolated HTTP Pool & Timed TaskGroup Load (`load/executor.nox`, `load/metrics.nox`)**:
+  - `run_pooled_network_load_test(...)`, `LoadMetrics.pool_idle_connections`, `LoadMetrics.record_pool_idle(idle: int)`, `async def run_nested_task_group_workload(...)`.
+- **Causation Chains, Env Secret Scrubbing & AEAD Artifacts (`core/assert.nox`, `core/report.nox`, `fuzz/corpus.nox`, `contract/mock.nox`)**:
+  - `format_exception_chain(e: Exception) -> str`, `assert_raises_with_cause(fn, expected_msg_substr, expected_cause_substr, msg)`.
+  - `is_sensitive_env_name(name: str) -> bool`, `redact_env_secrets(text: str) -> str`.
+  - `CorpusManager.save_sealed_crash_artifact(...)`, `open_sealed_crash_artifact(path, key_hex)`, `save_sealed_mock_exchanges(...)`, `load_sealed_mock_exchanges(path, key_hex)`.
+- **SQLite Multi-Statement Script Execution (`adapters/feather.nox`)**:
+  - `InMemorySqlConnection.execute_script(script_sql: str) -> int`, `execute_sql_script(conn: DbConnection, script_sql: str) -> int`.
+
 
 
 

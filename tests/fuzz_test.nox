@@ -1,11 +1,13 @@
 # Quartz Fuzz Test Suite
+import nox.crypto
 import nox.fs
 import nox.strings
+from nox.crypto import CryptoError
 from core.assert import assert_true, assert_false, assert_eq_int, assert_eq_str, assert_contains_str
 from core.prng import Prng
 from fuzz.harness import run_in_process, FuzzOutcome, HandledRejection, OUTCOME_NORMAL, OUTCOME_HANDLED_REJECTION, OUTCOME_ASSERTION_VIOLATION, OUTCOME_CRASH
 from fuzz.mutation import mutate, mutate_byte_flip, mutate_json, mutate_csv, mutate_boundary_number
-from fuzz.corpus import CorpusManager, CorpusConfig, default_corpus_config
+from fuzz.corpus import CorpusManager, CorpusConfig, default_corpus_config, open_sealed_crash_artifact
 from fuzz.minimize import minimize_crash, MinimizationResult
 from fuzz.fuzzer import run_fuzz, FuzzSummary
 from fuzz.cluster import CrashDeduplicator, CrashCluster
@@ -226,6 +228,29 @@ def cleanup_dir(path: str) -> None:
                 cleanup_dir(sub)
             i = i + 1
 
+def test_sealed_crash_artifact_aead() -> None:
+    cfg: CorpusConfig = default_corpus_config()
+    cm: CorpusManager = CorpusManager("sealed_crash_target", "fixtures/corpus", cfg)
+    key: str = nox.crypto.secure_random_hex(32)
+    wrong_key: str = nox.crypto.secure_random_hex(32)
+    outcome: FuzzOutcome = FuzzOutcome(OUTCOME_CRASH, "panic_sig", "boom", 3)
+    secret_payload: str = "CRASH_INPUT_WITH_PRIVATE_PAYLOAD_123"
+    sealed_path: str = cm.save_sealed_crash_artifact(secret_payload, outcome, 77, 5, key)
+    assert_true(len(sealed_path) > 0 and nox.fs.exists(sealed_path), "sealed crash artifact saved")
+
+    disk_raw: str = nox.fs.read_to_string(sealed_path)
+    assert_false(nox.strings.contains(disk_raw, "PRIVATE_PAYLOAD"), "plaintext absent from sealed crash file")
+
+    opened: str = open_sealed_crash_artifact(sealed_path, key)
+    assert_eq_str(opened, secret_payload, "AEAD sealed crash artifact decrypted identically")
+
+    rejected: bool = False
+    try:
+        open_sealed_crash_artifact(sealed_path, wrong_key)
+    except CryptoError as _ce:
+        rejected = True
+    assert_true(rejected, "wrong key rejected when opening AEAD crash artifact")
+
 def run_all_fuzz_tests() -> None:
     if not nox.fs.exists("fixtures"):
         nox.fs.create_dir("fixtures")
@@ -240,6 +265,7 @@ def run_all_fuzz_tests() -> None:
     test_crash_minimizer()
     test_fuzzer_session()
     test_crash_clustering()
+    test_sealed_crash_artifact_aead()
 
     cleanup_dir("fixtures/corpus")
     print("quartz fuzz test: ALL PASS")

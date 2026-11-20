@@ -1,0 +1,121 @@
+# Quartz Canary — NOX 2.2.38 Language Surface Parity Suite (QBE + LLVM)
+import nox.json
+from core.assert import (
+    assert_true,
+    assert_false,
+    assert_eq_int,
+    assert_eq_str,
+    assert_contains_str
+)
+from contract.fast_tape import (
+    validate_json_tape,
+    validate_response_tape
+)
+from contract.schema import schema_object, schema_integer, PropertyRule
+
+type CaseCount = int
+type LabelMap = dict[str, str]
+
+def _raise_inner() -> None:
+    raise ValueError("inner io fault")
+
+def _raise_outer() -> None:
+    try:
+        _raise_inner()
+    except ValueError as e:
+        raise RuntimeError("outer task failed") from e
+
+def _rethrow_bare() -> None:
+    try:
+        _raise_inner()
+    except ValueError as _e:
+        raise
+
+def _optional_len(s: str | None) -> int:
+    if s != None and len(s) > 0:
+        return len(s)
+    return 0
+
+def test_syntax_and_types() -> None:
+    # 1. type alias + walrus statement inference
+    n: CaseCount = 15
+    inferred := n * 3 + 5
+    assert_eq_int(inferred, 50, "walrus inferred int + type alias")
+
+    # 2. star unpacking + list/dict spread
+    seq: list[int] = [10, 20, 30, 40]
+    head, *tail = seq
+    assert_eq_int(head, 10, "star unpack head")
+    assert_eq_int(len(tail), 3, "star unpack tail")
+    combined: list[int] = [1, *tail, 99]
+    assert_eq_int(len(combined), 5, "list spread len")
+    assert_eq_int(combined[4], 99, "list spread end")
+
+    base_map: LabelMap = {"env": "ci", "suite": "parity"}
+    full_map: LabelMap = {**base_map, "version": "2.2.38"}
+    assert_eq_str(full_map["env"], "ci", "dict spread preserved base")
+    assert_eq_str(full_map["version"], "2.2.38", "dict spread merged override")
+
+    # 3. optional narrowing in 'and', for..else, raw strings, semicolon compounds
+    assert_eq_int(_optional_len(None), 0, "optional None narrowing")
+    assert_eq_int(_optional_len("quartz"), 6, "optional non-empty narrowing")
+
+    else_ran: bool = False
+    for k in range(3):
+        if k == 99:
+            break
+    else:
+        else_ran = True
+    assert_true(else_ran, "for..else ran when loop finished normally")
+
+    raw_s: str = r"line1\nline2"
+    assert_eq_int(len(raw_s), 12, "raw string preserves backslash literal")
+    x1: int = 4; x2: int = 6
+    assert_eq_int(x1 + x2, 10, "semicolon multi-statement works")
+
+def test_error_chains_and_qualified_except() -> None:
+    caught_cause: str = ""
+    try:
+        _raise_outer()
+    except RuntimeError as ex:
+        caught_cause = ex.cause
+    assert_contains_str(caught_cause, "inner io fault", "raise..from preserves cause")
+
+    rethrow_caught: bool = False
+    try:
+        _rethrow_bare()
+    except ValueError as ve:
+        rethrow_caught = True
+        assert_contains_str(str(ve), "inner io fault", "bare raise preserves message")
+    assert_true(rethrow_caught, "bare raise rethrows active exception")
+
+    json_err_caught: bool = False
+    try:
+        nox.json.parse("{invalid")
+    except nox.json.JsonError as _je:
+        json_err_caught = True
+    assert_true(json_err_caught, "qualified module exception type caught")
+
+    # __all__ module visibility + multi-line import verification
+    s: PropertyRule = PropertyRule("count", schema_integer(1, 100, True, True))
+    obj_s := schema_object([s], ["count"], True)
+    errs := validate_json_tape(obj_s, "{\"count\": 50}")
+    assert_eq_int(len(errs), 0, "fast_tape __all__ exports work cleanly")
+
+async def test_nested_async_scalar_capture() -> None:
+    factor: int = 11
+    offset: int = 9
+    async def _inner(v: int) -> int:
+        return v * factor + offset
+    t1: Task[int] = spawn _inner(3)
+    t2: Task[int] = spawn _inner(5)
+    r1: int = await t1
+    r2: int = await t2
+    assert_eq_int(r1, 42, "nested async capture #1")
+    assert_eq_int(r2, 64, "nested async capture #2")
+
+test_syntax_and_types()
+test_error_chains_and_qualified_except()
+t_parity: Task[None] = spawn test_nested_async_scalar_capture()
+await t_parity
+print("quartz compiler parity test (NOX 2.2.38): ALL PASS")

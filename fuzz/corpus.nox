@@ -1,10 +1,12 @@
 import nox.fs
 import nox.path
 import nox.crypto
+import nox.json
 import nox.strings
+from nox.json import JsonValue
 from nox.path import PathError
 from core.prng import hash_str_fnv
-from core.report import escape_json
+from core.report import escape_json, redact_secrets
 from fuzz.harness import FuzzOutcome
 
 def int_to_hex_8(n: int) -> str:
@@ -201,21 +203,60 @@ class CorpusManager:
         # Write raw binary/text payload
         nox.fs.write_string_atomic(raw_path, input_data)
 
-        # Write JSON artifact descriptor with proper escaping
+        clean_sig: str = redact_secrets(outcome.signature)
+        clean_err: str = redact_secrets(outcome.message)
+
+        # Write JSON artifact descriptor with proper escaping and secret redaction
         json_content: str = "{\n"
         json_content = json_content + "  \"schema_version\": \"1\",\n"
         json_content = json_content + "  \"engine\": \"quartz\",\n"
         json_content = json_content + "  \"kind\": \"fuzz_crash\",\n"
         json_content = json_content + "  \"target\": \"" + escape_json(self.target_name) + "\",\n"
         json_content = json_content + "  \"status\": \"" + escape_json(outcome.status) + "\",\n"
-        json_content = json_content + "  \"signature\": \"" + escape_json(outcome.signature) + "\",\n"
+        json_content = json_content + "  \"signature\": \"" + escape_json(clean_sig) + "\",\n"
         json_content = json_content + "  \"content_blake3\": \"" + full_blake3 + "\",\n"
         json_content = json_content + "  \"seed\": " + str(seed) + ",\n"
         json_content = json_content + "  \"case_index\": " + str(case_index) + ",\n"
         json_content = json_content + "  \"duration_ms\": " + str(outcome.duration_ms) + ",\n"
         json_content = json_content + "  \"input_bytes_file\": \"" + escape_json(raw_path) + "\",\n"
-        json_content = json_content + "  \"error_message\": \"" + escape_json(outcome.message) + "\"\n"
+        json_content = json_content + "  \"error_message\": \"" + escape_json(clean_err) + "\"\n"
         json_content = json_content + "}\n"
 
         nox.fs.write_string_atomic(json_path, json_content)
         return json_path
+
+    # Seals sensitive local crash reproducer payloads with ChaCha20-Poly1305 AEAD
+    # so local crash corpora remain integrity-protected and encrypted at rest.
+    def save_sealed_crash_artifact(self: CorpusManager, input_data: str, outcome: FuzzOutcome, seed: int, case_index: int, key_hex: str, nonce_hex: str = "") -> str:
+        self.ensure_directories()
+        if self.get_crash_count() >= self.config.max_files:
+            return ""
+        full_blake3: str = nox.crypto.blake3(input_data)
+        file_id: str = full_blake3[0:16]
+        eff_nonce: str = nonce_hex
+        if len(eff_nonce) == 0:
+            eff_nonce = nox.crypto.secure_random_hex(12)
+        plaintext: str = input_data
+        sealed_hex: str = nox.crypto.aead_seal(key_hex, eff_nonce, plaintext, "quartz:fuzz_crash:" + self.target_name)
+        env_path: str = nox.path.safe_join(self.crashes_dir, "crash_" + file_id + ".aead.json")
+        env_json: str = "{\n"
+        env_json = env_json + "  \"schema_version\": \"1\",\n"
+        env_json = env_json + "  \"kind\": \"quartz_sealed_crash\",\n"
+        env_json = env_json + "  \"algorithm\": \"chacha20-poly1305\",\n"
+        env_json = env_json + "  \"target\": \"" + escape_json(self.target_name) + "\",\n"
+        env_json = env_json + "  \"signature\": \"" + escape_json(redact_secrets(outcome.signature)) + "\",\n"
+        env_json = env_json + "  \"seed\": " + str(seed) + ",\n"
+        env_json = env_json + "  \"case_index\": " + str(case_index) + ",\n"
+        env_json = env_json + "  \"nonce_hex\": \"" + escape_json(eff_nonce) + "\",\n"
+        env_json = env_json + "  \"ciphertext_hex\": \"" + escape_json(sealed_hex) + "\"\n"
+        env_json = env_json + "}\n"
+        nox.fs.write_string_atomic(env_path, env_json)
+        return env_path
+
+def open_sealed_crash_artifact(path: str, key_hex: str) -> str:
+    raw: str = nox.fs.read_to_string(path)
+    doc: JsonValue = nox.json.parse(raw)
+    target: str = nox.json.as_string(nox.json.get(doc, "target"))
+    nonce_hex: str = nox.json.as_string(nox.json.get(doc, "nonce_hex"))
+    ciphertext_hex: str = nox.json.as_string(nox.json.get(doc, "ciphertext_hex"))
+    return nox.crypto.aead_open(key_hex, nonce_hex, ciphertext_hex, "quartz:fuzz_crash:" + target)

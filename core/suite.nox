@@ -1,5 +1,6 @@
 # Quartz Core — Test Suite and Runner
 from core.types import STATUS_PASS, STATUS_FAIL, STATUS_SKIP, Failure, TestResult, RunSummary
+from core.assert import format_exception_chain
 import nox.strings
 import nox.time
 import nox.os
@@ -238,7 +239,7 @@ class TestSuite:
             passed = test_fn()
         except Exception as e:
             passed = False
-            err_msg = str(e)
+            err_msg = format_exception_chain(e)
         dur: int = t0.elapsed_ms()
 
         if passed:
@@ -266,7 +267,7 @@ class TestSuite:
             test_fn()
         except Exception as e:
             passed = False
-            err_msg = str(e)
+            err_msg = format_exception_chain(e)
         dur: int = t0.elapsed_ms()
 
         if passed:

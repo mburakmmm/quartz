@@ -2,7 +2,7 @@
 
 > **Framework:** Quartz for NOX  
 > **Status:** Production Reference  
-> **Pinned Toolchain:** `nox-lang v2.1.186+`  
+> **Pinned Toolchain:** `nox-lang v2.2.38+`  
 > **Target Package:** `quartz`
 
 Quartz is tested and verified across modern operating systems, hardware architectures, and NOX compiler backends.
@@ -35,9 +35,9 @@ The NOX compiler supports both QBE and LLVM backends. Quartz is carefully archit
 
 ## 3. Standard Library Module Requirements
 
-Quartz relies strictly on standard library modules bundled with `noxc 2.1.186+`:
+Quartz relies strictly on standard library modules bundled with `noxc 2.2.38+`:
 
-- **Core Portability (`quartz.nox`):** `nox.test`, `nox.time` (`instant_now`, `monotonic_ns`), `nox.fs` (`write_string_atomic`, `create_dir_all`, `remove_dir_all`), `nox.path` (`safe_join`), `nox.tempfile`, `nox.glob`, `nox.fnmatch`, `nox.mem` (`stats`), `nox.json` (`as_int`, tape parser), `nox.regex`, `nox.crypto` (`blake3`, `sha256`), `nox.http` (`set_http2`, `set_http3`, `client_pool`, `HttpCapabilityError`), `nox.grpc`, `nox.grpc_server`, `nox.protobuf`, `nox.tasks` (`TaskGroup`, `checkpoint`), `nox.atomic` (`AtomicInt`, `AtomicRef`), `nox.property`, `nox.process`.
+- **Core Portability (`quartz.nox`):** `nox.test`, `nox.time` (`instant_now`, `monotonic_ns`), `nox.fs` (`write_string_atomic`, `create_dir_all`, `remove_dir_all`), `nox.path` (`safe_join`), `nox.os` (`environ`, `env_names`), `nox.tempfile`, `nox.glob`, `nox.fnmatch`, `nox.mem` (`stats`), `nox.json` (`as_int`, `pos_*` zero-AST tape navigation, `JsonWriter`), `nox.regex`, `nox.crypto` (`blake3`, `sha256`, `aead_seal`, `aead_open`), `nox.ip`, `nox.dns`, `nox.safehttp`, `nox.http` (`configure(bind_address=...)`, `Pool`/`new_pool`, `connect_ip`, `ca_file`, `set_http2`, `set_http3`, `client_pool`, `HttpCapabilityError`), `nox.grpc`, `nox.grpc_server`, `nox.protobuf`, `nox.tasks` (`TaskGroup`, `checkpoint`), `nox.atomic` (`AtomicInt`, `AtomicRef`), `nox.property`, `nox.process`.
 - **Opt-In Desktop Accelerators (`accel/`):** `nox.yyjson`, `nox.pcre2`, and `nox.xxhash` (backed by `lib/noxclibs.a`). Kept deliberately separate from `quartz.nox` so core builds remain free of `noxclibs` links on WebAssembly, mobile, or `--deny-capability dynamic_code` targets.
 
 ---

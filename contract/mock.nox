@@ -2,6 +2,7 @@
 # Provides offline deterministic HTTP interaction recording, serialized JSON fixtures,
 # and in-memory mock playback handlers with strict route matching and unmatched fallback policies.
 
+import nox.crypto
 import nox.json
 import nox.fs
 import nox.strings
@@ -172,6 +173,31 @@ def load_mock_exchanges_from_file(path: str) -> list[MockExchange]:
         return []
     content: str = nox.fs.read_to_string(path)
     return parse_mock_exchanges_json(content)
+
+def save_sealed_mock_exchanges(path: str, exchanges: list[MockExchange], key_hex: str, nonce_hex: str = "") -> None:
+    eff_nonce: str = nonce_hex
+    if len(eff_nonce) == 0:
+        eff_nonce = nox.crypto.secure_random_hex(12)
+    payload: str = format_mock_exchanges_json(exchanges)
+    sealed_hex: str = nox.crypto.aead_seal(key_hex, eff_nonce, payload, "quartz:contract_mock")
+    env: str = "{\n"
+    env = env + "  \"schema_version\": \"1\",\n"
+    env = env + "  \"kind\": \"quartz_sealed_mock\",\n"
+    env = env + "  \"algorithm\": \"chacha20-poly1305\",\n"
+    env = env + "  \"nonce_hex\": \"" + escape_json(eff_nonce) + "\",\n"
+    env = env + "  \"ciphertext_hex\": \"" + escape_json(sealed_hex) + "\"\n"
+    env = env + "}\n"
+    nox.fs.write_string_atomic(path, env)
+
+def load_sealed_mock_exchanges(path: str, key_hex: str) -> list[MockExchange]:
+    if not nox.fs.exists(path):
+        return []
+    raw: str = nox.fs.read_to_string(path)
+    doc: JsonValue = nox.json.parse(raw)
+    nonce_hex: str = nox.json.as_string(nox.json.get(doc, "nonce_hex"))
+    ciphertext_hex: str = nox.json.as_string(nox.json.get(doc, "ciphertext_hex"))
+    plain: str = nox.crypto.aead_open(key_hex, nonce_hex, ciphertext_hex, "quartz:contract_mock")
+    return parse_mock_exchanges_json(plain)
 
 class MockPlaybackHandler:
     exchanges: list[MockExchange]

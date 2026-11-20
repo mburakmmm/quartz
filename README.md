@@ -6,8 +6,8 @@
 
 <p align="center">
   <a href="https://github.com/mburakmmm/quartz/actions/workflows/ci.yml"><img src="https://github.com/mburakmmm/quartz/actions/workflows/ci.yml/badge.svg" alt="CI Status" /></a>
-  <a href="https://github.com/mburakmmm/quartz/releases/latest"><img src="https://img.shields.io/badge/release-v0.9.21-0969da.svg" alt="Latest Release" /></a>
-  <a href="https://github.com/mburakmmm/nox-lang"><img src="https://img.shields.io/badge/nox--lang-v2.1.186+-8250df.svg" alt="NOX Language" /></a>
+  <a href="https://github.com/mburakmmm/quartz/releases/latest"><img src="https://img.shields.io/badge/release-v0.9.22-0969da.svg" alt="Latest Release" /></a>
+  <a href="https://github.com/mburakmmm/nox-lang"><img src="https://img.shields.io/badge/nox--lang-v2.2.38+-8250df.svg" alt="NOX Language" /></a>
   <a href="https://github.com/mburakmmm/quartz/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-success.svg" alt="License: MIT" /></a>
   <img src="https://img.shields.io/badge/platforms-Linux%20|%20macOS%20|%20Windows-2ea44f.svg" alt="Multi-Platform Support" />
   <img src="https://img.shields.io/badge/backends-LLVM%20|%20QBE-bf8700.svg" alt="Dual Backend" />
@@ -87,7 +87,7 @@ Designed to scale from unit assertions to mission-critical infrastructure verifi
   "name": "my_nox_service",
   "version": "1.0.0",
   "dependencies": {
-    "github.com/mburakmmm/quartz": "v0.9.21"
+    "github.com/mburakmmm/quartz": "v0.9.22"
   }
 }
 ```
@@ -286,7 +286,7 @@ For full architectural records, formal specifications, and complete recipes, exp
 | [**Recipes & Cookbook**](docs/recipes.md) | 18 step-by-step production recipes covering property tests, fuzzers, contracts, load, and adapters. |
 | [**Security & Guardrails**](docs/security.md) | Loopback policies, secret redaction, safe integer bounds ($2^{53}$), and sandbox limits. |
 | [**Compatibility Matrix**](docs/compatibility.md) | Platform capabilities, timer precision, and compiler backend behavioral parity. |
-| [**Changelog**](CHANGELOG.md) | Full historical log of all releases from `v0.1.0` through `v0.9.21`. |
+| [**Changelog**](CHANGELOG.md) | Full historical log of all releases from `v0.1.0` through `v0.9.22`. |
 
 ---
 

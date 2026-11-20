@@ -1,0 +1,111 @@
+# Quartz Contract — Zero-AST JSON Tape Equivalence & Regression Tests
+import nox.json
+from nox.http import HttpResponse
+from nox.json import JsonValue, JsonWriter
+from core.assert import assert_true, assert_false, assert_eq_int, assert_contains_str
+from contract.types import ContractCheckResult
+from contract.schema import (
+    SchemaDescriptor,
+    PropertyRule,
+    schema_string,
+    schema_string_pattern,
+    schema_enum,
+    schema_integer,
+    schema_int64,
+    schema_number,
+    schema_boolean,
+    schema_null,
+    schema_array,
+    schema_object,
+    validate_schema
+)
+from contract.fast_tape import validate_json_tape, validate_parsed_tape, validate_response_tape
+
+def _build_user_schema(strict: bool = True) -> SchemaDescriptor:
+    tags_s: SchemaDescriptor = schema_array(schema_string(1, 24), 1, 5)
+    props: list[PropertyRule] = [
+        PropertyRule("id", schema_int64(1, 9223372036854775807, True, True)),
+        PropertyRule("safe_code", schema_integer(0, 1000, True, True)),
+        PropertyRule("role", schema_enum(["admin", "member", "viewer"])),
+        PropertyRule("slug", schema_string_pattern("^[a-z0-9-]+$", 2, 32)),
+        PropertyRule("score", schema_number(0.0, 100.0, True, True)),
+        PropertyRule("active", schema_boolean()),
+        PropertyRule("deleted_at", schema_null()),
+        PropertyRule("tags", tags_s)
+    ]
+    return schema_object(props, ["id", "role", "slug", "active", "tags"], strict)
+
+def test_tape_and_ast_positive_equivalence() -> None:
+    schema: SchemaDescriptor = _build_user_schema(True)
+    jw: JsonWriter = JsonWriter()
+    jw.begin_object()
+    jw.write_key("id")
+    jw.write_int(9007199254740993)
+    jw.write_key("safe_code")
+    jw.write_int(42)
+    jw.write_key("role")
+    jw.write_string("admin")
+    jw.write_key("slug")
+    jw.write_string("quartz-fast-tape")
+    jw.write_key("score")
+    jw.write_float(99.5)
+    jw.write_key("active")
+    jw.write_bool(True)
+    jw.write_key("deleted_at")
+    jw.write_null()
+    jw.write_key("tags")
+    jw.begin_array()
+    jw.write_string("nox")
+    jw.write_string("v2")
+    jw.end_array()
+    jw.end_object()
+
+    payload: str = jw.build()
+    tape_errs: list[str] = validate_json_tape(schema, payload, "body")
+    ast_errs: list[str] = validate_schema(schema, nox.json.parse(payload), "body")
+    assert_eq_int(len(tape_errs), 0, "valid payload has 0 tape schema errors")
+    assert_eq_int(len(ast_errs), 0, "valid payload has 0 AST schema errors")
+
+def test_tape_negative_and_2_53_precision() -> None:
+    schema: SchemaDescriptor = _build_user_schema(True)
+    bad_json: str = "{\"id\": 0, \"safe_code\": 9007199254740993, \"role\": \"root\", \"slug\": \"BAD_!\", \"score\": 105.0, \"active\": \"yes\", \"tags\": [], \"extra\": 1}"
+    tape_errs: list[str] = validate_json_tape(schema, bad_json, "body")
+    ast_errs: list[str] = validate_schema(schema, nox.json.parse(bad_json), "body")
+
+    assert_eq_int(len(tape_errs), len(ast_errs), "tape produces exact same error count as AST schema validator")
+    joined: str = "\n".join(tape_errs)
+    assert_contains_str(joined, "less than minimum 1", "int64 min enforced on tape")
+    assert_contains_str(joined, "2^53 precision limit", "2^53 precision guard preserved on tape")
+    assert_contains_str(joined, "not in allowed enum set", "enum check on tape")
+    assert_contains_str(joined, "does not match pattern", "regex check on tape")
+    assert_contains_str(joined, "exceeds maximum 100.0", "number max check on tape")
+    assert_contains_str(joined, "expected boolean", "bool type check on tape")
+    assert_contains_str(joined, "array length 0 is less than minimum 1", "array min_len check on tape")
+    assert_contains_str(joined, "unknown property 'extra'", "strict unknown key check on tape")
+
+def test_tape_scalar_fallback_and_response_wrapper() -> None:
+    # Scalar root JSON falls back cleanly from tape check to AST check
+    s_errs: list[str] = validate_json_tape(schema_integer(1, 10, True, True), "7", "$")
+    assert_eq_int(len(s_errs), 0, "scalar root JSON handled cleanly")
+
+    s_bad: list[str] = validate_json_tape(schema_integer(1, 10, True, True), "15", "$")
+    assert_eq_int(len(s_bad), 1, "scalar root range violation caught")
+
+    # Malformed JSON returns error list instead of crashing
+    m_errs: list[str] = validate_json_tape(schema_object([], [], False), "{bad json", "body")
+    assert_eq_int(len(m_errs), 1, "malformed JSON reports 1 structured error")
+    assert_contains_str(m_errs[0], "invalid JSON body", "malformed JSON error explains cause")
+
+    # HTTP response wrapper
+    resp: HttpResponse = HttpResponse(200, "{\"id\": 9007199254740995, \"role\": \"member\", \"slug\": \"ok-1\", \"active\": true, \"tags\": [\"a\"]}", {"Content-Type": "application/json; charset=utf-8", "X-Request-Id": "req-1"})
+    res_check: ContractCheckResult = validate_response_tape(resp, [200], ["X-Request-Id"], "application/json", _build_user_schema(True), 1)
+    assert_true(res_check.is_valid, "validate_response_tape validates full HTTP response")
+
+    resp_bad: HttpResponse = HttpResponse(500, "{}", {})
+    res_bad_check: ContractCheckResult = validate_response_tape(resp_bad, [200], ["X-Request-Id"], "application/json", _build_user_schema(True), 1)
+    assert_false(res_bad_check.is_valid, "validate_response_tape rejects bad status/headers/body")
+
+test_tape_and_ast_positive_equivalence()
+test_tape_negative_and_2_53_precision()
+test_tape_scalar_fallback_and_response_wrapper()
+print("quartz fast tape test: ALL PASS")

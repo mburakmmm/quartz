@@ -1,10 +1,12 @@
 # Quartz Tests — HTTP Contract Mock Record & Replay Suite
 # Validates offline deterministic mock playback, request recording, route matching, and fixture persistence.
 
+import nox.crypto
 import nox.fs
+from nox.crypto import CryptoError
 from nox.http import HttpRequest, HttpResponse
 from core.assert import assert_eq_int, assert_eq_str, assert_true, assert_false, assert_contains_str, assert_not_contains_str
-from contract.mock import MockExchange, MockPlaybackHandler, MockRecorder, create_mock_handler, save_mock_exchanges, load_mock_exchanges_from_file, parse_mock_exchanges_json
+from contract.mock import MockExchange, MockPlaybackHandler, MockRecorder, create_mock_handler, save_mock_exchanges, load_mock_exchanges_from_file, parse_mock_exchanges_json, save_sealed_mock_exchanges, load_sealed_mock_exchanges
 
 def test_mock_exchange_matching() -> None:
     req_headers: dict[str, str] = {"Content-Type": "application/json", "Authorization": "Bearer tok123"}
@@ -159,10 +161,35 @@ def test_mock_playback_route_body_disambiguation() -> None:
     assert_eq_int(res_phone.status, 404, "unknown item body returns 404")
     assert_contains_str(res_phone.body, "unmatched_mock_route", "unmatched route error reported")
 
+def test_sealed_mock_artifact_aead() -> None:
+    ex: MockExchange = MockExchange("GET", "/v1/private", {}, "", 200, {"Content-Type": "application/json"}, "{\"secret_note\":\"alpha\"}")
+    key: str = nox.crypto.secure_random_hex(32)
+    bad_key: str = nox.crypto.secure_random_hex(32)
+    path: str = "fixtures/sealed_mock_test.aead.json"
+    if not nox.fs.exists("fixtures"):
+        nox.fs.create_dir("fixtures")
+    save_sealed_mock_exchanges(path, [ex], key)
+    disk_raw: str = nox.fs.read_to_string(path)
+    assert_not_contains_str(disk_raw, "secret_note", "plaintext payload absent in AEAD sealed file")
+
+    loaded: list[MockExchange] = load_sealed_mock_exchanges(path, key)
+    assert_eq_int(len(loaded), 1, "sealed mock restored 1 exchange")
+    assert_contains_str(loaded[0].resp_body, "alpha", "decrypted mock body matches")
+
+    threw: bool = False
+    try:
+        load_sealed_mock_exchanges(path, bad_key)
+    except CryptoError as _ce:
+        threw = True
+    assert_true(threw, "wrong key rejected with CryptoError on AEAD mock")
+    if nox.fs.exists(path):
+        nox.fs.remove_file(path)
+
 test_mock_exchange_matching()
 test_mock_playback_handler_routing()
 test_mock_playback_unmatched_route()
 test_mock_recorder_and_file_persistence()
 test_mock_recorder_secret_redaction()
 test_mock_playback_route_body_disambiguation()
+test_sealed_mock_artifact_aead()
 print("quartz contract mock test: ALL PASS")

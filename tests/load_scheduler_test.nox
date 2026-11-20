@@ -13,7 +13,7 @@ from load.safety import validate_load_target, LoadSafetyError, HARD_CAP_VIRTUAL_
 from load.workload import WorkloadConfig, closed_workload, open_workload, MODEL_CLOSED, MODEL_OPEN
 from load.metrics import LoadMetrics
 from load.thresholds import Threshold
-from load.executor import LoadTestSummary, ConcurrentWaveScope, open_concurrent_wave_scope, run_task_workload, run_scoped_task_workload, run_handler_load_test, run_network_load_test, run_parallel_thread_workload
+from load.executor import LoadTestSummary, ConcurrentWaveScope, open_concurrent_wave_scope, run_task_workload, run_scoped_task_workload, run_handler_load_test, run_network_load_test, run_pooled_network_load_test, run_nested_task_group_workload, run_parallel_thread_workload
 from contract.http import build_request, empty_headers
 from contract.http_network import NetworkPolicy, loopback_network_policy
 
@@ -171,6 +171,8 @@ def _concurrent_loopback_srv_handler(req: HttpRequest) -> HttpResponse:
         act_c.decrement()
     # Validate preservation of custom headers, VU tracking header, and body with pipes & newlines
     status: int = 200
+    if req.target == "/pool-health":
+        return HttpResponse(200, "{\"ok\":true}", {"Content-Type": "application/json"})
     if req.target != "/exit":
         auth_ok: bool = False
         vu_ok: bool = False
@@ -195,6 +197,7 @@ def test_network_load_concurrent_http_server() -> None:
     srv_active: AtomicInt = nox.atomic.new_int(0)
     srv_peak: AtomicInt = nox.atomic.new_int(0)
     port: int = 19133
+    nox.http.configure(bind_address="127.0.0.1")
     fd: int = nox.http.listen(port)
     _s0: ThreadHandle[int] = nox.thread.start(_concurrent_loopback_srv_worker, str(fd))
     nox.time.sleep_ms(50)
@@ -212,7 +215,15 @@ def test_network_load_concurrent_http_server() -> None:
 
     net_summary: LoadTestSummary = run_network_load_test(wl_net, req, "http://127.0.0.1:" + str(port), policy, [], limits)
     observed_srv_peak: int = srv_peak.load()
+
+    # Also exercise isolated nox.http.Pool against the same live loopback server before shutdown()
+    wl_pool: WorkloadConfig = closed_workload("pooled_net_test", 2, 3, 6)
+    req_pool: HttpRequest = build_request("GET", "/pool-health", "", empty_headers())
+    pool_policy: NetworkPolicy = NetworkPolicy(True, "", 2000, 1048576, False, False, 4, 30000, False, True, "", False, False, True)
+    pool_summary: LoadTestSummary = run_network_load_test(wl_pool, req_pool, "http://127.0.0.1:" + str(port), pool_policy, [], limits)
+
     nox.http.shutdown()
+    nox.http.clear_bind_address()
     # Send wake-up request to unblock server thread waiting in accept() on BSD/macOS
     try:
         nox.http.request("GET", "http://127.0.0.1:" + str(port) + "/exit", "", {}, 100)
@@ -223,6 +234,10 @@ def test_network_load_concurrent_http_server() -> None:
 
     try:
         assert_eq_int(net_summary.metrics.completed, 8, "8 real HTTP network requests completed across 4 VUs")
+        assert_eq_int(pool_summary.metrics.completed, 6, "pooled load completed 6 requests")
+        assert_eq_int(pool_summary.metrics.successful, 6, "pooled load succeeded 6 requests")
+        assert_true(pool_summary.metrics.pool_idle_connections >= 0, "pool idle connections recorded before close")
+        assert_contains_str(pool_summary.to_json(), "\"pool_idle_connections\":", "JSON report exposes pool_idle_connections")
         assert_eq_int(net_summary.metrics.successful, 8, "8 real HTTP network requests returned 200 OK")
         assert_eq_int(net_summary.metrics.peak_active_vus, 4, "4 active network VUs scheduled per wave")
         assert_true(net_summary.metrics.peak_concurrency >= 2, "OS-thread workers recorded >= 2 concurrent in-flight HTTP requests")
@@ -466,6 +481,16 @@ async def test_concurrent_scheduler() -> None:
     http_404_summary: LoadTestSummary = run_handler_load_test(wl_http, mock_http_api, req_404, [], limits)
     assert_true(http_404_summary.aborted, "404 responses trip circuit breaker in handler load test")
 
+async def test_nested_task_group_workload() -> None:
+    limits: SafetyLimits = default_safety_limits()
+    wl: WorkloadConfig = closed_workload("nested_tg_test", 3, 2, 6)
+    no_thresh: list[Threshold] = []
+    t_nested: Task[LoadTestSummary] = spawn run_nested_task_group_workload(wl, 5, no_thresh, limits)
+    summary: LoadTestSummary = await t_nested
+    assert_eq_int(summary.metrics.completed, 6, "nested taskgroup completed 6 tasks")
+    assert_eq_int(summary.metrics.successful, 6, "nested taskgroup succeeded 6 tasks")
+    assert_true(summary.metrics.peak_concurrency >= 1, "nested taskgroup recorded concurrency")
+
 def run_all_load_scheduler_tests() -> None:
     print("running test_safety_limits_clamping...")
     test_safety_limits_clamping()
@@ -501,4 +526,7 @@ await cb_task
 
 conc_task: Task[None] = spawn test_concurrent_scheduler()
 await conc_task
+
+nested_tg_task: Task[None] = spawn test_nested_task_group_workload()
+await nested_tg_task
 print("quartz load scheduler test: ALL PASS")

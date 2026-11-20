@@ -6,11 +6,11 @@ import nox.thread
 import nox.tasks
 import nox.strings
 from nox.time import Instant
-from nox.http import HttpRequest, HttpResponse, HttpTimeoutError
+from nox.http import HttpRequest, HttpResponse, HttpTimeoutError, Pool, new_pool
 from nox.atomic import AtomicInt, AtomicRef
 from nox.thread import ThreadHandle
 from nox.tasks import TaskGroup, TaskHandle
-from contract.http_network import NetworkPolicy, apply_network_transport_options, execute_network_request, validate_network_target, ParsedUrl, NetworkExecutionResult
+from contract.http_network import NetworkPolicy, apply_network_transport_options, execute_network_request, validate_network_target, resolve_and_pin_ip, is_loopback_host, ParsedUrl, NetworkExecutionResult
 from load.safety import SafetyLimits, CircuitBreaker, default_safety_limits, CircuitBreakerTrippedError
 from load.metrics import LoadMetrics
 from load.workload import WorkloadConfig, MODEL_CLOSED, MODEL_OPEN
@@ -1027,6 +1027,8 @@ async def _net_vu_thread_worker(cfg_str: str) -> int:
         return 500
 
 def run_network_load_test(workload: WorkloadConfig, req: HttpRequest, base_url: str, policy: NetworkPolicy, thresholds: list[Threshold], limits: SafetyLimits) -> LoadTestSummary:
+    if policy.use_isolated_pool:
+        return run_pooled_network_load_test(workload, req, base_url, policy, thresholds, limits)
     metrics: LoadMetrics = LoadMetrics()
     cb: CircuitBreaker = CircuitBreaker(limits.max_consecutive_errors)
 
@@ -1436,3 +1438,146 @@ async def finish_taskgroup_runner(runner: TaskGroupRunner) -> LoadTestSummary:
     all_passed: bool = (not runner.aborted) and all_thresholds_passed(thresh_results)
 
     return LoadTestSummary(runner.workload.name, runner.metrics, thresh_results, total_duration_ms, all_passed, runner.aborted, runner.abort_reason, runner.vu_states)
+
+def run_pooled_network_load_test(workload: WorkloadConfig, req: HttpRequest, base_url: str, policy: NetworkPolicy, thresholds: list[Threshold], limits: SafetyLimits) -> LoadTestSummary:
+    metrics: LoadMetrics = LoadMetrics()
+    cb: CircuitBreaker = CircuitBreaker(limits.max_consecutive_errors)
+
+    t0: Instant = nox.time.instant_now()
+    deadline_ms: int = limits.duration_seconds * 1000
+    if workload.duration_seconds > 0 and workload.duration_seconds * 1000 < deadline_ms:
+        deadline_ms = workload.duration_seconds * 1000
+
+    max_cases: int = workload.max_iterations
+    case_idx: int = 0
+    aborted: bool = False
+    abort_reason: str = ""
+
+    vu_count: int = workload.virtual_users
+    if vu_count > limits.virtual_users:
+        vu_count = limits.virtual_users
+    if vu_count < 1:
+        vu_count = 1
+
+    target_path: str = req.target
+    if len(target_path) == 0 or target_path[0:1] != "/":
+        target_path = "/" + target_path
+    full_url: str = base_url + target_path
+    parsed: ParsedUrl = validate_network_target(full_url, policy)
+    if policy.pin_dns:
+        _pin_ok: str = resolve_and_pin_ip(parsed.host, policy)
+
+    eff_timeout: int = limits.timeout_ms
+    if policy.timeout_ms > 0 and policy.timeout_ms < eff_timeout:
+        eff_timeout = policy.timeout_ms
+    if eff_timeout < 10:
+        eff_timeout = 10
+
+    pool_max: int = policy.pool_max_idle
+    if pool_max <= 0:
+        pool_max = vu_count
+    if pool_max < 1:
+        pool_max = 1
+
+    vu_states: list[VirtualUserState] = []
+    v_i: int = 0
+    while v_i < vu_count:
+        vu_states.append(VirtualUserState(v_i))
+        v_i = v_i + 1
+
+    pool: Pool = new_pool(pool_max, policy.pool_idle_timeout_ms)
+    while case_idx < max_cases and t0.elapsed_ms() < deadline_ms and (not aborted):
+        try:
+            cb.check_healthy()
+        except CircuitBreakerTrippedError as e:
+            aborted = True
+            abort_reason = str(e)
+            break
+
+        vu_slot: int = case_idx % vu_count
+        metrics.record_scheduled()
+        metrics.record_active_vus(1)
+        metrics.record_concurrency(1)
+
+        req_hdrs: dict[str, str] = {}
+        src_hdrs: dict[str, str] = req.headers
+        for hk in src_hdrs:
+            req_hdrs[hk] = src_hdrs[hk]
+        req_hdrs["X-Quartz-VU"] = str(vu_slot)
+
+        ns0: int = nox.time.monotonic_ns()
+        status_code: int = 500
+        is_timeout: bool = False
+        try:
+            res: HttpResponse = pool.request(req.method, full_url, req.body, req_hdrs, eff_timeout)
+            status_code = res.status
+        except HttpTimeoutError as _te:
+            status_code = 504
+            is_timeout = True
+        except Exception as _he:
+            status_code = 500
+
+        ns1: int = nox.time.monotonic_ns()
+        dur_ns: int = ns1 - ns0
+        if dur_ns < 0:
+            dur_ns = 0
+        dur_ms: int = dur_ns // 1000000
+        if dur_ms > eff_timeout:
+            is_timeout = True
+            status_code = 504
+
+        success: bool = (status_code >= 200 and status_code < 400 and (not is_timeout))
+        if is_timeout:
+            cb.record_failure("pooled HTTP request timed out")
+        elif not success:
+            cb.record_failure("pooled HTTP request failed with status " + str(status_code))
+        else:
+            cb.record_success()
+
+        metrics.record_result_ns(status_code, dur_ns, is_timeout, success)
+        vu_states[vu_slot].record(dur_ms, success)
+
+        if cb.is_tripped:
+            aborted = True
+            try:
+                cb.check_healthy()
+            except CircuitBreakerTrippedError as trip_e:
+                abort_reason = str(trip_e)
+            break
+
+        case_idx = case_idx + 1
+
+    metrics.record_pool_idle(pool.idle_connections())
+    pool.close()
+
+    total_duration_ms: int = t0.elapsed_ms()
+    thresh_results: list[ThresholdResult] = evaluate_all_thresholds(thresholds, metrics, total_duration_ms)
+    all_passed: bool = (not aborted) and all_thresholds_passed(thresh_results)
+
+    return LoadTestSummary(workload.name, metrics, thresh_results, total_duration_ms, all_passed, aborted, abort_reason, vu_states)
+
+async def _timed_tg_worker_task(s_h: int, e_h: int, delay_ms: int, idx_copy: int) -> int:
+    s_c: AtomicInt = AtomicInt(s_h)
+    e_c: AtomicInt = AtomicInt(e_h)
+    s_c.store(nox.time.monotonic_ns())
+    if delay_ms > 0:
+        nox.time.sleep_ms(delay_ms)
+    nox.tasks.checkpoint()
+    e_c.store(nox.time.monotonic_ns())
+    return 1 if idx_copy >= 0 else 0
+
+async def run_nested_task_group_workload(workload: WorkloadConfig, work_ms: int, thresholds: list[Threshold], limits: SafetyLimits) -> LoadTestSummary:
+    runner: TaskGroupRunner = TaskGroupRunner(workload, thresholds, limits)
+    case_idx: int = 0
+    while runner.can_schedule():
+        slot: int = runner.alloc_timing_slot()
+        s_h: int = runner.start_handle(slot)
+        e_h: int = runner.end_handle(slot)
+        delay_ms: int = work_ms
+        if delay_ms > limits.timeout_ms:
+            delay_ms = limits.timeout_ms
+        runner.submit(spawn _timed_tg_worker_task(s_h, e_h, delay_ms, case_idx))
+        case_idx = case_idx + 1
+
+    t_fin: Task[LoadTestSummary] = spawn finish_taskgroup_runner(runner)
+    return await t_fin

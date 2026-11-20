@@ -1,8 +1,8 @@
 # Quartz Architecture & Technical Decision Records (ADRs)
 
-> **Toolchain:** `noxc 2.1.186` (initially prototyped on `noxc 2.0.108`)  
+> **Toolchain:** `noxc 2.2.38` (initially prototyped on `noxc 2.0.108`)  
 > **Environment:** Linux x64/arm64, macOS arm64, Windows x86_64 (Dual QBE & LLVM backends)  
-> **Updated:** 2026-11-16  
+> **Updated:** 2026-11-20  
 
 ---
 

@@ -1,10 +1,11 @@
 # Quartz Core Test Suite — Phase 1 MVP Verification
 from core.types import STATUS_PASS, STATUS_FAIL, STATUS_SKIP, Failure, TestResult, RunSummary
-from core.assert import assert_true, assert_false, assert_eq_int, assert_not_eq_int, assert_eq_str, assert_not_eq_str, assert_eq_bool, assert_eq_float, assert_contains_str, assert_not_contains_str
+from core.assert import assert_true, assert_false, assert_eq_int, assert_not_eq_int, assert_eq_str, assert_not_eq_str, assert_eq_bool, assert_eq_float, assert_contains_str, assert_not_contains_str, assert_raises_with_cause
 from core.suite import TestSuite
 from core.fixture import Fixture, SCOPE_CASE, run_with_fixture
-from core.report import escape_xml, escape_json, redact_secrets, format_junit_xml, format_summary_json, write_junit_report, write_json_report
+from core.report import escape_xml, escape_json, redact_secrets, redact_env_secrets, format_junit_xml, format_summary_json, write_junit_report, write_json_report
 import nox.fs
+import nox.os
 
 def test_assertions() -> None:
     # 1. Boolean assertions
@@ -260,6 +261,31 @@ def test_reports_and_redaction() -> None:
     nox.fs.remove_file(json_path)
     nox.fs.remove_file(xml_path)
 
+def _failing_chained_case() -> None:
+    try:
+        raise ValueError("disk full")
+    except ValueError as inner:
+        raise RuntimeError("failed saving report") from inner
+
+def test_exception_cause_and_env_redaction() -> None:
+    # 1. Exception causation assertion + TestSuite capture
+    assert_raises_with_cause(_failing_chained_case, "failed saving report", "disk full", "assert_raises_with_cause catches chained cause")
+
+    chain_suite: TestSuite = TestSuite("cause_suite")
+    chain_suite.run_case("chained_failure", _failing_chained_case)
+    assert_eq_int(chain_suite.fail_count(), 1, "chained exception recorded failure")
+    fail_json: str = format_summary_json("run-cause", "qbe", "2.2.38", chain_suite.summary)
+    assert_contains_str(fail_json, "caused by:", "JSON report preserves Exception.cause context")
+    assert_contains_str(fail_json, "disk full", "JSON report includes underlying cause message")
+
+    # 2. Active environment secret scrubbing (nox.os.environ)
+    nox.os.set_var("QUARTZ_TEST_API_TOKEN", "qtz_live_super_secret_987654")
+    leaked_msg: str = "debug log leaked token=qtz_live_super_secret_987654 to disk"
+    scrubbed: str = redact_secrets(leaked_msg)
+    assert_not_contains_str(scrubbed, "qtz_live_super_secret_987654", "active env secret value redacted")
+    assert_contains_str(scrubbed, "[REDACTED:ENV]", "env secret placeholder inserted")
+    nox.os.set_var("QUARTZ_TEST_API_TOKEN", "")
+
 def run_all_core_tests() -> None:
     test_assertions()
     test_suite_runner()
@@ -268,6 +294,7 @@ def run_all_core_tests() -> None:
     test_lazy_test_execution()
     test_fixture_lifecycle()
     test_reports_and_redaction()
+    test_exception_cause_and_env_redaction()
     print("quartz core MVP tests: ALL 25+ CHECKS PASSED")
 
 run_all_core_tests()

@@ -3,6 +3,28 @@
 All notable changes to the Quartz test framework will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.22] - 2026-11-20 - NOX 2.2.38 Full Integration: SSRF DNS-Pinning, Isolated HTTP Pools, Zero-AST JSON Tape, Causation Chains & AEAD Artifacts
+
+### Added & Security
+- **RFC 6890/4291 IP Classification, DNS-Rebinding Prevention, Custom CA & Loopback Server Binding (`contract/http_network.nox`, `tests/contract_http_test.nox`, `tests/load_scheduler_test.nox`, `tests/grpc_contract_test.nox`)**:
+  - Upgraded `is_loopback_host()` via `nox.ip.is_valid()` / `nox.ip.parse().is_loopback()`, recognizing IPv4-mapped IPv6 (`::ffff:127.0.0.1`) and NAT64 (`64:ff9b::127.0.0.1`) while rejecting ambiguous octal (`0177.0.0.1`) and shorthand (`127.1`) forms.
+  - Added `classify_ip_safety()`, `validate_resolved_ips()`, `resolve_and_pin_ip()`, `NetworkPolicy.pin_dns`, `NetworkPolicy.ca_file`, `NetworkPolicy.use_safehttp`, and `NetworkPolicy.allow_downgrade` using `nox.dns.resolve()`, `nox.http.request(..., connect_ip, ca_file)`, and `nox.safehttp.request()`, closing DNS-rebinding TOCTOU windows and blocking HTTPS→HTTP downgrade redirects by default.
+  - Locked local HTTP/gRPC test servers in `tests/load_scheduler_test.nox` and `tests/grpc_contract_test.nox` strictly to `127.0.0.1` via `nox.http.configure(bind_address="127.0.0.1")` / `clear_bind_address()`.
+- **Isolated Client Pools & Timed TaskGroup Workloads (`load/executor.nox`, `load/metrics.nox`, `tests/load_scheduler_test.nox`)**:
+  - Added `run_pooled_network_load_test()` (`NetworkPolicy.use_isolated_pool`) using per-run `nox.http.new_pool()` instances, reporting `LoadMetrics.pool_idle_connections` cleanly before closing in teardown.
+  - Added `async def run_nested_task_group_workload()` and verified isolated `Pool` and `TaskGroupRunner` concurrency tests.
+- **Zero-AST JSON Tape Contract Accelerator (`contract/fast_tape.nox`, `tests/fast_tape_test.nox`)**:
+  - Implemented `validate_json_tape()`, `validate_parsed_tape()`, and `validate_response_tape()` atop `nox.json.pos_*` (`pos_root`, `pos_kind`, `pos_len`, `pos_at`, `pos_key`, `pos_find`, `pos_bool`, `pos_number`, `pos_int`, `pos_str`) with explicit `__all__` export visibility and full $2^{53}$ / `schema_int64` parity.
+- **Exception Causation Chains, Active Env Secret Scrubbing & AEAD Sealed Artifacts (`core/assert.nox`, `core/suite.nox`, `core/report.nox`, `fuzz/corpus.nox`, `contract/mock.nox`)**:
+  - Added `format_exception_chain()`, `assert_raises_with_cause()`, and `TestSuite` `e.cause` propagation (`raise ... from ...`).
+  - Added `is_sensitive_env_name()` and `redact_env_secrets()` powered by `nox.os.environ()` inside `redact_secrets()`.
+  - Added `CorpusManager.save_sealed_crash_artifact()` / `open_sealed_crash_artifact()` and `save_sealed_mock_exchanges()` / `load_sealed_mock_exchanges()` using ChaCha20-Poly1305 AEAD (`nox.crypto.aead_seal` / `aead_open`).
+- **NOX 2.2 Process & SQLite Ergonomics (`cli/main.nox`, `adapters/feather.nox`, `tests/feather_adapter_test.nox`)**:
+  - Removed `/usr/bin/env` and MSYS path-translation workarounds from `cli/main.nox` since `nox.process.Command` natively inherits parent environment variables on POSIX and Windows.
+  - Added `InMemorySqlConnection.execute_script()` and `execute_sql_script()` plus multi-statement `;` `nox.sqlite.Connection.execute_script()` tests in `tests/feather_adapter_test.nox`.
+- **NOX 2.2.38 Language Surface Parity Canary (`tests/compiler_parity_test.nox`, `probes/probe_2_2_features.nox`, `.github/workflows/ci.yml`)**:
+  - Added cross-backend (`--backend qbe` and `--backend llvm`) parity canary covering `:=`, `type` aliases, `raise ... from ...`, bare `raise`, star unpacking, list/dict spreads, optional narrowing, `for..else`, raw strings, qualified `except`, `__all__`, and nested `async def` scalar captures; pinned CI to `NOX_VERSION: v2.2.38`.
+
 ## [0.9.21] - 2026-11-16 - Cross-Platform Clock Overlap Precision & Consumer CI Parity
 
 ### Fixed

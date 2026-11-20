@@ -1,0 +1,122 @@
+import nox.ip
+import nox.dns
+import nox.safehttp
+import nox.http
+import nox.json
+import nox.crypto
+import nox.os
+import nox.sqlite
+import nox.strings
+from nox.json import JsonValue, JsonWriter
+
+# 1. type aliases & walrus operator & multi-line from import already tested in compiler parity
+type PortNumber = int
+
+def _test_ip_dns_safehttp() -> None:
+    assert nox.ip.is_valid("127.0.0.1"), "ip valid loopback"
+    assert nox.ip.parse("::1").is_loopback(), "ipv6 loopback"
+    assert not nox.ip.is_global_text("::ffff:127.0.0.1"), "ipv4-mapped loopback not global"
+    assert not nox.ip.is_global_text("64:ff9b::127.0.0.1"), "nat64 loopback not global"
+    assert not nox.ip.is_global_text("169.254.169.254"), "metadata not global"
+    assert not nox.ip.is_valid("0177.0.0.1"), "octal rejected"
+    assert not nox.ip.is_valid("127.1"), "shorthand rejected"
+    assert nox.ip.is_global_text("93.184.216.34"), "public ip global"
+
+    ips: list[str] = nox.dns.resolve("localhost", 1000)
+    assert len(ips) >= 1, "dns resolves localhost"
+
+    blocked: bool = False
+    try:
+        nox.safehttp.request("GET", "http://127.0.0.1:1/", "", {}, 500)
+    except nox.safehttp.SafeHttpBlockedError as _e:
+        blocked = True
+    assert blocked, "safehttp blocks loopback by default"
+
+def _test_http_pool_and_bind() -> None:
+    nox.http.configure(bind_address="127.0.0.1")
+    nox.http.clear_bind_address()
+    pool: nox.http.Pool = nox.http.new_pool(8, 5000)
+    assert pool.idle_connections() == 0, "new pool starts empty"
+    pool.close()
+
+def _test_json_pos_api() -> None:
+    raw: str = "{\"id\": 9007199254740993, \"ok\": true, \"tags\": [\"a\", \"b\"], \"meta\": {\"v\": 1.5}}"
+    doc: JsonValue = nox.json.parse(raw)
+    root: int = nox.json.pos_root(doc)
+    assert nox.json.pos_kind(doc, root) == 5, "root is object"
+    assert nox.json.pos_len(doc, root) == 4, "root len"
+    p_id: int = nox.json.pos_get(doc, root, "id")
+    assert nox.json.pos_int(doc, p_id) == 9007199254740993, "pos_int exact > 2^53"
+    p_ok: int = nox.json.pos_get(doc, root, "ok")
+    assert nox.json.pos_bool(doc, p_ok), "pos_bool"
+    p_tags: int = nox.json.pos_get(doc, root, "tags")
+    assert nox.json.pos_len(doc, p_tags) == 2, "pos_len array"
+    assert nox.json.pos_str(doc, nox.json.pos_at(doc, p_tags, 1)) == "b", "pos_str at"
+    assert nox.json.pos_find(doc, root, "missing") == -1, "pos_find missing"
+
+    jw: JsonWriter = JsonWriter()
+    jw.begin_object()
+    jw.write_key("status")
+    jw.write_string("ok")
+    jw.end_object()
+    assert jw.build() == "{\"status\":\"ok\"}", "JsonWriter build"
+
+def _test_aead_and_environ() -> None:
+    key: str = nox.crypto.secure_random_hex(32)
+    nonce: str = nox.crypto.secure_random_hex(12)
+    sealed: str = nox.crypto.aead_seal(key, nonce, "quartz-secret-payload", "quartz-ctx")
+    opened: str = nox.crypto.aead_open(key, nonce, sealed, "quartz-ctx")
+    assert opened == "quartz-secret-payload", "aead roundtrip"
+
+    nox.os.set_var("QUARTZ_PROBE_ENV", "probe_val_123")
+    env: dict[str, str] = nox.os.environ()
+    assert env["QUARTZ_PROBE_ENV"] == "probe_val_123", "os.environ sees var"
+    names: list[str] = nox.os.env_names()
+    assert "QUARTZ_PROBE_ENV" in names, "os.env_names sees var"
+
+def _inner_raise() -> None:
+    raise ValueError("root problem")
+
+def _outer_raise() -> None:
+    try:
+        _inner_raise()
+    except ValueError as e:
+        raise RuntimeError("wrapped error") from e
+
+def _test_exception_cause_and_syntax() -> None:
+    caught_cause: str = ""
+    try:
+        _outer_raise()
+    except RuntimeError as e:
+        caught_cause = e.cause
+    assert "root problem" in caught_cause, "Exception.cause populated"
+
+    p: PortNumber = 8080
+    doubled := p * 2
+    assert doubled == 16160, "walrus works"
+
+    xs: list[int] = [10, 20, 30, 40]
+    first, *rest = xs
+    assert first == 10 and len(rest) == 3, "star unpacking"
+    merged_list: list[int] = [1, *rest, 99]
+    assert len(merged_list) == 5 and merged_list[4] == 99, "list spread"
+    d1: dict[str, int] = {"a": 1}
+    d2: dict[str, int] = {**d1, "b": 2}
+    assert d2["a"] == 1 and d2["b"] == 2, "dict spread"
+
+async def _test_nested_async() -> None:
+    scale: int = 7
+    async def inner(v: int) -> int:
+        return v * scale
+    t: Task[int] = spawn inner(6)
+    res: int = await t
+    assert res == 42, "nested async def with scalar capture"
+
+_test_ip_dns_safehttp()
+_test_http_pool_and_bind()
+_test_json_pos_api()
+_test_aead_and_environ()
+_test_exception_cause_and_syntax()
+t_a: Task[None] = spawn _test_nested_async()
+await t_a
+print("probe_2_2_features: PASS")

@@ -175,11 +175,10 @@ def execute_user_target_file(target_file: str, extra_args: list[str]) -> None:
         print("Error: target file not found: " + target_file)
         nox.os.exit(2)
         return
-    env_bin: str = find_env_binary()
     bins: list[str] = candidate_noxc_bins()
     b_i: int = 0
     while b_i < len(bins):
-        cmd_u: Command = build_noxc_command(env_bin, bins[b_i])
+        cmd_u: Command = Command(bins[b_i])
         cmd_u.arg("run")
         cmd_u.arg(target_file)
         if len(extra_args) > 0:
@@ -445,11 +444,10 @@ def cmd_replay() -> None:
                 print("Error: replay target file not found: " + target_file)
                 nox.os.exit(2)
                 return
-            env_bin: str = find_env_binary()
             bins: list[str] = candidate_noxc_bins()
             b_i: int = 0
             while b_i < len(bins):
-                cmd_rep: Command = build_noxc_command(env_bin, bins[b_i])
+                cmd_rep: Command = Command(bins[b_i])
                 cmd_rep.arg("run")
                 cmd_rep.arg(target_file)
                 cmd_rep.arg("--")
@@ -640,73 +638,8 @@ def cmd_contract() -> None:
         print("Contract check failed: " + check.error_summary())
         nox.os.exit(1)
 
-def find_env_binary() -> str:
-    env_candidates: list[str] = [
-        "/usr/bin/env",
-        "/bin/env",
-        "C:\\Program Files\\Git\\usr\\bin\\env.exe",
-        "C:/Program Files/Git/usr/bin/env.exe"
-    ]
-    i: int = 0
-    while i < len(env_candidates):
-        if nox.fs.exists(env_candidates[i]):
-            return env_candidates[i]
-        i = i + 1
-    return ""
-
-def to_msys_path_list(win_path: str) -> str:
-    if not nox.strings.contains(win_path, ";"):
-        return win_path
-    parts: list[str] = nox.strings.split(win_path, ";")
-    converted: list[str] = []
-    i: int = 0
-    while i < len(parts):
-        p: str = nox.strings.trim(parts[i])
-        if len(p) > 0:
-            p = nox.strings.replace(p, "\\", "/")
-            if len(p) >= 2 and p[1:2] == ":":
-                drive: str = nox.strings.lower(p[0:1])
-                p = "/" + drive + p[2:len(p)]
-            converted.append(p)
-        i = i + 1
-    return nox.strings.join(converted, ":")
-
-def attach_parent_env(cmd: Command, is_msys_env: bool) -> None:
-    path_val: str = ""
-    try:
-        path_val = nox.os.getenv("PATH")
-    except Exception as e:
-        path_val = ""
-    if len(path_val) == 0:
-        try:
-            path_val = nox.os.getenv("Path")
-        except Exception as e2:
-            path_val = ""
-    if len(path_val) > 0:
-        if is_msys_env:
-            cmd.arg("PATH=" + to_msys_path_list(path_val))
-        else:
-            cmd.arg("PATH=" + path_val)
-
-    env_keys: list[str] = ["HOME", "USERPROFILE", "TEMP", "TMP", "TMPDIR", "SystemRoot", "SYSTEMROOT", "LOCALAPPDATA", "APPDATA", "PATHEXT"]
-    i: int = 0
-    while i < len(env_keys):
-        k: str = env_keys[i]
-        try:
-            v: str = nox.os.getenv(k)
-            if len(v) > 0:
-                cmd.arg(k + "=" + v)
-        except Exception as e:
-            pass
-        i = i + 1
-
-def build_noxc_command(env_bin: str, noxc_bin: str) -> Command:
-    if len(env_bin) > 0:
-        cmd: Command = Command(env_bin)
-        is_msys: bool = nox.strings.contains(env_bin, "Git") or nox.strings.contains(env_bin, ".exe")
-        attach_parent_env(cmd, is_msys)
-        cmd.arg(noxc_bin)
-        return cmd
+# nox.process.Command inherits the parent environment natively on POSIX & Windows (NOX 2.2+).
+def build_noxc_command(noxc_bin: str) -> Command:
     return Command(noxc_bin)
 
 def is_binary_not_found(err: str, status: int) -> bool:
@@ -832,13 +765,12 @@ def cmd_test() -> None:
             nox.os.exit(1)
             return
 
-        # Step 2: Dynamic test execution with parent environment forwarded via env_bin
-        env_bin: str = find_env_binary()
+        # Step 2: Dynamic test execution inheriting parent environment natively
         if use_tag_mode:
             f_idx: int = 0
             while f_idx < len(tag_files):
                 tf: str = tag_files[f_idx]
-                cmd_t: Command = build_noxc_command(env_bin, working_bin)
+                cmd_t: Command = build_noxc_command(working_bin)
                 cmd_t.arg("run")
                 cmd_t.arg(tf)
                 cmd_t.arg("--")
@@ -860,7 +792,7 @@ def cmd_test() -> None:
             print("All test suites executed successfully.")
             return
 
-        cmd_run: Command = build_noxc_command(env_bin, working_bin)
+        cmd_run: Command = build_noxc_command(working_bin)
         cmd_run.arg("test")
         cmd_run.arg(target_path)
         out_run: Output = cmd_run.run()

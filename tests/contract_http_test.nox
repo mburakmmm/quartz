@@ -3,7 +3,7 @@ import nox.http
 from nox.http import HttpRequest
 from core.assert import assert_true, assert_false, assert_eq_int, assert_eq_str, assert_contains_str
 from contract.http_network import NetworkPolicy, default_network_policy, loopback_network_policy, authorized_network_policy
-from contract.http_network import parse_url, ParsedUrl, is_loopback_host, validate_network_target, validate_redirect_target
+from contract.http_network import parse_url, ParsedUrl, is_loopback_host, classify_ip_safety, validate_resolved_ips, resolve_and_pin_ip, validate_network_target, validate_redirect_target
 from contract.http_network import NetworkSafetyError, NetworkNotAllowedError, UnauthorizedTargetError
 from contract.http_network import execute_network_request, NetworkExecutionResult, run_network_contract_check
 from contract.http import build_request, empty_headers
@@ -169,6 +169,78 @@ def test_ssrf_url_and_redirect_security() -> None:
         threw_redir_ssrf = True
     assert_true(threw_redir_ssrf, "redirect to unauthorized metadata IP rejected even when redirects enabled")
 
+def test_nox_ip_ssrf_and_dns_pinning() -> None:
+    # 1. IPv4-mapped IPv6 and NAT64 loopback detection + malformed octal/shorthand rejection
+    assert_true(is_loopback_host("::ffff:127.0.0.1"), "::ffff:127.0.0.1 detected as loopback")
+    assert_true(is_loopback_host("[::ffff:127.0.0.1]"), "[::ffff:127.0.0.1] detected as loopback")
+    assert_true(is_loopback_host("64:ff9b::127.0.0.1"), "NAT64 loopback detected as loopback")
+    assert_false(is_loopback_host("0177.0.0.1"), "octal IPv4 rejected as loopback")
+    assert_false(is_loopback_host("127.1"), "shorthand IPv4 rejected as loopback")
+    assert_false(is_loopback_host("::ffff:169.254.169.254"), "IPv4-mapped metadata not loopback")
+
+    # 2. RFC 6890/4291 classification
+    assert_eq_str(classify_ip_safety("169.254.169.254"), "metadata", "AWS/cloud metadata classified")
+    assert_eq_str(classify_ip_safety("::ffff:169.254.169.254"), "metadata", "IPv4-mapped metadata classified")
+    assert_eq_str(classify_ip_safety("10.0.0.1"), "private", "RFC1918 classified")
+    assert_eq_str(classify_ip_safety("100.64.0.1"), "cgnat", "CGNAT RFC6598 classified")
+    assert_eq_str(classify_ip_safety("93.184.216.34"), "global", "public IP classified global")
+
+    # 3. Metadata IP blocked even before remote target matching
+    meta_policy: NetworkPolicy = authorized_network_policy("http://169.254.169.254:80")
+    threw_meta: bool = False
+    try:
+        validate_network_target("http://169.254.169.254/latest/meta-data", meta_policy)
+    except UnauthorizedTargetError as _me:
+        threw_meta = True
+    assert_true(threw_meta, "metadata IP literal must be blocked")
+
+    # 4. DNS rebinding / pinning negative tests
+    rebinding_cases: list[str] = ["127.0.0.1", "169.254.169.254", "10.0.0.5", "::ffff:127.0.0.1"]
+    ri: int = 0
+    while ri < len(rebinding_cases):
+        threw_rebind: bool = False
+        try:
+            validate_resolved_ips("api.example.com", [rebinding_cases[ri]], False)
+        except UnauthorizedTargetError as _re:
+            threw_rebind = True
+        assert_true(threw_rebind, "DNS rebinding to non-global IP blocked: " + rebinding_cases[ri])
+        ri = ri + 1
+
+    # Localhost resolving to public IP rejected
+    threw_lb_rebind: bool = False
+    try:
+        validate_resolved_ips("localhost", ["93.184.216.34"], True)
+    except UnauthorizedTargetError as _lbe:
+        threw_lb_rebind = True
+    assert_true(threw_lb_rebind, "localhost resolving to non-loopback rejected")
+
+    # Valid global DNS resolution returns canonical IP to pin
+    pinned: str = validate_resolved_ips("api.example.com", ["93.184.216.34"], False)
+    assert_eq_str(pinned, "93.184.216.34", "valid global IP pinned")
+
+    # Localhost live DNS resolution pins to loopback IP
+    lb_policy: NetworkPolicy = loopback_network_policy(1000)
+    lb_pinned: str = resolve_and_pin_ip("localhost", lb_policy)
+    assert_true(is_loopback_host(lb_pinned), "localhost pins to loopback IP")
+
+    # 5. HTTPS -> HTTP downgrade redirect blocked when allow_downgrade=False
+    auth_redir: NetworkPolicy = NetworkPolicy(True, "http://service.corp.internal:8443", 2000, 1048576, False, False, 0, 90000, True, True, "", False, False, False)
+    threw_downgrade: bool = False
+    try:
+        validate_redirect_target("https://service.corp.internal:8443/login", "http://service.corp.internal:8443/plain", auth_redir)
+    except UnauthorizedTargetError as _de:
+        threw_downgrade = True
+    assert_true(threw_downgrade, "HTTPS -> HTTP downgrade redirect blocked by default")
+
+    # 6. Non-existent ca_file and use_safehttp fail cleanly on unreachable/untrusted endpoint
+    ca_policy: NetworkPolicy = NetworkPolicy(True, "", 200, 1048576, False, False, 0, 90000, False, True, "/nonexistent/quartz-test-ca.pem", False, False, False)
+    ca_res: NetworkExecutionResult = execute_network_request(build_request("GET", "/tls", "", empty_headers()), "https://127.0.0.1:59999", ca_policy)
+    assert_false(ca_res.is_success, "unreadable/unreachable TLS request with ca_file must fail closed")
+
+    safe_policy: NetworkPolicy = NetworkPolicy(True, "", 150, 1048576, False, False, 0, 90000, False, True, "", True, False, False)
+    safe_res: NetworkExecutionResult = execute_network_request(build_request("GET", "/ping", "", empty_headers()), "http://127.0.0.1:59998", safe_policy)
+    assert_false(safe_res.is_success, "use_safehttp request to closed loopback port fails cleanly")
+
 def run_all_contract_http_tests() -> None:
     test_url_parser()
     test_loopback_host_detector()
@@ -177,6 +249,7 @@ def run_all_contract_http_tests() -> None:
     test_authorized_remote_target_matching()
     test_unreachable_transport_error_handling()
     test_ssrf_url_and_redirect_security()
+    test_nox_ip_ssrf_and_dns_pinning()
     print("quartz contract http test: ALL PASS")
 
 run_all_contract_http_tests()

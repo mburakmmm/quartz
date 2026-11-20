@@ -95,3 +95,26 @@ def assert_eq_dict_str(actual: dict[str, str], expected: dict[str, str], msg: st
 def assert_eq_dict_int(actual: dict[str, int], expected: dict[str, int], msg: str) -> None:
     if actual != expected:
         raise AssertionError(msg + ": dictionary mismatch (actual=" + str(actual) + ", expected=" + str(expected) + ")")
+
+def format_exception_chain(e: Exception) -> str:
+    base: str = str(e)
+    if len(e.cause) > 0:
+        return base + " [caused by: " + e.cause + "]"
+    return base
+
+def assert_raises_with_cause(fn: () -> None, expected_msg_substr: str, expected_cause_substr: str, msg: str) -> None:
+    raised: bool = False
+    actual_msg: str = ""
+    actual_cause: str = ""
+    try:
+        fn()
+    except Exception as e:
+        raised = True
+        actual_msg = str(e)
+        actual_cause = e.cause
+    if not raised:
+        raise AssertionError(msg + ": expected an Exception to be raised, but completed normally")
+    if len(expected_msg_substr) > 0 and not nox.strings.contains(actual_msg, expected_msg_substr):
+        raise AssertionError(msg + ": outer exception \"" + actual_msg + "\" missing \"" + expected_msg_substr + "\"")
+    if len(expected_cause_substr) > 0 and not nox.strings.contains(actual_cause, expected_cause_substr):
+        raise AssertionError(msg + ": exception cause \"" + actual_cause + "\" missing \"" + expected_cause_substr + "\"")

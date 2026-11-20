@@ -1,0 +1,249 @@
+# Quartz Contract — Zero-AST JSON Tape Schema Accelerator (NOX 2.2+ pos_* API)
+import nox.json
+import nox.regex
+from nox.http import HttpResponse
+from nox.json import JsonValue, JsonError, JsonWriter
+from nox.regex import RegexError
+from contract.types import ContractCheckResult, get_header_ci, has_header_ci
+import nox.strings
+from contract.schema import (
+    SCHEMA_NULL,
+    SCHEMA_BOOLEAN,
+    SCHEMA_STRING,
+    SCHEMA_NUMBER,
+    SCHEMA_INTEGER,
+    SCHEMA_ARRAY,
+    SCHEMA_OBJECT,
+    SAFE_INT_MAX,
+    SAFE_INT_MIN,
+    SchemaDescriptor,
+    PropertyRule,
+    is_key_declared,
+    validate_schema
+)
+
+__all__: list[str] = [
+    "validate_json_tape",
+    "validate_parsed_tape",
+    "validate_response_tape"
+]
+
+# Position kinds matching JsonValue.kind:
+# 0=null, 1=bool, 2=number, 3=string, 4=array, 5=object
+JSON_KIND_NULL: int = 0
+JSON_KIND_BOOL: int = 1
+JSON_KIND_NUMBER: int = 2
+JSON_KIND_STRING: int = 3
+JSON_KIND_ARRAY: int = 4
+JSON_KIND_OBJECT: int = 5
+
+def _validate_tape_pos(schema: SchemaDescriptor, doc: JsonValue, pos: int, path: str) -> list[str]:
+    errors: list[str] = []
+    kind: int = nox.json.pos_kind(doc, pos)
+
+    # 1. Null check
+    if schema.type_name == SCHEMA_NULL:
+        if kind != JSON_KIND_NULL:
+            errors.append(path + ": expected null")
+        return errors
+
+    # 2. Boolean check
+    if schema.type_name == SCHEMA_BOOLEAN:
+        if kind != JSON_KIND_BOOL:
+            errors.append(path + ": expected boolean")
+        return errors
+
+    # 3. String check
+    if schema.type_name == SCHEMA_STRING:
+        if kind != JSON_KIND_STRING:
+            errors.append(path + ": expected string")
+            return errors
+        s_val: str = nox.json.pos_str(doc, pos)
+        if schema.min_len >= 0 and len(s_val) < schema.min_len:
+            errors.append(path + ": string length " + str(len(s_val)) + " is less than minimum " + str(schema.min_len))
+        if schema.max_len >= 0 and len(s_val) > schema.max_len:
+            errors.append(path + ": string length " + str(len(s_val)) + " exceeds maximum " + str(schema.max_len))
+        if len(schema.enum_values) > 0:
+            found_enum: bool = False
+            ei: int = 0
+            while ei < len(schema.enum_values):
+                if schema.enum_values[ei] == s_val:
+                    found_enum = True
+                    break
+                ei = ei + 1
+            if not found_enum:
+                errors.append(path + ": value '" + s_val + "' is not in allowed enum set")
+        if len(schema.pattern) > 0:
+            try:
+                if len(nox.regex.find_matches(schema.pattern, s_val)) == 0:
+                    errors.append(path + ": string '" + s_val + "' does not match pattern '" + schema.pattern + "'")
+            except RegexError as re_err:
+                errors.append(path + ": invalid regex pattern '" + schema.pattern + "': " + str(re_err))
+        return errors
+
+    # 4. Number check
+    if schema.type_name == SCHEMA_NUMBER:
+        if kind != JSON_KIND_NUMBER:
+            errors.append(path + ": expected number")
+            return errors
+        f_val: float = nox.json.pos_number(doc, pos)
+        if schema.has_min_val and f_val < schema.min_val:
+            errors.append(path + ": number " + str(f_val) + " is less than minimum " + str(schema.min_val))
+        if schema.has_max_val and f_val > schema.max_val:
+            errors.append(path + ": number " + str(f_val) + " exceeds maximum " + str(schema.max_val))
+        return errors
+
+    # 5. Integer check (strict 2^53 boundary + allow_i64 exact int64 parity)
+    if schema.type_name == SCHEMA_INTEGER:
+        if kind != JSON_KIND_NUMBER:
+            errors.append(path + ": expected integer")
+            return errors
+        if schema.allow_i64:
+            try:
+                exact_i64: int = nox.json.pos_int(doc, pos)
+                if schema.has_min_val and exact_i64 < schema.min_i64:
+                    errors.append(path + ": int64 " + str(exact_i64) + " is less than minimum " + str(schema.min_i64))
+                if schema.has_max_val and exact_i64 > schema.max_i64:
+                    errors.append(path + ": int64 " + str(exact_i64) + " exceeds maximum " + str(schema.max_i64))
+            except JsonError as je:
+                errors.append(path + ": invalid exact 64-bit integer (" + str(je) + ")")
+            return errors
+        n_val: float = nox.json.pos_number(doc, pos)
+        int_cast: int = int(n_val)
+        if (int_cast * 1.0) != n_val:
+            errors.append(path + ": expected integer but got float with fractional part (" + str(n_val) + ")")
+            return errors
+        if n_val >= SAFE_INT_MAX or n_val <= SAFE_INT_MIN:
+            errors.append(path + ": integer exceeds safe 2^53 precision limit (loss of precision)")
+        if schema.has_min_val and n_val < schema.min_val:
+            errors.append(path + ": integer " + str(int_cast) + " is less than minimum " + str(int(schema.min_val)))
+        if schema.has_max_val and n_val > schema.max_val:
+            errors.append(path + ": integer " + str(int_cast) + " exceeds maximum " + str(int(schema.max_val)))
+        return errors
+
+    # 6. Array check (zero-AST position traversal)
+    if schema.type_name == SCHEMA_ARRAY:
+        if kind != JSON_KIND_ARRAY:
+            errors.append(path + ": expected array")
+            return errors
+        arr_len: int = nox.json.pos_len(doc, pos)
+        if schema.min_len >= 0 and arr_len < schema.min_len:
+            errors.append(path + ": array length " + str(arr_len) + " is less than minimum " + str(schema.min_len))
+        if schema.max_len >= 0 and arr_len > schema.max_len:
+            errors.append(path + ": array length " + str(arr_len) + " exceeds maximum " + str(schema.max_len))
+        if len(schema.item_schemas) > 0:
+            sub_schema: SchemaDescriptor = schema.item_schemas[0]
+            ai: int = 0
+            while ai < arr_len:
+                item_pos: int = nox.json.pos_at(doc, pos, ai)
+                item_errs: list[str] = _validate_tape_pos(sub_schema, doc, item_pos, path + "[" + str(ai) + "]")
+                errors.extend(item_errs)
+                ai = ai + 1
+        return errors
+
+    # 7. Object check (zero-AST position lookup via pos_find/pos_key)
+    if schema.type_name == SCHEMA_OBJECT:
+        if kind != JSON_KIND_OBJECT:
+            errors.append(path + ": expected object")
+            return errors
+
+        ri: int = 0
+        while ri < len(schema.required_keys):
+            req_k: str = schema.required_keys[ri]
+            if nox.json.pos_find(doc, pos, req_k) < 0:
+                errors.append(path + ": missing required property '" + req_k + "'")
+            ri = ri + 1
+
+        pi: int = 0
+        while pi < len(schema.properties):
+            prop: PropertyRule = schema.properties[pi]
+            prop_pos: int = nox.json.pos_find(doc, pos, prop.name)
+            if prop_pos >= 0:
+                prop_errs: list[str] = _validate_tape_pos(prop.schema, doc, prop_pos, path + "." + prop.name)
+                errors.extend(prop_errs)
+            pi = pi + 1
+
+        if schema.is_strict:
+            obj_size: int = nox.json.pos_len(doc, pos)
+            oi: int = 0
+            while oi < obj_size:
+                k_name: str = nox.json.pos_key(doc, pos, oi)
+                if not is_key_declared(schema.properties, k_name):
+                    errors.append(path + ": unknown property '" + k_name + "' rejected by strict schema policy")
+                oi = oi + 1
+
+        return errors
+
+    errors.append(path + ": unsupported schema type '" + schema.type_name + "'")
+    return errors
+
+def validate_json_tape(schema: SchemaDescriptor, raw_json: str, path: str = "$") -> list[str]:
+    doc: JsonValue = nox.json.parse("null")
+    try:
+        doc = nox.json.parse(raw_json)
+    except JsonError as je:
+        return [path + ": invalid JSON body (" + str(je) + ")"]
+
+    if doc.tpos > 0:
+        root_pos: int = nox.json.pos_root(doc)
+        return _validate_tape_pos(schema, doc, root_pos, path)
+
+    return validate_schema(schema, doc, path)
+
+def validate_parsed_tape(schema: SchemaDescriptor, doc: JsonValue, path: str = "$") -> list[str]:
+    if doc.tpos > 0:
+        return _validate_tape_pos(schema, doc, nox.json.pos_root(doc), path)
+    return validate_schema(schema, doc, path)
+
+def validate_response_tape(res: HttpResponse, expected_statuses: list[int], required_headers: list[str], expected_content_type: str, body_schema: SchemaDescriptor | None, duration_ms: int) -> ContractCheckResult:
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    status_matched: bool = False
+    si: int = 0
+    while si < len(expected_statuses):
+        if expected_statuses[si] == res.status:
+            status_matched = True
+            break
+        si = si + 1
+
+    if not status_matched:
+        status_list_str: str = ""
+        ei: int = 0
+        while ei < len(expected_statuses):
+            if ei > 0:
+                status_list_str = status_list_str + ", "
+            status_list_str = status_list_str + str(expected_statuses[ei])
+            ei = ei + 1
+        errors.append("HTTP status " + str(res.status) + " not in expected status codes [" + status_list_str + "]")
+
+    hi: int = 0
+    while hi < len(required_headers):
+        h_name: str = required_headers[hi]
+        if not has_header_ci(res.headers, h_name):
+            errors.append("missing required response header '" + h_name + "'")
+        hi = hi + 1
+
+    if len(expected_content_type) > 0:
+        actual_ct: str = get_header_ci(res.headers, "content-type")
+        if len(actual_ct) == 0:
+            errors.append("missing 'Content-Type' header; expected '" + expected_content_type + "'")
+        else:
+            lower_actual: str = nox.strings.lower(actual_ct)
+            lower_expected: str = nox.strings.lower(expected_content_type)
+            media_type: str = lower_actual
+            if nox.strings.contains(lower_actual, ";"):
+                parts: list[str] = nox.strings.split(lower_actual, ";")
+                media_type = nox.strings.trim(parts[0])
+            if media_type != lower_expected and not nox.strings.contains(lower_actual, lower_expected):
+                errors.append("Content-Type mismatch: got '" + actual_ct + "', expected to match '" + expected_content_type + "'")
+
+    if body_schema != None:
+        target_schema: SchemaDescriptor = body_schema
+        if len(res.body) == 0:
+            errors.append("expected non-empty response body matching schema, but received empty body")
+        else:
+            tape_errs: list[str] = validate_json_tape(target_schema, res.body, "body")
+            errors.extend(tape_errs)
+
+    return ContractCheckResult(len(errors) == 0, errors, warnings, res.status, duration_ms)

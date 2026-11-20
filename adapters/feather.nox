@@ -656,6 +656,17 @@ class InMemorySqlConnection:
                 return self.insert_row_with_nulls(cleaned, nulls_row)
         return 0
 
+    def execute_script(self: InMemorySqlConnection, script_sql: str) -> int:
+        stmts: list[str] = nox.strings.split(script_sql, ";")
+        total_changes: int = 0
+        i: int = 0
+        while i < len(stmts):
+            st: str = nox.strings.trim(stmts[i])
+            if len(st) > 0:
+                total_changes = total_changes + self.execute(st)
+            i = i + 1
+        return total_changes
+
     def query(self: InMemorySqlConnection, sql: str) -> list[Row]:
         out: list[Row] = []
         i: int = 0
@@ -675,3 +686,12 @@ class InMemorySqlConnection:
 
     def close(self: InMemorySqlConnection) -> None:
         self.in_tx = False
+
+# Executes multi-statement ';' SQL scripts on a DbConnection (schema setup + seed + cleanup).
+# Single-pass backends like nox.sqlite execute natively via conn.execute_script / multi-statement execute();
+# drivers without native script support fall back to per-statement dispatch.
+def execute_sql_script(conn: DbConnection, script_sql: str) -> int:
+    trimmed: str = nox.strings.trim(script_sql)
+    if len(trimmed) == 0:
+        return 0
+    return conn.execute(trimmed)

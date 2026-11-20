@@ -125,6 +125,7 @@ class LoadMetrics:
     peak_concurrency: int
     peak_active_vus: int
     peak_overlapping_executions: int
+    pool_idle_connections: int
     buckets: list[int]
     us_buckets: list[int]
 
@@ -145,6 +146,7 @@ class LoadMetrics:
         self.peak_concurrency = 0
         self.peak_active_vus = 0
         self.peak_overlapping_executions = 0
+        self.pool_idle_connections = 0
 
         # Initialize 246 ms buckets to 0
         b: list[int] = []
@@ -171,6 +173,10 @@ class LoadMetrics:
     def record_concurrency(self: LoadMetrics, active_count: int) -> None:
         if active_count > self.peak_concurrency:
             self.peak_concurrency = active_count
+
+    def record_pool_idle(self: LoadMetrics, idle: int) -> None:
+        if idle >= 0:
+            self.pool_idle_connections = idle
 
     def record_active_vus(self: LoadMetrics, active_vu_count: int) -> None:
         if active_vu_count > self.peak_active_vus:
@@ -368,7 +374,8 @@ class LoadMetrics:
         s = s + "\"unfulfilled_rate\": " + str(self.unfulfilled_rate()) + ", "
         s = s + "\"peak_active_vus\": " + str(self.peak_active_vus) + ", "
         s = s + "\"peak_overlapping_executions\": " + str(self.peak_overlapping_executions) + ", "
-        s = s + "\"peak_concurrency\": " + str(self.peak_concurrency)
+        s = s + "\"peak_concurrency\": " + str(self.peak_concurrency) + ", "
+        s = s + "\"pool_idle_connections\": " + str(self.pool_idle_connections)
         s = s + "}"
         return s
 

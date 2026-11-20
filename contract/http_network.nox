@@ -1,9 +1,15 @@
 # Quartz Contract — Authorized Network Transport & Safety Gate
+import nox.dns
 import nox.http
+import nox.ip
+import nox.safehttp
 import nox.strings
 import nox.time
 import nox.url
-from nox.http import HttpRequest, HttpResponse, HttpError, HttpTimeoutError, HttpCapabilityError, stream
+from nox.dns import DnsError, DnsTimeoutError, DnsCapabilityError
+from nox.http import HttpRequest, HttpResponse, HttpError, HttpTimeoutError, HttpCapabilityError, Pool, new_pool, stream
+from nox.ip import IpAddress, IpError
+from nox.safehttp import SafeHttpError, SafeHttpBlockedError
 from nox.time import Instant
 from nox.url import URL, UrlError
 from contract.types import ContractCheckResult
@@ -29,8 +35,13 @@ class NetworkPolicy:
     pool_max_idle: int
     pool_idle_timeout_ms: int
     allow_redirects: bool
+    pin_dns: bool
+    ca_file: str
+    use_safehttp: bool
+    allow_downgrade: bool
+    use_isolated_pool: bool
 
-    def __init__(self: NetworkPolicy, allow_network: bool = False, authorized_target: str = "", timeout_ms: int = 2000, max_body_bytes: int = 1048576, enable_http2: bool = False, enable_http3: bool = False, pool_max_idle: int = 0, pool_idle_timeout_ms: int = 90000, allow_redirects: bool = False) -> None:
+    def __init__(self: NetworkPolicy, allow_network: bool = False, authorized_target: str = "", timeout_ms: int = 2000, max_body_bytes: int = 1048576, enable_http2: bool = False, enable_http3: bool = False, pool_max_idle: int = 0, pool_idle_timeout_ms: int = 90000, allow_redirects: bool = False, pin_dns: bool = True, ca_file: str = "", use_safehttp: bool = False, allow_downgrade: bool = False, use_isolated_pool: bool = False) -> None:
         self.allow_network = allow_network
         self.authorized_target = authorized_target
         self.timeout_ms = timeout_ms
@@ -40,6 +51,11 @@ class NetworkPolicy:
         self.pool_max_idle = pool_max_idle
         self.pool_idle_timeout_ms = pool_idle_timeout_ms
         self.allow_redirects = allow_redirects
+        self.pin_dns = pin_dns
+        self.ca_file = ca_file
+        self.use_safehttp = use_safehttp
+        self.allow_downgrade = allow_downgrade
+        self.use_isolated_pool = use_isolated_pool
 
 def apply_network_transport_options(policy: NetworkPolicy) -> None:
     if policy.enable_http2:
@@ -135,10 +151,74 @@ def parse_url(url: str) -> ParsedUrl:
     return ParsedUrl(scheme, host, port, parsed.path, origin)
 
 def is_loopback_host(host: str) -> bool:
-    h: str = nox.strings.lower(host)
-    if h == "127.0.0.1" or h == "localhost" or h == "::1" or h == "[::1]":
+    h: str = nox.strings.lower(nox.strings.trim(host))
+    if h == "localhost":
         return True
+    if nox.ip.is_valid(h):
+        return nox.ip.parse(h).is_loopback()
     return False
+
+def classify_ip_safety(host: str) -> str:
+    h: str = nox.strings.lower(nox.strings.trim(host))
+    if not nox.ip.is_valid(h):
+        return "not_ip"
+    addr: IpAddress = nox.ip.parse(h)
+    if addr.is_metadata():
+        return "metadata"
+    if addr.is_loopback():
+        return "loopback"
+    if addr.is_link_local():
+        return "link_local"
+    if addr.is_private():
+        return "private"
+    if addr.is_cgnat():
+        return "cgnat"
+    if addr.is_unspecified():
+        return "unspecified"
+    if addr.is_multicast():
+        return "multicast"
+    if addr.is_reserved():
+        return "reserved"
+    return "global"
+
+def validate_resolved_ips(host: str, ips: list[str], allow_loopback: bool = False) -> str:
+    if len(ips) == 0:
+        raise NetworkSafetyError("DNS returned zero addresses for host: " + host)
+    i: int = 0
+    while i < len(ips):
+        ip_str: str = ips[i]
+        cls: str = classify_ip_safety(ip_str)
+        if cls == "not_ip":
+            raise NetworkSafetyError("DNS returned invalid IP literal '" + ip_str + "' for host: " + host)
+        if cls == "metadata":
+            raise UnauthorizedTargetError("blocked DNS resolution to cloud metadata IP '" + ip_str + "' for host: " + host)
+        if allow_loopback:
+            if cls != "loopback":
+                raise UnauthorizedTargetError("loopback host '" + host + "' resolved to non-loopback IP '" + ip_str + "' (DNS rebinding blocked)")
+        else:
+            if cls != "global":
+                raise UnauthorizedTargetError("remote host '" + host + "' resolved to non-global IP '" + ip_str + "' [" + cls + "] (DNS rebinding / SSRF blocked)")
+        i = i + 1
+    return nox.ip.parse(ips[0]).text()
+
+def resolve_and_pin_ip(host: str, policy: NetworkPolicy) -> str:
+    h: str = nox.strings.lower(nox.strings.trim(host))
+    is_lb: bool = is_loopback_host(h)
+    if nox.ip.is_valid(h):
+        addr: IpAddress = nox.ip.parse(h)
+        if addr.is_metadata():
+            raise UnauthorizedTargetError("blocked literal IP pointing to cloud metadata range: " + h)
+        if not is_lb and not addr.is_global():
+            # Allow only if explicit authorized_target itself named this non-global IP literal
+            if len(policy.authorized_target) == 0:
+                raise UnauthorizedTargetError("non-global IP literal rejected without explicit authorized_target: " + h)
+            auth_parsed: ParsedUrl = parse_url(policy.authorized_target)
+            if auth_parsed.host != h:
+                raise UnauthorizedTargetError("resolved non-global IP does not match authorized_target literal: " + h)
+        return addr.text()
+
+    resolved: list[str] = nox.dns.resolve(h, policy.timeout_ms)
+    return validate_resolved_ips(h, resolved, is_lb)
 
 def validate_network_target(url: str, policy: NetworkPolicy) -> ParsedUrl:
     if not policy.allow_network:
@@ -146,11 +226,16 @@ def validate_network_target(url: str, policy: NetworkPolicy) -> ParsedUrl:
 
     parsed: ParsedUrl = parse_url(url)
 
-    # 1. Loopback check: always permitted when allow_network is True
+    # 1. Loopback check (RFC 6890/4291 via nox.ip, including ::ffff:127.0.0.1 and NAT64): always permitted when allow_network is True
     if is_loopback_host(parsed.host):
         return parsed
 
-    # 2. Remote host check: strictly requires matching authorized_target
+    # 2. Metadata / non-global literal defense even before authorization check
+    if nox.ip.is_valid(parsed.host):
+        if nox.ip.parse(parsed.host).is_metadata():
+            raise UnauthorizedTargetError("cloud metadata IP rejected (SSRF protection): " + url)
+
+    # 3. Remote host check: strictly requires matching authorized_target
     if len(policy.authorized_target) == 0:
         raise UnauthorizedTargetError("remote network target rejected (only loopback is allowed without explicit authorized_target): " + url)
 
@@ -166,13 +251,17 @@ def validate_redirect_target(current_url: str, location: str, policy: NetworkPol
     loc: str = nox.strings.trim(location)
     if len(loc) == 0:
         raise NetworkSafetyError("empty redirect Location header")
+    cur: ParsedUrl = parse_url(current_url)
+    target_url: str = loc
     if nox.strings.starts_with(loc, "//"):
-        cur: ParsedUrl = parse_url(current_url)
-        return validate_network_target(cur.scheme + ":" + loc, policy)
-    if nox.strings.starts_with(loc, "/"):
-        cur2: ParsedUrl = parse_url(current_url)
-        return validate_network_target(cur2.origin + loc, policy)
-    return validate_network_target(loc, policy)
+        target_url = cur.scheme + ":" + loc
+    elif nox.strings.starts_with(loc, "/"):
+        target_url = cur.origin + loc
+
+    next_parsed: ParsedUrl = validate_network_target(target_url, policy)
+    if not policy.allow_downgrade and cur.scheme == "https" and next_parsed.scheme == "http":
+        raise UnauthorizedTargetError("HTTPS to HTTP downgrade redirect blocked by policy: " + target_url)
+    return next_parsed
 
 class NetworkExecutionResult:
     responses: list[HttpResponse]
@@ -192,6 +281,11 @@ class NetworkExecutionResult:
         self.is_timeout = is_timeout
         self.is_success = is_success
 
+def _trim_body(body: str, max_bytes: int) -> str:
+    if max_bytes > 0 and len(body) > max_bytes:
+        return body[0:max_bytes]
+    return body
+
 def execute_network_request(req: HttpRequest, base_url: str, policy: NetworkPolicy) -> NetworkExecutionResult:
     target_path: str = req.target
     if len(target_path) == 0 or target_path[0:1] != "/":
@@ -204,6 +298,43 @@ def execute_network_request(req: HttpRequest, base_url: str, policy: NetworkPoli
     empty_res_list: list[HttpResponse] = []
     ns0: int = nox.time.monotonic_ns()
     try:
+        if policy.use_safehttp:
+            max_r: int = 5 if policy.allow_redirects else 0
+            allow_priv: bool = is_loopback_host(parsed.host) or (nox.ip.is_valid(parsed.host) and not nox.ip.parse(parsed.host).is_metadata())
+            s_res: HttpResponse = nox.safehttp.request(req.method, full_url, req.body, req.headers, policy.timeout_ms, max_r, allow_priv, parsed.host, policy.allow_downgrade)
+            dur_ns_s: int = nox.time.monotonic_ns() - ns0
+            if dur_ns_s < 0:
+                dur_ns_s = 0
+            res_s: HttpResponse = HttpResponse(s_res.status, _trim_body(s_res.body, policy.max_body_bytes), s_res.headers)
+            return NetworkExecutionResult([res_s], dur_ns_s // 1000000, res_s.status, "", False, True, dur_ns_s)
+
+        pinned_ip: str = ""
+        if policy.pin_dns and not nox.ip.is_valid(parsed.host):
+            pinned_ip = resolve_and_pin_ip(parsed.host, policy)
+        elif nox.ip.is_valid(parsed.host) and len(policy.ca_file) > 0:
+            pinned_ip = nox.ip.parse(parsed.host).text()
+
+        if len(pinned_ip) > 0 or len(policy.ca_file) > 0:
+            p_res: HttpResponse = nox.http.request(req.method, full_url, req.body, req.headers, policy.timeout_ms, pinned_ip, policy.ca_file)
+            dur_ns_p: int = nox.time.monotonic_ns() - ns0
+            if dur_ns_p < 0:
+                dur_ns_p = 0
+            res_p: HttpResponse = HttpResponse(p_res.status, _trim_body(p_res.body, policy.max_body_bytes), p_res.headers)
+            return NetworkExecutionResult([res_p], dur_ns_p // 1000000, res_p.status, "", False, True, dur_ns_p)
+
+        if policy.use_isolated_pool:
+            p_max: int = policy.pool_max_idle if policy.pool_max_idle > 0 else 16
+            pool: Pool = new_pool(p_max, policy.pool_idle_timeout_ms)
+            try:
+                pool_res: HttpResponse = pool.request(req.method, full_url, req.body, req.headers, policy.timeout_ms)
+                dur_ns_pool: int = nox.time.monotonic_ns() - ns0
+                if dur_ns_pool < 0:
+                    dur_ns_pool = 0
+                res_pl: HttpResponse = HttpResponse(pool_res.status, _trim_body(pool_res.body, policy.max_body_bytes), pool_res.headers)
+                return NetworkExecutionResult([res_pl], dur_ns_pool // 1000000, res_pl.status, "", False, True, dur_ns_pool)
+            finally:
+                pool.close()
+
         accum_body: str = ""
         res_status: int = 0
         res_headers: dict[str, str] = {}
@@ -227,6 +358,36 @@ def execute_network_request(req: HttpRequest, base_url: str, policy: NetworkPoli
         res: HttpResponse = HttpResponse(res_status, accum_body, res_headers)
         res_list: list[HttpResponse] = [res]
         return NetworkExecutionResult(res_list, elapsed_ms, res.status, "", False, True, dur_ns)
+    except SafeHttpBlockedError as e:
+        dur_ns: int = nox.time.monotonic_ns() - ns0
+        if dur_ns < 0:
+            dur_ns = 0
+        return NetworkExecutionResult(empty_res_list, dur_ns // 1000000, 0, "safehttp blocked request: " + str(e), False, False, dur_ns)
+    except SafeHttpError as e:
+        dur_ns: int = nox.time.monotonic_ns() - ns0
+        if dur_ns < 0:
+            dur_ns = 0
+        return NetworkExecutionResult(empty_res_list, dur_ns // 1000000, 0, "safehttp error: " + str(e), False, False, dur_ns)
+    except DnsTimeoutError as e:
+        dur_ns: int = nox.time.monotonic_ns() - ns0
+        if dur_ns < 0:
+            dur_ns = 0
+        return NetworkExecutionResult(empty_res_list, dur_ns // 1000000, 0, "dns lookup timed out: " + str(e), True, False, dur_ns)
+    except DnsCapabilityError as e:
+        dur_ns: int = nox.time.monotonic_ns() - ns0
+        if dur_ns < 0:
+            dur_ns = 0
+        return NetworkExecutionResult(empty_res_list, dur_ns // 1000000, 0, "dns capability denied: " + str(e), False, False, dur_ns)
+    except DnsError as e:
+        dur_ns: int = nox.time.monotonic_ns() - ns0
+        if dur_ns < 0:
+            dur_ns = 0
+        return NetworkExecutionResult(empty_res_list, dur_ns // 1000000, 0, "dns lookup failed: " + str(e), False, False, dur_ns)
+    except UnauthorizedTargetError as e:
+        dur_ns: int = nox.time.monotonic_ns() - ns0
+        if dur_ns < 0:
+            dur_ns = 0
+        return NetworkExecutionResult(empty_res_list, dur_ns // 1000000, 0, "unauthorized target blocked: " + str(e), False, False, dur_ns)
     except HttpTimeoutError as e:
         dur_ns: int = nox.time.monotonic_ns() - ns0
         if dur_ns < 0:

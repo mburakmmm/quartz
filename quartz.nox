@@ -24,6 +24,7 @@ import fuzz.sequence
 import fuzz.cluster
 import contract.types
 import contract.schema
+import contract.fast_tape
 import contract.http
 import contract.compare
 import contract.openapi
@@ -46,7 +47,7 @@ import adapters.atlas
 import adapters.feather
 
 def version() -> str:
-    return "0.9.21"
+    return "0.9.22"
 
 def framework_info() -> str:
     return "Quartz Test Framework v" + version() + " for NOX Ecosystem"

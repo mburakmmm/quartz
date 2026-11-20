@@ -1,6 +1,7 @@
 # Quartz Core — Reporting and Exporters
 from core.types import STATUS_PASS, STATUS_FAIL, STATUS_SKIP, STATUS_ERROR, STATUS_TIMEOUT, TestResult, RunSummary
 import nox.fs
+import nox.os
 import nox.strings
 import nox.time
 
@@ -57,6 +58,28 @@ def redact_json_field(text: str, field_name: str) -> str:
         i = i + 1
     return acc
 
+def is_sensitive_env_name(name: str) -> bool:
+    u: str = nox.strings.upper(name)
+    if nox.strings.contains(u, "TOKEN") or nox.strings.contains(u, "SECRET") or nox.strings.contains(u, "PASSWORD") or nox.strings.contains(u, "PASSWD"):
+        return True
+    if nox.strings.contains(u, "API_KEY") or nox.strings.contains(u, "APIKEY") or nox.strings.contains(u, "PRIVATE_KEY") or nox.strings.contains(u, "CREDENTIAL"):
+        return True
+    if nox.strings.contains(u, "COOKIE") or nox.strings.contains(u, "SESSION") or nox.strings.contains(u, "AUTH"):
+        return True
+    return False
+
+def redact_env_secrets(text: str) -> str:
+    if len(text) == 0:
+        return text
+    res: str = text
+    env: dict[str, str] = nox.os.environ()
+    for k in env:
+        if is_sensitive_env_name(k):
+            val: str = env[k]
+            if len(val) >= 6 and nox.strings.contains(res, val):
+                res = nox.strings.replace(res, val, "[REDACTED:ENV]")
+    return res
+
 def redact_secrets(text: str) -> str:
     # 1. Bearer token redaction
     r1: str = text
@@ -84,6 +107,8 @@ def redact_secrets(text: str) -> str:
         r1 = redact_json_field(r1, secret_keys[s_i])
         s_i = s_i + 1
 
+    # 3. Active sensitive environment variable values scanner (nox.os.environ)
+    r1 = redact_env_secrets(r1)
     return r1
 
 def format_junit_xml(suite_name: str, summary: RunSummary) -> str:

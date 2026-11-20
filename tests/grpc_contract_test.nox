@@ -137,6 +137,7 @@ async def _loopback_grpc_srv_worker(fd_s: str) -> int:
     return 0
 
 def test_loopback_http2_grpc_end_to_end() -> None:
+    nox.http.configure(bind_address="127.0.0.1")
     nox.http.set_http2(True)
     port: int = 19189
     fd: int = nox.http.listen(port)
@@ -185,6 +186,7 @@ def test_loopback_http2_grpc_end_to_end() -> None:
         assert_true(res_unimpl.is_valid, "live UNIMPLEMENTED status verified")
     finally:
         nox.http.shutdown()
+        nox.http.clear_bind_address()
         try:
             nox.http.request("GET", "http://127.0.0.1:" + str(port) + "/exit", "", {}, 100)
         except Exception as wake_e:
